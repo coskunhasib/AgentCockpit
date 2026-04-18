@@ -1,0 +1,96 @@
+{
+  "window_title": "Claude",
+  "mode_buttons": {
+    "chat": "Chat",
+    "cowork": "Cowork",
+    "code": "Code"
+  },
+  "model_labels": {
+    "opus": "Opus 4.6",
+    "opus_1m": "Opus 4.6 1M",
+    "sonnet": "Sonnet 4.6",
+    "haiku": "Haiku 4.5"
+  },
+  "tab_model_options": {
+    "chat": ["opus", "sonnet", "haiku"],
+    "cowork": ["opus", "sonnet", "haiku"],
+    "code": ["opus", "opus_1m", "sonnet", "haiku"]
+  },
+  "effort_labels": {
+    "low": "Low",
+    "medium": "Medium",
+    "high": "High",
+    "max": "Max"
+  },
+  "permission_labels": {
+    "ask": "Ask permissions",
+    "accept_edits": "Accept edits",
+    "plan": "Plan mode",
+    "bypass": "Bypass permissions"
+  },
+  "permission_button_prefixes": ["Yes, ", "No, "],
+  "permission_buttons": ["Allow", "Deny", "Approve", "Reject", "Accept", "Cancel"],
+  "new_session_button_prefixes": ["New session", "New chat", "New task"],
+  "navigation": {
+    "menu_button": "Menu",
+    "collapse_sidebar_button": "Collapse sidebar",
+    "expand_sidebar_button": "Expand sidebar",
+    "search_button": "Search",
+    "back_button": "Back",
+    "forward_button": "Forward",
+    "go_back_home_link": "Go back home"
+  },
+  "chat": {
+    "page_not_found_text": "Page not found",
+    "home_greeting_text": "How can I help you today?",
+    "more_options_prefix": "More options for ",
+    "new_chat_button_prefixes": ["New chat"],
+    "session_excluded_buttons": [
+      "Menu",
+      "Collapse sidebar",
+      "Search",
+      "Back",
+      "Forward",
+      "Chat",
+      "Cowork",
+      "Code",
+      "Projects",
+      "Customize",
+      "Artifacts",
+      "Pinned",
+      "Recents",
+      "View all",
+      "Get apps and extensions"
+    ],
+    "history_chrome_texts": [
+      "How can I help you today?",
+      "Reply...",
+      "Claude is AI and can make mistakes. Please double-check responses.",
+      "Opus 4.6",
+      "Extended",
+      "Write",
+      "Learn",
+      "Code",
+      "Life stuff",
+      "Claude's choice",
+      "Click to collapse",
+      "Ctrl+B",
+      "Drag to resize"
+    ],
+    "history_open_prefixes": ["Open "],
+    "history_artifact_suffixes": [". Open artifact."],
+    "history_action_buttons": [
+      "Copy",
+      "Retry",
+      "Download all",
+      "Give positive feedback",
+      "Give negative feedback"
+    ],
+    "history_greeting_prefixes": [
+      "good morning",
+      "good afternoon",
+      "good evening"
+    ],
+    "role_split_left_threshold": 1050
+  }
+}

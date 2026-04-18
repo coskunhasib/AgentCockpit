@@ -1,0 +1,9 @@
+{
+  "window_title": "Claude",
+  "chat": {
+    "role_split_left_threshold": 980
+  },
+  "navigation": {
+    "menu_button": "Menu"
+  }
+}
