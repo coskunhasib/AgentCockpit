@@ -31,7 +31,7 @@ class BotEngineCapabilityTests(unittest.TestCase):
 
     def test_mode_keyboard_includes_codex_entry(self):
         labels = _keyboard_labels(bot_engine.get_mode_keyboard())
-        self.assertIn(["Codex"], labels)
+        self.assertIn([bot_engine.button_label("Codex")], labels)
 
     def test_code_keyboard_shows_code_controls_on_desktop(self):
         with patch("core.bot_engine.get_tab", return_value="code"), patch(
@@ -39,9 +39,10 @@ class BotEngineCapabilityTests(unittest.TestCase):
         ):
             labels = _keyboard_labels(bot_engine.get_claude_keyboard())
 
-        self.assertIn(["Session Sec", "Yeni Session"], labels)
-        self.assertIn(["Sekme", "Model"], labels)
-        self.assertIn(["Effort", "Izin Modu", "Durum"], labels)
+        self.assertEqual(labels[0], [bot_engine.button_label("Ekran Al"), bot_engine.button_label("Durum")])
+        self.assertIn([bot_engine.button_label("Session Sec"), bot_engine.button_label("Yeni Session")], labels)
+        self.assertIn([bot_engine.button_label("Sekme"), bot_engine.button_label("Model")], labels)
+        self.assertIn([bot_engine.button_label("Effort"), bot_engine.button_label("Izin Modu")], labels)
         self.assertNotIn(["Thinking", "Durum"], labels)
 
     def test_conversation_keyboard_hides_extended_thinking_on_cli(self):
@@ -50,10 +51,41 @@ class BotEngineCapabilityTests(unittest.TestCase):
         ):
             labels = _keyboard_labels(bot_engine.get_claude_keyboard())
 
-        self.assertIn(["Session Sec", "Yeni Session"], labels)
-        self.assertIn(["Sekme", "Model"], labels)
-        self.assertIn(["Durum"], labels)
+        self.assertEqual(labels[0], [bot_engine.button_label("Ekran Al"), bot_engine.button_label("Durum")])
+        self.assertIn([bot_engine.button_label("Session Sec"), bot_engine.button_label("Yeni Session")], labels)
+        self.assertIn([bot_engine.button_label("Sekme"), bot_engine.button_label("Model")], labels)
         self.assertNotIn(["Thinking", "Durum"], labels)
+
+    def test_common_action_positions_align_across_modes(self):
+        with patch("core.bot_engine.get_tab", return_value="code"), patch(
+            "core.bot_engine.get_transport_mode", return_value="desktop"
+        ):
+            agentcockpit = _keyboard_labels(bot_engine.get_dynamic_keyboard())
+            claude = _keyboard_labels(bot_engine.get_claude_keyboard())
+            codex = _keyboard_labels(bot_engine.get_codex_keyboard())
+
+        self.assertEqual(agentcockpit[0][0], bot_engine.button_label("Ekran Al"))
+        self.assertEqual(claude[0][0], bot_engine.button_label("Ekran Al"))
+        self.assertEqual(codex[0][0], bot_engine.button_label("Ekran Al"))
+        self.assertEqual(claude[0][1], bot_engine.button_label("Durum"))
+        self.assertEqual(codex[0][1], bot_engine.button_label("Durum"))
+        self.assertEqual(agentcockpit[-1], [bot_engine.button_label("Ana Menu")])
+        self.assertEqual(claude[-1], [bot_engine.button_label("Ana Menu")])
+        self.assertEqual(codex[-1], [bot_engine.button_label("Ana Menu")])
+
+    def test_icon_labels_are_canonicalized_for_handlers(self):
+        self.assertEqual(
+            bot_engine.canonical_button_label(bot_engine.button_label("Ekran Al")),
+            "Ekran Al",
+        )
+        self.assertEqual(
+            bot_engine.canonical_button_label(bot_engine.button_label("Ana Menu")),
+            "Ana Menu",
+        )
+        self.assertEqual(
+            bot_engine.canonical_button_label(bot_engine.button_label("Hotkey Ctrl-L")),
+            "Hotkey Ctrl-L",
+        )
 
     def test_resolve_codex_session_info_accepts_old_truncated_callback(self):
         cache = {

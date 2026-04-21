@@ -1,4 +1,4 @@
-# Antigravity Yonetici Inceleme Raporu
+# AgentCockpit Inceleme Raporu
 
 Tarih: 2026-04-13
 Inceleme tipi: Taze gozuyle ikinci tur teknik inceleme
@@ -281,7 +281,7 @@ Bu turda onceki duruma gore gercekten iyiye giden noktalar var:
 
 ## Fazlaliklar ve Hijyen Konulari
 
-- `main_backup.py` kokte duruyor.
+- `main_backup.py` kokten kaldirildi; legacy calistirma icin `python main.py --legacy` kullaniliyor.
 - `nul` isimli artefact Windows araclariyla sorun cikartabiliyor.
 - Proje kokunde `venv`, `logs`, `temp_screens` birikimi var.
 - Mevcut rapor ve operasyon dosyalari repo hijyenini zamanla bozabilir.

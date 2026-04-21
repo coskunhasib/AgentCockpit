@@ -109,7 +109,7 @@ ALLOWED_IDS = set(
     uid.strip() for uid in os.getenv("ALLOWED_USER_ID", "").split(",") if uid.strip()
 )
 
-BUTTON_MAIN_ANTIGRAVITY = "Antigravity"
+BUTTON_MAIN_ANTIGRAVITY = "AgentCockpit"
 BUTTON_MAIN_CLAUDE = "Claude Code"
 BUTTON_MAIN_CODEX = "Codex"
 BUTTON_MAIN_BACK = {"Ana Menu", "Ana Men\u00fc"}
@@ -123,6 +123,38 @@ BUTTON_CLAUDE_PERMISSION = {"Izin Modu", "\u0130zin Modu"}
 BUTTON_CLAUDE_THINKING = {"Thinking", "Extended Thinking", "Extended thinking"}
 BUTTON_CLAUDE_STATUS = {"Durum"}
 BUTTON_SCREENSHOT = {"Ekran Al"}
+
+BUTTON_DISPLAY_LABELS = {
+    "AgentCockpit": "🖥️ AgentCockpit",
+    "Claude Code": "🤖 Claude Code",
+    "Codex": "🧠 Codex",
+    "Ekran Al": "📸 Ekran Al",
+    "Durum": "📊 Durum",
+    "Session Sec": "📋 Session Sec",
+    "Yeni Session": "➕ Yeni Session",
+    "Sekme": "🧭 Sekme",
+    "Model": "🧠 Model",
+    "Effort": "⚙️ Effort",
+    "Izin Modu": "🔐 Izin Modu",
+    "Thinking": "💭 Thinking",
+    "PC Restart": "🔄 PC Restart",
+    "Bot Restart": "♻️ Bot Restart",
+    "Sol Tik": "🖱️ Sol Tik",
+    "Sag Tik": "🖱️ Sag Tik",
+    "Yukari": "⬆️ Yukari",
+    "Asagi": "⬇️ Asagi",
+    "Sol": "⬅️ Sol",
+    "Sag": "➡️ Sag",
+    "Enter": "↩️ Enter",
+    "Space": "␣ Space",
+    "Esc": "⎋ Esc",
+    "Bir Sey Yaz...": "⌨️ Bir Sey Yaz...",
+    "Ana Menu": "🏠 Ana Menu",
+    "Telefon": "📱 Telefon",
+}
+BUTTON_CANONICAL_LABELS = {
+    display: label for label, display in BUTTON_DISPLAY_LABELS.items()
+}
 
 CLAUDE_TAB_OPTIONS = [(key, CLAUDE_MODE_BUTTONS[key]) for key in ("chat", "cowork", "code")]
 CLAUDE_CODE_MODEL_OPTIONS = [
@@ -157,6 +189,34 @@ def _supports_history_read(tab=None):
     return tab_supports_history_read(
         tab or get_tab(), transport_mode=get_transport_mode()
     )
+
+
+def button_label(label):
+    if str(label).startswith("Hotkey "):
+        return f"⚡ {label}"
+    return BUTTON_DISPLAY_LABELS.get(label, label)
+
+
+def canonical_button_label(label):
+    raw = (label or "").strip()
+    if raw in BUTTON_CANONICAL_LABELS:
+        return BUTTON_CANONICAL_LABELS[raw]
+    if raw in BUTTON_DISPLAY_LABELS:
+        return raw
+    if raw.startswith("⚡ "):
+        rest = raw[2:].strip()
+        if rest.startswith("Hotkey "):
+            return rest
+    parts = raw.split(" ", 1)
+    if len(parts) == 2:
+        rest = parts[1].strip()
+        if rest in BUTTON_DISPLAY_LABELS or rest.startswith("Hotkey "):
+            return rest
+    return raw
+
+
+def _display_keyboard(rows):
+    return [[button_label(label) for label in row] for row in rows]
 
 
 def _save_user_id_to_env(user_id):
@@ -214,7 +274,7 @@ async def check_auth(update: Update):
 
 def get_mode_keyboard():
     return ReplyKeyboardMarkup(
-        [[BUTTON_MAIN_ANTIGRAVITY, BUTTON_MAIN_CLAUDE], [BUTTON_MAIN_CODEX]],
+        _display_keyboard([[BUTTON_MAIN_ANTIGRAVITY, BUTTON_MAIN_CLAUDE], [BUTTON_MAIN_CODEX]]),
         resize_keyboard=True,
     )
 
@@ -227,7 +287,6 @@ def get_dynamic_keyboard():
         ["Sol", "Asagi", "Sag"],
         ["Enter", "Space", "Esc"],
         ["Bir Sey Yaz..."],
-        ["Ana Menu"],
     ]
     custom_hotkeys = DataManager.get_hotkeys()
     temp_row = []
@@ -238,12 +297,13 @@ def get_dynamic_keyboard():
             temp_row = []
     if temp_row:
         keyboard.append(temp_row)
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    keyboard.append(["Ana Menu"])
+    return ReplyKeyboardMarkup(_display_keyboard(keyboard), resize_keyboard=True)
 
 
 def get_claude_keyboard():
     tab = get_tab()
-    keyboard = []
+    keyboard = [["Ekran Al", "Durum"]]
 
     session_row = []
     if _supports_session_listing(tab):
@@ -268,23 +328,20 @@ def get_claude_keyboard():
     else:
         if _supports("extended_thinking"):
             control_row.append("Thinking")
-    control_row.append("Durum")
-    keyboard.append(control_row)
+    if control_row:
+        keyboard.append(control_row)
 
-    utility_row = ["Ekran Al"]
-    keyboard.append(utility_row)
     keyboard.append(["Ana Menu"])
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(_display_keyboard(keyboard), resize_keyboard=True)
 
 
 def get_codex_keyboard():
     keyboard = [
+        ["Ekran Al", "Durum"],
         ["Session Sec", "Yeni Session"],
-        ["Durum"],
-        ["Ekran Al"],
         ["Ana Menu"],
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(_display_keyboard(keyboard), resize_keyboard=True)
 
 
 def get_model_options_for_tab(tab=None):
@@ -667,11 +724,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_auth(update):
         return
 
-    msg = update.message.text
+    raw_msg = update.message.text
+    msg = canonical_button_label(raw_msg)
     mode = context.user_data.get("mode")
-    logger.info(f"[MSG] [{mode or 'menu'}] Gelen: {msg}")
+    logger.info(f"[MSG] [{mode or 'menu'}] Gelen: {raw_msg} -> {msg}")
 
-    if msg in {BUTTON_MAIN_ANTIGRAVITY, "🖥️ Antigravity"}:
+    if msg in {
+        BUTTON_MAIN_ANTIGRAVITY,
+        "🖥️ AgentCockpit",
+        "Antigravity",
+        "🖥️ Antigravity",
+    }:
         context.user_data["mode"] = "antigravity"
         await update.message.reply_text(
             "Remote Cockpit hazir!", reply_markup=get_dynamic_keyboard()
@@ -912,7 +975,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if msg in BUTTON_CLAUDE_NEW or msg == "ğŸ†• Yeni Session":
             codex_bridge.clear_session()
-            handle = codex_bridge.find_codex_window()
+            handle = codex_bridge.ensure_codex_window()
             if handle and codex_bridge.focus_codex_window(handle):
                 if codex_bridge.click_new_session():
                     await update.message.reply_text(
@@ -1215,7 +1278,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data == "codses:new":
         codex_bridge.clear_session()
-        handle = codex_bridge.find_codex_window()
+        handle = codex_bridge.ensure_codex_window()
         if handle and codex_bridge.focus_codex_window(handle):
             if codex_bridge.click_new_session():
                 await query.edit_message_text("Yeni Codex session acildi.")
@@ -1423,8 +1486,8 @@ def run_bot():
                 MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message)
             )
 
-            logger.info("Antigravity Kokpit baslatildi")
-            print("Antigravity Kokpit baslatildi...")
+            logger.info("AgentCockpit baslatildi")
+            print("AgentCockpit baslatildi...")
             app.run_polling()
 
         except Exception as exc:

@@ -1,0 +1,1537 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="theme-color" content="#11131a">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="AgentCockpit">
+  <link rel="manifest" href="{{MANIFEST_PATH}}">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <title>AgentCockpit Remote</title>
+  <style>
+    :root {
+      --bg: #0d1016;
+      --panel: rgba(18, 22, 32, 0.86);
+      --panel-strong: #171d28;
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #edf1f7;
+      --muted: #9ca7b9;
+      --accent: #38a3ff;
+      --accent-2: #7bf0c8;
+      --danger: #ff5d70;
+      --success: #43d18d;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --safe-left: env(safe-area-inset-left, 0px);
+      --safe-right: env(safe-area-inset-right, 0px);
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at top left, rgba(56, 163, 255, 0.24), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(123, 240, 200, 0.12), transparent 28%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+      user-select: none;
+    }
+
+    body.standalone .hint {
+      bottom: calc(84px + var(--safe-bottom));
+    }
+
+    #viewer {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #05070c;
+    }
+
+    #screen {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      display: block;
+      touch-action: none;
+    }
+
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: calc(10px + var(--safe-top)) calc(10px + var(--safe-right)) calc(10px + var(--safe-bottom)) calc(10px + var(--safe-left));
+      pointer-events: none;
+    }
+
+    .topbar, .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      pointer-events: auto;
+    }
+
+    .topbar {
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+    }
+
+    .topbar.hidden {
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-10px);
+      pointer-events: none;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 14px;
+      min-width: 0;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--danger);
+      flex: 0 0 auto;
+      box-shadow: 0 0 14px rgba(255, 93, 112, 0.45);
+    }
+
+    .status-dot.connected {
+      background: var(--success);
+      box-shadow: 0 0 14px rgba(67, 209, 141, 0.45);
+    }
+
+    .status-text {
+      min-width: 0;
+    }
+
+    .status-title {
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .status-sub {
+      margin-top: 2px;
+      color: var(--muted);
+      font-size: 11px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .status-actions {
+      display: flex;
+      gap: 8px;
+      margin-left: 8px;
+      flex: 0 0 auto;
+      pointer-events: auto;
+    }
+
+    .tool-btn {
+      height: 44px;
+      min-width: 44px;
+      border: 1px solid var(--line);
+      background: var(--panel);
+      color: var(--text);
+      border-radius: 14px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 0 14px;
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      pointer-events: auto;
+      touch-action: manipulation;
+    }
+
+    .tool-btn.hidden {
+      display: none;
+    }
+
+    .tool-btn.active {
+      background: rgba(56, 163, 255, 0.18);
+      border-color: rgba(56, 163, 255, 0.45);
+      color: #fff;
+    }
+
+    .tool-btn.accent {
+      background: linear-gradient(135deg, rgba(56, 163, 255, 0.18), rgba(123, 240, 200, 0.12));
+      border-color: rgba(123, 240, 200, 0.32);
+    }
+
+    .mode-pill {
+      padding: 10px 12px;
+      font-size: 11px;
+      font-weight: 700;
+      border-radius: 14px;
+      white-space: nowrap;
+      color: var(--muted);
+    }
+
+    .mode-pill.active {
+      color: var(--text);
+      border-color: rgba(67, 209, 141, 0.3);
+      background: rgba(67, 209, 141, 0.12);
+    }
+
+    .toolbar {
+      justify-content: center;
+      margin-bottom: 6px;
+      flex-wrap: wrap;
+    }
+
+    #keyboard-panel {
+      position: fixed;
+      left: 10px;
+      right: 10px;
+      bottom: calc(10px + var(--safe-bottom));
+      display: none;
+      flex-direction: column;
+      gap: 8px;
+      padding: 12px;
+      background: rgba(10, 14, 22, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.34);
+      pointer-events: auto;
+    }
+
+    #keyboard-panel.visible {
+      display: flex;
+    }
+
+    .keyboard-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .keyboard-title {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .keyboard-close {
+      appearance: none;
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,0.06);
+      color: var(--text);
+      border-radius: 12px;
+      min-height: 36px;
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      pointer-events: auto;
+      touch-action: manipulation;
+    }
+
+    .input-row, .key-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    #type-input {
+      flex: 1;
+      height: 42px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      padding: 0 12px;
+      font-size: 15px;
+      touch-action: manipulation;
+    }
+
+    .send-btn, .key-btn {
+      height: 42px;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      padding: 0 12px;
+      font-size: 12px;
+      font-weight: 700;
+      pointer-events: auto;
+      touch-action: manipulation;
+    }
+
+    .send-btn {
+      background: linear-gradient(135deg, var(--accent), #246cff);
+      border-color: transparent;
+      min-width: 76px;
+    }
+
+    .key-btn {
+      flex: 1 1 0;
+      min-width: 0;
+    }
+
+    #connect-screen {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background:
+        radial-gradient(circle at top, rgba(56, 163, 255, 0.26), transparent 35%),
+        var(--bg);
+      z-index: 100;
+      transition: opacity 0.25s ease, visibility 0.25s ease;
+    }
+
+    #connect-screen.hidden {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    .hero {
+      width: 82px;
+      height: 82px;
+      border-radius: 24px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(145deg, rgba(56, 163, 255, 0.18), rgba(123, 240, 200, 0.1));
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      font-size: 28px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+    }
+
+    .hero-title {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .hero-sub {
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      max-width: 280px;
+      line-height: 1.45;
+    }
+
+    .hint {
+      position: fixed;
+      inset: auto 10px calc(74px + var(--safe-bottom)) 10px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: rgba(9, 13, 20, 0.82);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 8px 10px;
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+    }
+
+    .hint.hidden {
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(10px);
+      pointer-events: none;
+    }
+
+    .hint-main {
+      display: inline;
+      flex: 1 1 auto;
+      min-width: 180px;
+    }
+
+    .rotate-hint {
+      display: none;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(56, 163, 255, 0.10);
+      border: 1px solid rgba(56, 163, 255, 0.22);
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    .rotate-hint.visible {
+      display: inline-flex;
+    }
+
+    .hint-dismiss {
+      appearance: none;
+      border: 0;
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    .hint-dismiss.main {
+      flex: 0 0 auto;
+      touch-action: manipulation;
+    }
+
+    .banner {
+      position: fixed;
+      inset: calc(74px + var(--safe-top)) 10px auto 10px;
+      padding: 10px 14px;
+      border-radius: 14px;
+      background: rgba(255, 191, 83, 0.16);
+      border: 1px solid rgba(255, 191, 83, 0.32);
+      color: #ffe7b5;
+      font-size: 12px;
+      text-align: center;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(-6px);
+      transition: opacity 0.18s ease, transform 0.18s ease, visibility 0.18s ease;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      pointer-events: auto;
+    }
+
+    .banner.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .banner-text {
+      flex: 1 1 auto;
+      min-width: 0;
+    }
+
+    .banner-dismiss {
+      appearance: none;
+      border: 0;
+      background: rgba(255,255,255,0.12);
+      color: var(--text);
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      flex: 0 0 auto;
+      touch-action: manipulation;
+    }
+
+    #install-sheet {
+      position: fixed;
+      inset: auto 10px calc(10px + var(--safe-bottom)) 10px;
+      z-index: 140;
+      background: rgba(10, 14, 22, 0.94);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      transform: translateY(24px);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s ease;
+    }
+
+    #install-sheet.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    #wan-sheet {
+      position: fixed;
+      inset: auto 10px calc(10px + var(--safe-bottom)) 10px;
+      z-index: 145;
+      background: rgba(10, 14, 22, 0.96);
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      padding: 16px;
+      box-shadow: 0 18px 48px rgba(0, 0, 0, 0.36);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      transform: translateY(24px);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.22s ease, transform 0.22s ease, visibility 0.22s ease;
+    }
+
+    #wan-sheet.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+
+    .sheet-title {
+      font-size: 16px;
+      font-weight: 800;
+      margin: 0 0 8px;
+    }
+
+    .sheet-text {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--muted);
+    }
+
+    .sheet-steps {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      color: var(--text);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .sheet-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 14px;
+      flex-wrap: wrap;
+    }
+
+    .sheet-btn {
+      flex: 1 1 0;
+      min-height: 42px;
+      border-radius: 14px;
+      border: 1px solid var(--line);
+      background: var(--panel-strong);
+      color: var(--text);
+      font-size: 12px;
+      font-weight: 700;
+      padding: 0 12px;
+      pointer-events: auto;
+      touch-action: manipulation;
+    }
+
+    .sheet-btn.primary {
+      background: linear-gradient(135deg, var(--accent), #246cff);
+      border-color: transparent;
+    }
+
+  </style>
+</head>
+<body>
+  <div id="viewer">
+    <img id="screen" alt="Remote screen">
+  </div>
+
+  <div id="overlay">
+    <div class="topbar" id="topbar">
+      <div class="card status">
+        <div class="status-dot" id="status-dot"></div>
+        <div class="status-text">
+          <div class="status-title" id="status-title">Baglanti kuruluyor</div>
+          <div class="status-sub" id="status-sub">Ilk ekran bekleniyor</div>
+        </div>
+        <div class="status-actions">
+          <button class="tool-btn hidden" id="btn-install">Yukle</button>
+          <div class="card mode-pill" id="mode-pill">Web</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="toolbar">
+      <button class="tool-btn" id="btn-refresh">Sync</button>
+      <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
+      <button class="tool-btn" id="btn-speed">Normal</button>
+      <button class="tool-btn" id="btn-scroll">Scroll</button>
+      <button class="tool-btn" id="btn-keyboard">Keyboard</button>
+    </div>
+  </div>
+
+  <div class="banner" id="offline-banner">
+    <span class="banner-text" id="offline-banner-text">Baglanti zayif. App shell hazir, sunucu geri geldiginde otomatik toparlayacagim.</span>
+    <button class="banner-dismiss" id="offline-banner-dismiss" type="button">Kapat</button>
+  </div>
+
+  <div id="keyboard-panel">
+    <div class="keyboard-header">
+      <div class="keyboard-title">Klavye</div>
+      <button class="keyboard-close" id="btn-keyboard-close" type="button">Kapat</button>
+    </div>
+    <div class="input-row">
+      <input id="type-input" type="text" placeholder="Yaz ve gonder" autocomplete="off">
+      <button class="send-btn" id="send-text">Send</button>
+    </div>
+    <div class="key-row">
+      <button class="key-btn" data-key="escape">Esc</button>
+      <button class="key-btn" data-key="enter">Enter</button>
+      <button class="key-btn" data-key="backspace">Back</button>
+      <button class="key-btn" data-key="delete">Del</button>
+    </div>
+    <div class="key-row">
+      <button class="key-btn" data-key="ctrl+c">Copy</button>
+      <button class="key-btn" data-key="ctrl+v">Paste</button>
+      <button class="key-btn" data-key="ctrl+a">All</button>
+      <button class="key-btn" data-key="alt+tab">Switch</button>
+    </div>
+  </div>
+
+  <div id="connect-screen">
+    <div class="hero">AC</div>
+    <div class="hero-title">AgentCockpit</div>
+    <div class="hero-sub">Telefon istemcisi hazirlaniyor. Ilk screenshot geldigi anda kontrol aktif olacak.</div>
+  </div>
+
+  <div class="hint" id="usage-hint">
+    <span class="rotate-hint" id="rotate-hint">
+      <span>Daha rahat kullanim icin telefonu yataya cevir.</span>
+      <button class="hint-dismiss" id="rotate-hint-dismiss" type="button">Tamam</button>
+    </span>
+    <span class="hint-main">Tek dokunma sol tik, cift dokunma cift tik, uzun basma sag tik, Scroll acikken kaydirma kaydirma yapar.</span>
+    <button class="hint-dismiss main" id="usage-hint-dismiss" type="button">Kapat</button>
+  </div>
+
+  <div id="install-sheet">
+    <div class="sheet-title">Bunu uygulama gibi kullanalim</div>
+    <p class="sheet-text" id="install-text">AgentCockpit Remote ana ekrana eklenirse daha temiz acilir ve tarayici gibi hissettirmez.</p>
+    <ol class="sheet-steps" id="install-steps"></ol>
+    <div class="sheet-actions">
+      <button class="sheet-btn primary" id="install-now">Yukle</button>
+      <button class="sheet-btn" id="install-later">Sonra</button>
+    </div>
+  </div>
+
+  <div id="wan-sheet">
+    <div class="sheet-title">Baglanti yolu degisti</div>
+    <p class="sheet-text" id="wan-text">Ayni PWA ile devam edebiliriz. Uzak baglanti hazirsa tek dokunusla oradan acilir.</p>
+    <div class="sheet-actions">
+      <button class="sheet-btn primary" id="wan-open">Uzak Ac</button>
+      <button class="sheet-btn" id="wan-retry">Tekrar Dene</button>
+      <button class="sheet-btn" id="wan-close">Kapat</button>
+    </div>
+  </div>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const TOKEN = '{{TOKEN}}';
+      const TELEGRAM_BOT_URL = '{{TELEGRAM_BOT_URL}}';
+      let publicUrl = '{{PUBLIC_URL}}';
+      let wanUrl = '{{WAN_URL}}';
+      const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
+      const POLL_ORDER = ['live', 'balanced', 'eco'];
+      const POLL_LABELS = {
+        live: 'Live',
+        balanced: 'Normal',
+        eco: 'Eco'
+      };
+      const STORAGE_KEYS = {
+        pollMode: 'ac_phone_poll_mode_v1',
+        installDismissed: 'ac_phone_install_dismissed_v2',
+        rotateHintDismissed: 'ac_phone_rotate_hint_dismissed_v1',
+        usageHintDismissed: 'ac_phone_usage_hint_dismissed_v1'
+      };
+      const apiPath = (path) => TOKEN ? `${path}?token=${encodeURIComponent(TOKEN)}` : path;
+      const API = {
+        screenshot: apiPath('/api/screenshot'),
+        session: apiPath('/api/session'),
+        action: apiPath('/api/action')
+      };
+
+      const screenEl = document.getElementById('screen');
+      const connectScreen = document.getElementById('connect-screen');
+      const topbar = document.getElementById('topbar');
+      const statusDot = document.getElementById('status-dot');
+      const statusTitle = document.getElementById('status-title');
+      const statusSub = document.getElementById('status-sub');
+      const keyboardPanel = document.getElementById('keyboard-panel');
+      const btnKeyboard = document.getElementById('btn-keyboard');
+      const btnKeyboardClose = document.getElementById('btn-keyboard-close');
+      const btnRefresh = document.getElementById('btn-refresh');
+      const btnSpeed = document.getElementById('btn-speed');
+      const btnScroll = document.getElementById('btn-scroll');
+      const btnTelegram = document.getElementById('btn-telegram');
+      const btnInstall = document.getElementById('btn-install');
+      const modePill = document.getElementById('mode-pill');
+      const typeInput = document.getElementById('type-input');
+      const sendText = document.getElementById('send-text');
+      const offlineBanner = document.getElementById('offline-banner');
+      const offlineBannerText = document.getElementById('offline-banner-text');
+      const offlineBannerDismiss = document.getElementById('offline-banner-dismiss');
+      const usageHint = document.getElementById('usage-hint');
+      const usageHintDismiss = document.getElementById('usage-hint-dismiss');
+      const rotateHint = document.getElementById('rotate-hint');
+      const rotateHintDismiss = document.getElementById('rotate-hint-dismiss');
+      const installSheet = document.getElementById('install-sheet');
+      const installText = document.getElementById('install-text');
+      const installSteps = document.getElementById('install-steps');
+      const installNow = document.getElementById('install-now');
+      const installLater = document.getElementById('install-later');
+      const wanSheet = document.getElementById('wan-sheet');
+      const wanText = document.getElementById('wan-text');
+      const wanOpen = document.getElementById('wan-open');
+      const wanRetry = document.getElementById('wan-retry');
+      const wanClose = document.getElementById('wan-close');
+
+      let connected = false;
+      let busy = false;
+      let scrollMode = false;
+      let screenInfo = { width: 0, height: 0 };
+      let sessionInfo = { expiresAt: 0, expiresIn: 0, expiresInText: '', expiresUnlimited: false, label: '', trustedDevice: false, deviceLabel: '', authKind: '' };
+      let serverPollMs = DEFAULT_POLL_MS;
+      let pollMode = localStorage.getItem(STORAGE_KEYS.pollMode) || 'balanced';
+      let pollTimer = null;
+      let usageHintTimer = null;
+      let topbarHideTimer = null;
+      let scrollRequestInFlight = false;
+      let pendingScrollPayload = null;
+      let lastTapTime = 0;
+      let lastTapX = 0;
+      let longPressTimer = null;
+      let gesture = null;
+      let boostUntil = 0;
+      let consecutiveErrors = 0;
+      let lastFrameAt = 0;
+      let lastLatencyMs = 0;
+      let deferredInstallPrompt = null;
+      let swReady = false;
+      let bannerHideTimer = null;
+      let wanSheetDismissed = false;
+      let appInstalled = isStandaloneMode();
+      let statusState = {
+        title: 'Baglanti kuruluyor',
+        extra: 'Ilk ekran bekleniyor',
+        connected: false
+      };
+
+      function isStandaloneMode() {
+        return window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+      }
+
+      function isWanOrigin() {
+        return Boolean(publicUrl) && window.location.origin === publicUrl;
+      }
+
+      function hasWanPwa() {
+        return Boolean(wanUrl && wanUrl !== '{{WAN_URL}}' && !isWanOrigin());
+      }
+
+      function isIOS() {
+        return /iphone|ipad|ipod/i.test(window.navigator.userAgent);
+      }
+
+      function isLandscapeMode() {
+        const screenType = window.screen && window.screen.orientation && typeof window.screen.orientation.type === 'string'
+          ? window.screen.orientation.type
+          : '';
+        if (screenType.startsWith('landscape')) {
+          return true;
+        }
+        if (screenType.startsWith('portrait')) {
+          return false;
+        }
+        const viewportWidth = window.visualViewport?.width || window.innerWidth || document.documentElement.clientWidth || 0;
+        const viewportHeight = window.visualViewport?.height || window.innerHeight || document.documentElement.clientHeight || 0;
+        return viewportWidth > viewportHeight;
+      }
+
+      function updateRotateHint() {
+        if (localStorage.getItem(STORAGE_KEYS.usageHintDismissed) === '1') {
+          rotateHint.classList.remove('visible');
+          return;
+        }
+        const dismissed = localStorage.getItem(STORAGE_KEYS.rotateHintDismissed) === '1';
+        const show = !dismissed && !isLandscapeMode();
+        rotateHint.classList.toggle('visible', show);
+      }
+
+      function setUsageHintVisible(visible) {
+        usageHint.classList.toggle('hidden', !visible);
+        if (!visible) {
+          rotateHint.classList.remove('visible');
+        } else {
+          updateRotateHint();
+        }
+      }
+
+      function dismissUsageHint(persist = true) {
+        if (usageHintTimer) {
+          clearTimeout(usageHintTimer);
+          usageHintTimer = null;
+        }
+        if (persist) {
+          localStorage.setItem(STORAGE_KEYS.usageHintDismissed, '1');
+        }
+        setUsageHintVisible(false);
+      }
+
+      function scheduleUsageHintAutoHide() {
+        if (localStorage.getItem(STORAGE_KEYS.usageHintDismissed) === '1') {
+          setUsageHintVisible(false);
+          return;
+        }
+        if (usageHintTimer) {
+          clearTimeout(usageHintTimer);
+        }
+        usageHintTimer = setTimeout(() => {
+          dismissUsageHint(true);
+        }, 4500);
+      }
+
+      function setOfflineBanner(visible, text, sticky = true) {
+        if (bannerHideTimer) {
+          clearTimeout(bannerHideTimer);
+          bannerHideTimer = null;
+        }
+        if (text) {
+          offlineBannerText.textContent = text;
+        }
+        offlineBanner.classList.toggle('visible', Boolean(visible));
+        if (visible && !sticky) {
+          bannerHideTimer = setTimeout(() => {
+            offlineBanner.classList.remove('visible');
+            bannerHideTimer = null;
+          }, 2800);
+        }
+      }
+
+      function setWanSheetVisible(visible, text = '') {
+        if (text) {
+          wanText.textContent = text;
+        }
+        wanOpen.textContent = hasWanPwa() ? 'Uzak Ac' : "Telegram'i Ac";
+        wanSheet.classList.toggle('visible', Boolean(visible));
+      }
+
+      function maybeShowWanSheet() {
+        if (wanSheetDismissed) {
+          return;
+        }
+        if (consecutiveErrors >= 3) {
+          if (hasWanPwa()) {
+            setWanSheetVisible(true, 'Yerel baglanti ulasilamaz gorunuyor. Ayni PWA arayuzunu uzak baglantidan acabiliriz.');
+          } else if (TELEGRAM_BOT_URL && TELEGRAM_BOT_URL !== '{{TELEGRAM_BOT_URL}}') {
+            setWanSheetVisible(true, 'Yerel baglanti ulasilamaz gorunuyor. Uzak PWA linki hazir degil; Telegram yedegini acabilirsin.');
+          }
+        }
+      }
+
+      function formatRemaining(seconds) {
+        if (seconds === null || seconds === undefined) {
+          return 'Sinirsiz';
+        }
+        const safe = Math.max(0, Math.round(Number(seconds) || 0));
+        if (safe < 60) {
+          return `${safe} sn`;
+        }
+        const minutes = Math.floor(safe / 60);
+        const rem = safe % 60;
+        if (minutes < 60) {
+          return rem ? `${minutes} dk ${rem} sn` : `${minutes} dk`;
+        }
+        const hours = Math.floor(minutes / 60);
+        const mins = minutes % 60;
+        return mins ? `${hours} sa ${mins} dk` : `${hours} sa`;
+      }
+
+      function updateSpeedButton() {
+        btnSpeed.textContent = POLL_LABELS[pollMode];
+        btnSpeed.classList.toggle('active', pollMode !== 'balanced');
+      }
+
+      function updateModePill() {
+        appInstalled = isStandaloneMode() || appInstalled;
+        document.body.classList.toggle('standalone', appInstalled);
+        modePill.textContent = isWanOrigin() ? 'Uzak' : 'Yerel';
+        modePill.classList.toggle('active', appInstalled);
+      }
+
+      function configureInstallSheet() {
+        const steps = [];
+        if (deferredInstallPrompt) {
+          installText.textContent = 'AgentCockpit Remote artik uygulama gibi kurulabilir. Yuklediginde tarayici cubuklari kaybolur ve daha temiz acilir.';
+          steps.push('Yukle dugmesine bas.');
+          steps.push('Tarayicinin kurulum onayini kabul et.');
+          installNow.textContent = 'Yukle';
+        } else if (isIOS()) {
+          installText.textContent = 'iPhone veya iPad tarafinda bunu uygulama gibi kullanmak icin ana ekrana ekleyelim.';
+          steps.push('Safari paylas menusu ac.');
+          steps.push('Ana Ekrana Ekle secenegine dokun.');
+          steps.push('Kisayolu kaydedip oradan ac.');
+          installNow.textContent = 'Tamam';
+        } else {
+          installText.textContent = 'Bu istemci ana ekrana eklenince uygulama gibi davranir. Tarayici menunden Yukle veya Ana ekrana ekle secenegini kullanabilirsin.';
+          steps.push('Tarayici menusu icinden Yukle veya Ana ekrana ekle sec.');
+          steps.push('Kisayolu kaydedip tekrar oradan ac.');
+          installNow.textContent = 'Anladim';
+        }
+        installSteps.innerHTML = steps.map((step) => `<li>${step}</li>`).join('');
+      }
+
+      function showInstallSheet(force = false) {
+        if (appInstalled) {
+          installSheet.classList.remove('visible');
+          return;
+        }
+        if (!force && localStorage.getItem(STORAGE_KEYS.installDismissed) === '1') {
+          return;
+        }
+        configureInstallSheet();
+        installSheet.classList.add('visible');
+      }
+
+      function hideInstallSheet(remember = false) {
+        if (remember) {
+          localStorage.setItem(STORAGE_KEYS.installDismissed, '1');
+        }
+        installSheet.classList.remove('visible');
+      }
+
+      function refreshInstallUI() {
+        updateModePill();
+        btnInstall.classList.toggle('hidden', appInstalled);
+        btnInstall.classList.toggle('accent', !appInstalled);
+        btnTelegram.textContent = hasWanPwa() ? 'Uzak Ac' : 'Telegram';
+        btnTelegram.classList.toggle('hidden', !hasWanPwa() && (!TELEGRAM_BOT_URL || TELEGRAM_BOT_URL === '{{TELEGRAM_BOT_URL}}'));
+      }
+
+      function buildStatusSub() {
+        const parts = [];
+        if (statusState.extra) {
+          parts.push(statusState.extra);
+        }
+        if (screenInfo.width && screenInfo.height) {
+          parts.push(`${screenInfo.width}x${screenInfo.height}`);
+        }
+        parts.push(`Mod: ${POLL_LABELS[pollMode]}`);
+        parts.push(isWanOrigin() ? 'Uzak' : 'Yerel');
+        if (scrollMode) {
+          parts.push('Scroll acik');
+        }
+        const liveExpiresIn = sessionInfo.expiresAt
+          ? Math.max(0, Math.round(sessionInfo.expiresAt - (Date.now() / 1000)))
+          : sessionInfo.expiresIn;
+        if (sessionInfo.expiresUnlimited) {
+          parts.push('Link: Sinirsiz');
+        } else if (liveExpiresIn > 0) {
+          parts.push(`${sessionInfo.expiresInText || formatRemaining(liveExpiresIn)} kaldi`);
+        }
+        if (sessionInfo.trustedDevice) {
+          parts.push(sessionInfo.deviceLabel ? `Cihaz: ${sessionInfo.deviceLabel}` : 'Kalici eslesme');
+        }
+        if (lastFrameAt) {
+          parts.push(`${Math.max(0, Math.round((Date.now() - lastFrameAt) / 1000))} sn once`);
+        }
+        if (lastLatencyMs) {
+          parts.push(`~${lastLatencyMs} ms`);
+        }
+        return parts.filter(Boolean).join(' | ');
+      }
+
+      function clearTopbarHideTimer() {
+        if (topbarHideTimer) {
+          clearTimeout(topbarHideTimer);
+          topbarHideTimer = null;
+        }
+      }
+
+      function isKeyboardVisible() {
+        return keyboardPanel.classList.contains('visible');
+      }
+
+      function setTopbarVisible(visible) {
+        topbar.classList.toggle('hidden', !visible);
+      }
+
+      function scheduleTopbarAutoHide(delay = 2600) {
+        clearTopbarHideTimer();
+        if (!statusState.connected || isKeyboardVisible()) {
+          setTopbarVisible(true);
+          return;
+        }
+        topbarHideTimer = setTimeout(() => {
+          setTopbarVisible(false);
+          topbarHideTimer = null;
+        }, delay);
+      }
+
+      function setKeyboardVisible(visible) {
+        keyboardPanel.classList.toggle('visible', visible);
+        btnKeyboard.classList.toggle('active', visible);
+        if (visible) {
+          setTopbarVisible(true);
+          clearTopbarHideTimer();
+          typeInput.focus();
+        } else if (statusState.connected) {
+          scheduleTopbarAutoHide(1200);
+        }
+      }
+
+      function applyStatus() {
+        statusTitle.textContent = statusState.title;
+        statusSub.textContent = buildStatusSub();
+        statusDot.classList.toggle('connected', Boolean(statusState.connected));
+        setTopbarVisible(true);
+        if (statusState.connected) {
+          connectScreen.classList.add('hidden');
+          connected = true;
+          scheduleTopbarAutoHide();
+        } else if (!connected) {
+          connectScreen.classList.remove('hidden');
+          clearTopbarHideTimer();
+        }
+      }
+
+      function setStatus(title, extra, isConnected) {
+        statusState = {
+          title,
+          extra: extra || '',
+          connected: Boolean(isConnected)
+        };
+        applyStatus();
+      }
+
+      function syncSessionInfo(session) {
+        if (!session || typeof session !== 'object') {
+          return;
+        }
+        sessionInfo = {
+          ...sessionInfo,
+          expiresAt: Number(session.expires_at) || 0,
+          expiresIn: Number(session.expires_in) || 0,
+          expiresInText: session.expires_in_text || '',
+          expiresUnlimited: Boolean(session.expires_unlimited),
+          label: session.label || sessionInfo.label || '',
+          trustedDevice: Boolean(session.trusted_device),
+          deviceLabel: session.device_label || sessionInfo.deviceLabel || '',
+          authKind: session.auth_kind || sessionInfo.authKind || ''
+        };
+      }
+
+      function syncWanLinks(payload) {
+        if (!payload || typeof payload !== 'object') {
+          return;
+        }
+        if (payload.public_url) {
+          publicUrl = payload.public_url;
+        }
+        if (payload.wan_url) {
+          wanUrl = payload.wan_url;
+        }
+        refreshInstallUI();
+      }
+
+      function effectivePollMs() {
+        let delay = pollMode === 'live'
+          ? 850
+          : pollMode === 'eco'
+            ? 2400
+            : serverPollMs;
+        if (Date.now() < boostUntil) {
+          delay = Math.min(delay, 700);
+        }
+        if (document.hidden) {
+          delay = Math.max(delay, 2800);
+        }
+        if (!connected) {
+          delay = Math.max(delay, 2200 + (consecutiveErrors * 350));
+        }
+        return delay;
+      }
+
+      function scheduleNextPoll(delay) {
+        if (pollTimer) {
+          clearTimeout(pollTimer);
+        }
+        pollTimer = setTimeout(() => {
+          fetchScreenshot('poll');
+        }, typeof delay === 'number' ? delay : effectivePollMs());
+      }
+
+      function boostLiveWindow(ms = 5500) {
+        boostUntil = Math.max(boostUntil, Date.now() + ms);
+      }
+
+      async function getJson(url, options = {}) {
+        const startedAt = performance.now();
+        const response = await fetch(url, {
+          cache: 'no-store',
+          ...options,
+          headers: {
+            'Content-Type': 'application/json',
+            ...(options.headers || {})
+          }
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        data.__elapsed = Math.round(performance.now() - startedAt);
+        return data;
+      }
+
+      function renderScreenshot(payload) {
+        if (!payload || !payload.image) {
+          return;
+        }
+        const wasDisconnected = !connected || consecutiveErrors > 0;
+        syncWanLinks(payload);
+        syncSessionInfo(payload.session);
+        lastLatencyMs = payload.__elapsed || lastLatencyMs;
+        lastFrameAt = Date.now();
+        screenInfo.width = payload.screen_width || payload.width || 0;
+        screenInfo.height = payload.screen_height || payload.height || 0;
+        screenEl.src = `data:image/jpeg;base64,${payload.image}`;
+        setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir', true);
+        scheduleUsageHintAutoHide();
+        if (wasDisconnected) {
+          setOfflineBanner(true, 'Baglanti geri geldi. Kaldigimiz yerden devam ediyoruz.', false);
+        } else {
+          setOfflineBanner(false);
+        }
+        setWanSheetVisible(false);
+        wanSheetDismissed = false;
+      }
+
+      async function fetchScreenshot(reason = 'poll') {
+        if (busy) {
+          if (reason === 'manual') {
+            scheduleNextPoll(260);
+          }
+          return;
+        }
+        busy = true;
+        try {
+          const payload = await getJson(API.screenshot);
+          consecutiveErrors = 0;
+          renderScreenshot(payload);
+        } catch (error) {
+          connected = false;
+          consecutiveErrors += 1;
+          setStatus('Baglanti kesildi', 'Sunucuya yeniden ulasmaya calisiyorum', false);
+          setOfflineBanner(true, navigator.onLine
+            ? 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.'
+            : 'Su an offline gorunuyorsun. App shell acik kaldi, baglanti gelince toparlayacagim.');
+          maybeShowWanSheet();
+        } finally {
+          busy = false;
+          scheduleNextPoll(reason === 'manual' ? 320 : undefined);
+        }
+      }
+
+      async function postAction(payload) {
+        if (busy) {
+          return;
+        }
+        busy = true;
+        boostLiveWindow();
+        setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
+        try {
+          const result = await getJson(API.action, {
+            method: 'POST',
+            body: JSON.stringify(payload)
+          });
+          consecutiveErrors = 0;
+          lastLatencyMs = result.__elapsed || lastLatencyMs;
+          syncSessionInfo(result.session);
+          renderScreenshot({
+            ...(result.screenshot || {}),
+            session: result.session,
+            __elapsed: result.__elapsed
+          });
+        } catch (error) {
+          connected = false;
+          consecutiveErrors += 1;
+          setStatus('Islem hatasi', error.message, false);
+          setOfflineBanner(true, 'Komut gitti ama cevap alinmadi. Yeniden deneyecegim.');
+          maybeShowWanSheet();
+        } finally {
+          busy = false;
+          scheduleNextPoll(240);
+        }
+      }
+
+      async function postScrollAction(payload) {
+        pendingScrollPayload = payload;
+        if (scrollRequestInFlight) {
+          return;
+        }
+
+        scrollRequestInFlight = true;
+        try {
+          while (pendingScrollPayload) {
+            const nextPayload = pendingScrollPayload;
+            pendingScrollPayload = null;
+            boostLiveWindow(2200);
+            const result = await getJson(API.action, {
+              method: 'POST',
+              body: JSON.stringify(nextPayload)
+            });
+            consecutiveErrors = 0;
+            if (result?.screenshot?.image) {
+              renderScreenshot({
+                ...(result.screenshot || {}),
+                session: result.session,
+                __elapsed: result.__elapsed
+              });
+            }
+          }
+        } catch (error) {
+          connected = false;
+          consecutiveErrors += 1;
+          setStatus('Scroll hatasi', error.message, false);
+          setOfflineBanner(true, 'Scroll komutu giderken cevap alinmadi. Yeniden deneyecegim.');
+          maybeShowWanSheet();
+        } finally {
+          scrollRequestInFlight = false;
+          scheduleNextPoll(220);
+        }
+      }
+
+      async function handleInstallRequest(force = false) {
+        if (appInstalled) {
+          return;
+        }
+        if (deferredInstallPrompt) {
+          deferredInstallPrompt.prompt();
+          try {
+            await deferredInstallPrompt.userChoice;
+          } catch (error) {
+            // noop
+          }
+          deferredInstallPrompt = null;
+          refreshInstallUI();
+          return;
+        }
+        showInstallSheet(force);
+      }
+
+      async function registerServiceWorker() {
+        if (!('serviceWorker' in navigator)) {
+          return;
+        }
+        try {
+          await navigator.serviceWorker.register('/sw.js');
+          swReady = true;
+          refreshInstallUI();
+        } catch (error) {
+          console.warn('SW register failed', error);
+        }
+      }
+
+      function getRatios(clientX, clientY) {
+        const rect = screenEl.getBoundingClientRect();
+        const x = (clientX - rect.left) / rect.width;
+        const y = (clientY - rect.top) / rect.height;
+        return {
+          x: Math.max(0, Math.min(1, x)),
+          y: Math.max(0, Math.min(1, y)),
+          inBounds: clientX >= rect.left && clientX <= rect.right && clientY >= rect.top && clientY <= rect.bottom
+        };
+      }
+
+      function onTouchStart(event) {
+        if (event.touches.length !== 1) {
+          return;
+        }
+        event.preventDefault();
+        const touch = event.touches[0];
+        gesture = {
+          x: touch.clientX,
+          y: touch.clientY,
+          startedAt: Date.now(),
+          moved: false,
+          lastScrollX: touch.clientX,
+          lastScrollY: touch.clientY
+        };
+
+        longPressTimer = setTimeout(() => {
+          if (!gesture || gesture.moved) {
+            return;
+          }
+          const coords = getRatios(gesture.x, gesture.y);
+          if (coords.inBounds) {
+            postAction({ type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 });
+          }
+          longPressTimer = null;
+        }, 520);
+      }
+
+      function onTouchMove(event) {
+        if (!gesture || event.touches.length !== 1) {
+          return;
+        }
+        event.preventDefault();
+        const touch = event.touches[0];
+        const dx = Math.abs(touch.clientX - gesture.x);
+        const dy = Math.abs(touch.clientY - gesture.y);
+        if (dx > 10 || dy > 10) {
+          gesture.moved = true;
+          if (longPressTimer) {
+            clearTimeout(longPressTimer);
+            longPressTimer = null;
+          }
+        }
+
+        if (!scrollMode) {
+          return;
+        }
+
+        const stepY = touch.clientY - gesture.lastScrollY;
+        if (Math.abs(stepY) < 14) {
+          return;
+        }
+
+        const coords = getRatios(touch.clientX, touch.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+
+        const magnitude = Math.max(140, Math.min(1200, Math.round(Math.abs(stepY) * 8)));
+        const delta = stepY > 0 ? magnitude : -magnitude;
+        gesture.lastScrollY = touch.clientY;
+        gesture.lastScrollX = touch.clientX;
+        postScrollAction({ type: 'scroll', x: coords.x, y: coords.y, delta, delay: 0.02 });
+      }
+
+      function onTouchEnd(event) {
+        if (!gesture) {
+          return;
+        }
+        event.preventDefault();
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+        }
+
+        const duration = Date.now() - gesture.startedAt;
+        const coords = getRatios(gesture.x, gesture.y);
+        if (!coords.inBounds) {
+          gesture = null;
+          return;
+        }
+
+        if (scrollMode) {
+          gesture = null;
+          return;
+        }
+
+        if (!gesture.moved && duration < 520) {
+          const now = Date.now();
+          const isDouble = now - lastTapTime < 320 && Math.abs(gesture.x - lastTapX) < 30;
+          postAction({
+            type: 'click',
+            x: coords.x,
+            y: coords.y,
+            button: isDouble ? 'double' : 'left',
+            delay: isDouble ? 0.24 : 0.18
+          });
+          lastTapTime = now;
+          lastTapX = gesture.x;
+        }
+        gesture = null;
+      }
+
+      btnRefresh.addEventListener('click', () => {
+        setTopbarVisible(true);
+        boostLiveWindow(7000);
+        fetchScreenshot('manual');
+      });
+      btnTelegram.addEventListener('click', () => {
+        if (hasWanPwa()) {
+          wanSheetDismissed = true;
+          window.location.href = wanUrl;
+          return;
+        }
+        if (TELEGRAM_BOT_URL && TELEGRAM_BOT_URL !== '{{TELEGRAM_BOT_URL}}') {
+          wanSheetDismissed = true;
+          window.location.href = TELEGRAM_BOT_URL;
+        }
+      });
+      btnSpeed.addEventListener('click', () => {
+        const currentIndex = POLL_ORDER.indexOf(pollMode);
+        pollMode = POLL_ORDER[(currentIndex + 1) % POLL_ORDER.length];
+        localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
+        updateSpeedButton();
+        setStatus('Baglanti hizi guncellendi', `Yeni mod: ${POLL_LABELS[pollMode]}`, connected);
+        scheduleNextPoll(180);
+      });
+      btnScroll.addEventListener('click', () => {
+        scrollMode = !scrollMode;
+        btnScroll.classList.toggle('active', scrollMode);
+        setStatus('Bagli', scrollMode ? 'Scroll modu acik. Ekrani yukari veya asagi surukle.' : 'Dokunmatik hazir', connected);
+      });
+      btnKeyboard.addEventListener('click', () => {
+        setKeyboardVisible(!isKeyboardVisible());
+      });
+      btnKeyboardClose.addEventListener('click', () => {
+        setKeyboardVisible(false);
+      });
+      btnInstall.addEventListener('click', () => handleInstallRequest(true));
+      installNow.addEventListener('click', async () => {
+        await handleInstallRequest(true);
+        if (!deferredInstallPrompt) {
+          hideInstallSheet(true);
+        }
+      });
+      installLater.addEventListener('click', () => hideInstallSheet(true));
+      wanOpen.addEventListener('click', () => {
+        if (hasWanPwa()) {
+          wanSheetDismissed = true;
+          window.location.href = wanUrl;
+          return;
+        }
+        if (TELEGRAM_BOT_URL && TELEGRAM_BOT_URL !== '{{TELEGRAM_BOT_URL}}') {
+          wanSheetDismissed = true;
+          window.location.href = TELEGRAM_BOT_URL;
+        }
+      });
+      wanRetry.addEventListener('click', () => {
+        wanSheetDismissed = false;
+        setWanSheetVisible(false);
+        setTopbarVisible(true);
+        fetchScreenshot('manual');
+      });
+      wanClose.addEventListener('click', () => {
+        wanSheetDismissed = true;
+        setWanSheetVisible(false);
+      });
+
+      sendText.addEventListener('click', () => {
+        const value = typeInput.value.trim();
+        if (!value) {
+          return;
+        }
+        postAction({ type: 'type', text: value, delay: 0.12 });
+        typeInput.value = '';
+      });
+
+      typeInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          sendText.click();
+        }
+      });
+
+      document.querySelectorAll('.key-btn').forEach((button) => {
+        button.addEventListener('click', () => {
+          const key = button.getAttribute('data-key');
+          if (key) {
+            postAction({ type: 'key', keys: key, delay: 0.1 });
+          }
+        });
+      });
+
+      screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
+      screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
+      screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
+      screenEl.addEventListener('dragstart', (event) => event.preventDefault());
+      document.addEventListener('visibilitychange', () => scheduleNextPoll(document.hidden ? 2600 : 220));
+      window.addEventListener('online', () => {
+        setOfflineBanner(false);
+        setWanSheetVisible(false);
+        wanSheetDismissed = false;
+        setTopbarVisible(true);
+        scheduleNextPoll(120);
+      });
+      window.addEventListener('offline', () => {
+        setOfflineBanner(true, 'Baglanti yok. App shell acik kaldi, online oldugunda devam edecegim.');
+      });
+      offlineBannerDismiss.addEventListener('click', () => {
+        setOfflineBanner(false);
+      });
+      window.addEventListener('beforeinstallprompt', (event) => {
+        event.preventDefault();
+        deferredInstallPrompt = event;
+        localStorage.removeItem(STORAGE_KEYS.installDismissed);
+        refreshInstallUI();
+        showInstallSheet();
+      });
+      window.addEventListener('appinstalled', () => {
+        appInstalled = true;
+        deferredInstallPrompt = null;
+        hideInstallSheet(true);
+        refreshInstallUI();
+        setStatus('Uygulama gibi hazir', 'Artik ana ekrandan acilabilir', connected);
+      });
+      rotateHintDismiss.addEventListener('click', () => {
+        localStorage.setItem(STORAGE_KEYS.rotateHintDismissed, '1');
+        updateRotateHint();
+      });
+      usageHintDismiss.addEventListener('click', () => {
+        dismissUsageHint(true);
+      });
+      window.addEventListener('resize', updateRotateHint);
+      window.addEventListener('orientationchange', () => {
+        if (isLandscapeMode()) {
+          localStorage.removeItem(STORAGE_KEYS.rotateHintDismissed);
+        }
+        updateRotateHint();
+      });
+      topbar.addEventListener('click', () => {
+        if (statusState.connected) {
+          scheduleTopbarAutoHide(1800);
+        }
+      });
+      updateSpeedButton();
+      refreshInstallUI();
+      setUsageHintVisible(localStorage.getItem(STORAGE_KEYS.usageHintDismissed) !== '1');
+      registerServiceWorker();
+
+      (async () => {
+        try {
+          const session = await getJson(API.session);
+          syncWanLinks(session);
+          serverPollMs = Number(session.poll_ms) || DEFAULT_POLL_MS;
+          screenInfo.width = Number(session.screen_width) || 0;
+          screenInfo.height = Number(session.screen_height) || 0;
+          syncSessionInfo(session.session);
+          setStatus('Baglaniyor', 'Ilk ekran aliniyor', false);
+          await fetchScreenshot('bootstrap');
+          if (!appInstalled) {
+            setTimeout(() => showInstallSheet(), 1200);
+          }
+        } catch (error) {
+          setStatus('Baslatilamadi', error.message, false);
+          setOfflineBanner(true, 'Ilk baglanti kurulamadi. Sunucuya yeniden ulasmayi deneyecegim.');
+          scheduleNextPoll(2200);
+        }
+      })();
+    })();
+  </script>
+</body>
+</html>

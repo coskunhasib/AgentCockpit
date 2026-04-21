@@ -5,4 +5,5 @@ python-dotenv==1.0.0
 pip-system-certs
 pyperclip
 loguru
+qrcode>=7.4.2,<9
 pywinauto; sys_platform == "win32"

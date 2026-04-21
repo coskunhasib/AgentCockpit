@@ -3,6 +3,7 @@ import pyautogui
 import os
 import datetime
 import pyperclip
+import sys
 from PIL import ImageDraw
 from core.data_manager import DataManager
 from core.logger import log_crash, get_logger
@@ -13,6 +14,62 @@ pyautogui.FAILSAFE = os.environ.get("FAILSAFE_OFF", "").lower() != "true"
 
 
 class SystemOps:
+    KEY_ALIASES = {
+        "escape": "esc",
+        "return": "enter",
+        "del": "delete",
+        "back": "backspace",
+    }
+    MAC_HOTKEY_COMBOS = {
+        ("alt", "tab"): ["command", "tab"],
+        ("alt", "shift", "tab"): ["command", "shift", "tab"],
+        ("alt", "f4"): ["command", "w"],
+        ("ctrl", "shift", "esc"): ["command", "option", "esc"],
+        ("ctrl", "alt", "delete"): ["command", "option", "esc"],
+        ("win", "d"): ["command", "f3"],
+        ("winleft", "d"): ["command", "f3"],
+        ("windows", "d"): ["command", "f3"],
+        ("win", "l"): ["control", "command", "q"],
+        ("winleft", "l"): ["control", "command", "q"],
+        ("windows", "l"): ["control", "command", "q"],
+    }
+    MAC_KEY_ALIASES = {
+        "cmd": "command",
+        "command": "command",
+        "ctrl": "command",
+        "control": "command",
+        "mac_ctrl": "control",
+        "mac_control": "control",
+        "win": "command",
+        "winleft": "command",
+        "windows": "command",
+        "alt": "option",
+        "option": "option",
+    }
+    DESKTOP_KEY_ALIASES = {
+        "cmd": "ctrl",
+        "command": "ctrl",
+        "option": "alt",
+        "win": "winleft",
+        "windows": "winleft",
+    }
+
+    @staticmethod
+    def _normalize_key_name(key_name):
+        key = str(key_name or "").strip().lower()
+        return SystemOps.KEY_ALIASES.get(key, key)
+
+    @staticmethod
+    def normalize_hotkey(keys_list):
+        normalized = [SystemOps._normalize_key_name(key) for key in keys_list or []]
+        if sys.platform == "darwin":
+            combo = tuple(normalized)
+            if combo in SystemOps.MAC_HOTKEY_COMBOS:
+                return list(SystemOps.MAC_HOTKEY_COMBOS[combo])
+            return [SystemOps.MAC_KEY_ALIASES.get(key, key) for key in normalized]
+
+        return [SystemOps.DESKTOP_KEY_ALIASES.get(key, key) for key in normalized]
+
     @staticmethod
     def mouse_move(direction):
         """
@@ -114,7 +171,7 @@ class SystemOps:
     @staticmethod
     def press_key(key_name):
         try:
-            pyautogui.press(key_name)
+            pyautogui.press(SystemOps._normalize_key_name(key_name))
             return True
         except:
             return False
@@ -123,12 +180,7 @@ class SystemOps:
     def execute_hotkey(keys_list):
         """Tuş kombinasyonu (Hız ayarlı ve WinLeft düzeltmeli)"""
         try:
-            corrected_keys = []
-            for k in keys_list:
-                if k == "win":
-                    corrected_keys.append("winleft")
-                else:
-                    corrected_keys.append(k)
+            corrected_keys = SystemOps.normalize_hotkey(keys_list)
 
             pyautogui.hotkey(*corrected_keys, interval=0.1)
             logger.debug(f"Hotkey: {corrected_keys}")
@@ -141,7 +193,6 @@ class SystemOps:
     @staticmethod
     def type_text(text):
         try:
-            import sys
             pyperclip.copy(text)
             mod_key = "command" if sys.platform == "darwin" else "ctrl"
             pyautogui.hotkey(mod_key, "v")

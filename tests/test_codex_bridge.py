@@ -137,6 +137,52 @@ class CodexBridgeTests(unittest.TestCase):
             ],
         )
 
+    def test_transport_mode_supports_macos_window_detection(self):
+        with patch.object(codex_bridge.sys, "platform", "darwin"), patch.object(
+            codex_bridge, "find_codex_window", return_value="Codex"
+        ):
+            self.assertEqual(codex_bridge.get_transport_mode(), "desktop")
+
+    def test_focus_codex_window_uses_macos_applescript(self):
+        with patch.object(codex_bridge.sys, "platform", "darwin"), patch.object(
+            codex_bridge, "_run_macos_applescript", return_value="true"
+        ) as run_script, patch.object(codex_bridge.time, "sleep"):
+            self.assertTrue(codex_bridge.focus_codex_window("Codex"))
+
+        run_script.assert_called_once()
+        self.assertIn('tell application "Codex" to activate', run_script.call_args[0][0])
+
+    def test_session_text_matching_accepts_running_and_truncated_titles(self):
+        self.assertTrue(
+            codex_bridge._session_text_matches(
+                "Running proje dizininde rapor dosyasi", "proje dizininde rapor dosyasi"
+            )
+        )
+        self.assertTrue(
+            codex_bridge._session_text_matches(
+                "uzun codex basligi", "uzun codex basligi devam eden title"
+            )
+        )
+        self.assertFalse(codex_bridge._session_text_matches("farkli", "hedef"))
+
+    def test_macos_session_click_uses_visible_sidebar_item(self):
+        visible_item = {
+            "role": "button",
+            "text": "Running hedef session",
+            "left": 24,
+            "right": 220,
+            "top": 320,
+            "bottom": 350,
+        }
+        with patch.object(
+            codex_bridge, "_collect_codex_macos_items", return_value=[visible_item]
+        ), patch.object(
+            codex_bridge, "_click_codex_macos_item", return_value=True
+        ) as click_item:
+            self.assertTrue(codex_bridge._click_codex_macos_session("hedef session"))
+
+        click_item.assert_called_once_with(visible_item)
+
 
 if __name__ == "__main__":
     unittest.main()

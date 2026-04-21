@@ -1,5 +1,6 @@
 import subprocess
 import time
+import re
 
 from core.claude_chat_ui_parser import build_chat_sessions, format_visible_chat_history
 from core.claude_ui_config import (
@@ -8,14 +9,41 @@ from core.claude_ui_config import (
     CLAUDE_MODE_BUTTONS,
     CLAUDE_MODEL_LABELS,
     CLAUDE_NAVIGATION,
+    CLAUDE_NEW_SESSION_BUTTON_PREFIXES,
     CLAUDE_PERMISSION_BUTTON_PREFIXES,
     CLAUDE_PERMISSION_BUTTONS,
     CLAUDE_PERMISSION_LABELS,
     CLAUDE_TAB_MODEL_OPTIONS,
+    CLAUDE_WINDOW_TITLE,
 )
 from core.logger import get_logger
 
 logger = get_logger("claude_platform_macos")
+
+
+def _normalize_text(value):
+    return " ".join((value or "").replace("\r", "\n").split()).strip()
+
+
+def _strip_session_age_suffix(text):
+    normalized = _normalize_text(text)
+    return re.sub(
+        r"\s*\d+\s*(sn|s|dk|min|sa|h|gun|day|days)$",
+        "",
+        normalized,
+        flags=re.IGNORECASE,
+    ).strip()
+
+
+def _session_text_matches(candidate_text, target_title):
+    cleaned = _strip_session_age_suffix(candidate_text)
+    if cleaned.lower().startswith("running "):
+        cleaned = cleaned[8:].strip()
+    target = _strip_session_age_suffix(target_title)
+    if not cleaned or not target:
+        return False
+    short = target[:90]
+    return cleaned == target or cleaned.startswith(short) or target.startswith(cleaned[:90])
 
 
 def _get_claude_model_labels_for_mode(mode=None):
@@ -32,7 +60,14 @@ def _run_applescript(script):
         result = subprocess.run(
             ["osascript", "-e", script], capture_output=True, text=True, timeout=10
         )
+        if result.returncode != 0:
+            stderr = (result.stderr or "").strip()
+            logger.error(f"AppleScript hata kodu {result.returncode}: {stderr}")
+            return ""
         return result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        logger.error("AppleScript zaman asimina ugradi.")
+        return ""
     except Exception as exc:
         logger.error(f"AppleScript hatasi: {exc}")
         return ""
@@ -42,9 +77,35 @@ def _escape(text):
     return text.replace("\\", "\\\\").replace('"', '\\"')
 
 
+def _find_claude_process_name():
+    safe_title = _escape(CLAUDE_WINDOW_TITLE)
+    result = _run_applescript(
+        f'''
+        tell application "System Events"
+            set matches to name of every process whose background only is false and name contains "{safe_title}"
+            if (count of matches) is 0 then return ""
+            return item 1 of matches as text
+        end tell
+        '''
+    )
+    return result or None
+
+
+def _process_name():
+    return _find_claude_process_name() or CLAUDE_WINDOW_TITLE
+
+
+def _activate_claude():
+    safe_name = _escape(_process_name())
+    result = _run_applescript(f'tell application "{safe_name}" to activate\nreturn "true"')
+    time.sleep(0.5)
+    return "true" in result.lower()
+
+
 def _element_match(role_desc, target_text, startswith=False, click=False):
     safe_role = _escape(role_desc)
     safe_text = _escape(target_text)
+    safe_process = _escape(_process_name())
     comparison = (
         f'if elementText starts with "{safe_text}" then'
         if startswith
@@ -54,7 +115,7 @@ def _element_match(role_desc, target_text, startswith=False, click=False):
 
     script = f'''
     tell application "System Events"
-        tell process "Claude"
+        tell process "{safe_process}"
             set frontmost to true
             repeat with uiElem in entire contents of window 1
                 try
@@ -96,9 +157,10 @@ def _has_role_text(role_desc, target_text, startswith=False):
 
 def _collect_role_texts(role_desc):
     safe_role = _escape(role_desc)
+    safe_process = _escape(_process_name())
     script = f'''
     tell application "System Events"
-        tell process "Claude"
+        tell process "{safe_process}"
             set frontmost to true
             set outputLines to {{}}
             repeat with uiElem in entire contents of window 1
@@ -136,6 +198,7 @@ def _collect_role_texts(role_desc):
 
 def _collect_visible_items(role_descriptions):
     roles = ", ".join(f'"{_escape(role)}"' for role in role_descriptions)
+    safe_process = _escape(_process_name())
     script = f'''
     on normalize_text(valueText)
         set AppleScript's text item delimiters to {{return, linefeed}}
@@ -147,7 +210,7 @@ def _collect_visible_items(role_descriptions):
     end normalize_text
 
     tell application "System Events"
-        tell process "Claude"
+        tell process "{safe_process}"
             set frontmost to true
             set roleList to {{{roles}}}
             set outputText to ""
@@ -209,7 +272,7 @@ def _collect_visible_items(role_descriptions):
         parts = line.split("|||", 5)
         if len(parts) != 6:
             continue
-        _role, text, left, top, width, height = parts
+        role, text, left, top, width, height = parts
         try:
             left_val = int(float(left))
             top_val = int(float(top))
@@ -219,6 +282,7 @@ def _collect_visible_items(role_descriptions):
             continue
         items.append(
             {
+                "role": role.strip(),
                 "text": text.strip(),
                 "left": left_val,
                 "right": left_val + max(width_val, 0),
@@ -236,17 +300,114 @@ def _click_first_prefix(role_desc, prefixes):
     return False
 
 
+def _click_visible_item(item):
+    role = _escape(item.get("role", ""))
+    text = _escape(item.get("text", ""))
+    left = int(item.get("left", 0))
+    top = int(item.get("top", 0))
+    safe_process = _escape(_process_name())
+    script = f'''
+    tell application "System Events"
+        tell process "{safe_process}"
+            set frontmost to true
+            repeat with uiElem in entire contents of window 1
+                try
+                    if (role description of uiElem) is "{role}" then
+                        set elementText to ""
+                        try
+                            set elementText to (name of uiElem as text)
+                        end try
+                        if elementText is "" then
+                            try
+                                set elementText to (value of attribute "AXDescription" of uiElem as text)
+                            end try
+                        end if
+                        if elementText is "" then
+                            try
+                                set elementText to (value of uiElem as text)
+                            end try
+                        end if
+                        if elementText is "{text}" then
+                            set elemPos to position of uiElem
+                            set deltaX to (item 1 of elemPos) - {left}
+                            if deltaX < 0 then set deltaX to -deltaX
+                            set deltaY to (item 2 of elemPos) - {top}
+                            if deltaY < 0 then set deltaY to -deltaY
+                            if (deltaX <= 3) and (deltaY <= 3) then
+                                click uiElem
+                                return "true"
+                            end if
+                        end if
+                    end if
+                end try
+            end repeat
+            return "false"
+        end tell
+    end tell
+    '''
+    return "true" in _run_applescript(script).lower()
+
+
+def _click_first_role_text(role_descriptions, target_text, startswith=False):
+    for role_desc in role_descriptions:
+        if _click_role_text(role_desc, target_text, startswith=startswith):
+            return True
+    return False
+
+
+def _click_session_title(title):
+    items = _collect_visible_items(["button", "static text", "text", "group"])
+    candidates = []
+    for item in items:
+        if item["left"] > 760:
+            continue
+        if _session_text_matches(item["text"], title):
+            candidates.append(item)
+    candidates.sort(key=lambda entry: (entry["left"], entry["top"]))
+    for item in candidates:
+        if _click_visible_item(item):
+            return True
+    for candidate in (title, _strip_session_age_suffix(title), f"Running {_strip_session_age_suffix(title)}"):
+        if candidate and _click_first_role_text(("button", "static text", "text"), candidate):
+            return True
+    return False
+
+
+def _prepare_chat_sidebar():
+    handle = find_claude_window()
+    if not handle or not focus_window(handle):
+        return False
+
+    ensure_claude_sidebar_open()
+    if not set_claude_mode("chat"):
+        return False
+    time.sleep(0.6)
+
+    go_back_home = CLAUDE_NAVIGATION["go_back_home_link"]
+    page_not_found = CLAUDE_CHAT_UI["page_not_found_text"]
+    new_chat_prefixes = tuple(CLAUDE_CHAT_UI.get("new_chat_button_prefixes", ("New chat",)))
+
+    for _ in range(2):
+        if _click_first_role_text(("link", "button"), go_back_home):
+            time.sleep(0.8)
+            continue
+        if any(_has_role_text("button", prefix, startswith=True) for prefix in new_chat_prefixes):
+            return True
+        if _has_role_text("static text", page_not_found):
+            _click_role_text("button", CLAUDE_NAVIGATION["back_button"])
+            time.sleep(0.8)
+
+    return any(_has_role_text("button", prefix, startswith=True) for prefix in new_chat_prefixes)
+
+
 def find_claude_window():
-    result = _run_applescript(
-        'tell application "System Events" to get name of every process whose name contains "Claude"'
-    )
-    return "Claude" if "Claude" in result else None
+    return _find_claude_process_name()
 
 
 def focus_window(handle):
-    _run_applescript('tell application "Claude" to activate')
-    time.sleep(0.5)
-    return True
+    if not handle:
+        return False
+    return _activate_claude()
 
 
 def ensure_claude_sidebar_open():
@@ -305,9 +466,10 @@ def set_claude_permission_mode(mode_key):
 def _get_toggle_state(role_desc, target_text):
     safe_role = _escape(role_desc)
     safe_text = _escape(target_text)
+    safe_process = _escape(_process_name())
     script = f'''
     tell application "System Events"
-        tell process "Claude"
+        tell process "{safe_process}"
             set frontmost to true
             repeat with uiElem in entire contents of window 1
                 try
@@ -356,11 +518,8 @@ def set_claude_extended_thinking(enabled):
 
 
 def list_claude_chat_sessions(limit=10):
-    focus_window("Claude")
-    time.sleep(0.2)
-    ensure_claude_sidebar_open()
-    set_claude_mode("chat")
-    time.sleep(0.3)
+    if not _prepare_chat_sidebar():
+        return []
     button_items = _collect_visible_items(["button"])
     return build_chat_sessions(button_items, CLAUDE_CHAT_UI, limit=limit)
 
@@ -396,6 +555,21 @@ def focus_claude_input():
     for role_desc, label in candidates:
         if _click_role_text(role_desc, label):
             return True
+    send_buttons = [
+        item for item in _collect_visible_items(["button"]) if item["text"] == "Send"
+    ]
+    if send_buttons:
+        button = send_buttons[0]
+        try:
+            import pyautogui
+
+            target_x = max(button["left"] - 180, 50)
+            target_y = button["top"] + max((button["bottom"] - button["top"]) // 2, 1)
+            pyautogui.click(target_x, target_y)
+            time.sleep(0.3)
+            return True
+        except Exception as exc:
+            logger.error(f"Input koordinat focus hatasi: {exc}")
     return False
 
 
@@ -416,32 +590,40 @@ def click_permission_button(button_text):
 
 
 def click_new_session():
+    ensure_claude_sidebar_open()
+    for prefix in CLAUDE_NEW_SESSION_BUTTON_PREFIXES:
+        if _click_role_text("button", prefix, startswith=True):
+            return True
     return False
 
 
 def open_session_in_desktop(title, mode="code"):
-    focus_window("Claude")
-    time.sleep(0.3)
-    ensure_claude_sidebar_open()
-    if mode:
-        set_claude_mode(mode)
-        time.sleep(0.2)
+    attempts = 2 if (mode or "").lower() == "chat" else 1
+    for attempt in range(attempts):
+        handle = find_claude_window()
+        if not handle or not focus_window(handle):
+            return False
+        time.sleep(0.3)
 
-    if _click_role_text("button", title):
-        time.sleep(0.5)
-        focus_claude_input()
-        return True
+        if (mode or "").lower() == "chat":
+            if not _prepare_chat_sidebar():
+                return False
+        else:
+            ensure_claude_sidebar_open()
+            if mode:
+                set_claude_mode(mode)
+                time.sleep(0.2)
 
-    if _click_role_text("button", f"Running {title}"):
-        time.sleep(0.5)
-        focus_claude_input()
-        return True
+        if _click_session_title(title):
+            time.sleep(1.0)
+            focus_claude_input()
+            return True
 
-    if _click_role_text("static text", title):
-        time.sleep(0.5)
-        focus_claude_input()
-        return True
+        if (mode or "").lower() == "chat" and attempt == 0:
+            logger.warning(f"Chat session ilk denemede bulunamadi, tekrar deneniyor: {title}")
+            time.sleep(0.8)
 
+    logger.error(f"Session bulunamadi: {title}")
     return False
 
 

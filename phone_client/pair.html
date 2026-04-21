@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AgentCockpit Pairing</title>
+  <style>
+    :root {
+      --bg: #0d1016;
+      --panel: rgba(18, 22, 32, 0.92);
+      --panel-strong: #171d28;
+      --line: rgba(255, 255, 255, 0.08);
+      --text: #edf1f7;
+      --muted: #9ca7b9;
+      --accent: #38a3ff;
+      --accent-2: #7bf0c8;
+      --success: #43d18d;
+      --danger: #ff5d70;
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top left, rgba(56, 163, 255, 0.24), transparent 32%),
+        radial-gradient(circle at bottom right, rgba(123, 240, 200, 0.12), transparent 28%),
+        var(--bg);
+      color: var(--text);
+      font-family: "Segoe UI", "SF Pro Text", system-ui, sans-serif;
+    }
+
+    body {
+      padding: 28px;
+    }
+
+    .shell {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .hero {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      padding: 22px 24px;
+      border-radius: 24px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 48px rgba(0,0,0,.28);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .hero-mark {
+      width: 64px;
+      height: 64px;
+      display: grid;
+      place-items: center;
+      border-radius: 20px;
+      background: linear-gradient(145deg, rgba(56, 163, 255, 0.22), rgba(123, 240, 200, 0.10));
+      border: 1px solid rgba(255,255,255,.12);
+      font-size: 24px;
+      font-weight: 800;
+    }
+
+    .hero-copy {
+      flex: 1 1 380px;
+      min-width: 260px;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      border-radius: 999px;
+      padding: 8px 12px;
+      background: rgba(56, 163, 255, 0.10);
+      border: 1px solid rgba(56, 163, 255, 0.25);
+      color: #cfe6ff;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    h1 {
+      margin: 16px 0 8px;
+      font-size: 34px;
+      line-height: 1.08;
+    }
+
+    .hero-sub {
+      margin: 0;
+      max-width: 680px;
+      color: var(--muted);
+      line-height: 1.6;
+      font-size: 15px;
+    }
+
+    .hero-side {
+      min-width: 240px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .chip-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip {
+      border-radius: 999px;
+      padding: 10px 12px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--line);
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .chip strong {
+      color: var(--text);
+      display: block;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(320px, 1fr);
+      gap: 18px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 20px;
+      box-shadow: 0 14px 40px rgba(0,0,0,.22);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+    }
+
+    .card h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.6;
+    }
+
+    .qr-wrap {
+      margin-top: 18px;
+      border-radius: 22px;
+      background: #fff;
+      padding: 16px;
+      display: grid;
+      place-items: center;
+      min-height: 320px;
+    }
+
+    .qr-wrap img {
+      width: min(100%, 320px);
+      height: auto;
+      display: block;
+    }
+
+    .qr-fallback {
+      width: 100%;
+      border-radius: 16px;
+      background: rgba(13, 16, 22, 0.06);
+      color: #30394a;
+      padding: 18px;
+      text-align: center;
+      line-height: 1.6;
+    }
+
+    .btn-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+
+    button, .link-btn {
+      appearance: none;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      height: 46px;
+      padding: 0 16px;
+      color: var(--text);
+      background: rgba(255,255,255,0.04);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    button.primary, .link-btn.primary {
+      background: linear-gradient(135deg, rgba(56, 163, 255, 0.92), rgba(36, 108, 255, 0.92));
+      border-color: transparent;
+    }
+
+    button.ghost {
+      background: transparent;
+    }
+
+    button:disabled, .link-btn.disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+      pointer-events: none;
+    }
+
+    .meta {
+      display: grid;
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .duration-panel {
+      display: grid;
+      gap: 8px;
+      margin-top: 18px;
+    }
+
+    .duration-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .duration-btn {
+      min-width: 108px;
+      background: rgba(255,255,255,0.04);
+    }
+
+    .duration-btn.active {
+      background: linear-gradient(135deg, rgba(56, 163, 255, 0.92), rgba(36, 108, 255, 0.92));
+      border-color: transparent;
+      color: #fff;
+    }
+
+    .meta-row {
+      display: grid;
+      gap: 6px;
+    }
+
+    .meta-label {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .meta-value {
+      border-radius: 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+      font-size: 13px;
+      word-break: break-all;
+      line-height: 1.5;
+    }
+
+    .steps {
+      display: grid;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 36px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--line);
+    }
+
+    .step-no {
+      width: 36px;
+      height: 36px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: rgba(56, 163, 255, 0.14);
+      color: #d8ecff;
+      font-weight: 800;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .status {
+      margin-top: 16px;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid rgba(67, 209, 141, 0.24);
+      background: rgba(67, 209, 141, 0.08);
+      color: #d8ffe8;
+      font-size: 13px;
+    }
+
+    .status.warn {
+      border-color: rgba(255, 93, 112, 0.24);
+      background: rgba(255, 93, 112, 0.08);
+      color: #ffd9de;
+    }
+
+    .hint {
+      margin-top: 18px;
+      padding: 14px 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--line);
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 13px;
+    }
+
+    @media (max-width: 920px) {
+      body { padding: 14px; }
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 28px; }
+      .hero { padding: 18px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">AgentCockpit Pairing</div>
+        <h1>Telefonda AgentCockpit'i tek okutmayla acalim</h1>
+        <p class="hero-sub">
+          Bu sayfa sadece bu bilgisayardan acilir. Telefonda kamerayi veya QR okuyucuyu ac, kodu okut,
+          sonra gelen linkten ayni PWA'yi ana ekrana ekleyelim. Ayni arayuz yerelde de uzakta da calisir.
+        </p>
+      </div>
+      <div class="hero-side">
+        <div class="chip-row">
+          <div class="chip"><strong id="chip-ttl">--</strong>Link suresi</div>
+          <div class="chip"><strong id="chip-installation">{{INSTALLATION_ID}}</strong>Kurulum ID</div>
+        </div>
+        <div class="chip-row">
+          <div class="chip"><strong>Tek PWA</strong>Yerel + uzak</div>
+          <div class="chip"><strong id="chip-route">--</strong>Baglanti yolu</div>
+        </div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>Telefon baglantisi</h2>
+        <p>Bu QR, telefonda acilacak AgentCockpit linkini tasir. Uzak baglanti hazirsa QR onu, degilse yerel linki kullanir.</p>
+        <div class="qr-wrap" id="qr-wrap">
+          <img id="qr-image" alt="AgentCockpit pairing QR">
+        </div>
+        <div class="btn-row">
+          <button class="primary" id="refresh-btn" type="button">Yeni QR Uret</button>
+          <a class="link-btn primary disabled" id="open-link" href="#" target="_blank" rel="noreferrer">Baglantiyi Ac</a>
+          <button class="ghost" id="copy-btn" type="button">Linki Kopyala</button>
+          <a class="link-btn" id="local-link" href="#" target="_blank" rel="noreferrer">Bu PC'de Test</a>
+        </div>
+        <div class="duration-panel">
+          <div class="meta-label">Link Suresi</div>
+          <div class="duration-row" id="duration-row"></div>
+        </div>
+        <div class="meta">
+          <div class="meta-row">
+            <div class="meta-label">Baglanti</div>
+            <div class="meta-value" id="connection-mode"></div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Aktif Link</div>
+            <div class="meta-value" id="active-url"></div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Yerel Yedek</div>
+            <div class="meta-value" id="lan-url"></div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-label">Sure / Etiket</div>
+            <div class="meta-value" id="session-meta"></div>
+          </div>
+        </div>
+        <div class="status" id="status-box">Pairing hazir.</div>
+      </section>
+
+      <section class="card">
+        <h2>Temiz kurulum akisi</h2>
+        <p>Buradan sonra kullanici tarafinda yapilacaklar minimumda kalsin diye akisi net tutuyoruz.</p>
+        <div class="steps">
+          <div class="step">
+            <div class="step-no">1</div>
+            <div>
+              <strong>Telefonda kamerayi ac</strong>
+              QR'i okut. Telefon bu cihazda kalici eslesir; bot yeniden baslasa da tekrar QR gerekmez.
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-no">2</div>
+            <div>
+              <strong>PWA'yi yukle</strong>
+              Android'de <em>Yukle</em>, iPhone'da <em>Paylas &gt; Ana Ekrana Ekle</em> akisini kullan.
+            </div>
+          </div>
+          <div class="step">
+            <div class="step-no">3</div>
+            <div>
+              <strong>Baglanti degisirse devam et</strong>
+              PWA tek kalir; ekranda sadece Yerel, Uzak veya Yeniden baglaniyor bilgisi gorunur.
+            </div>
+          </div>
+        </div>
+        <div class="hint">
+          Bu QR varsayilan olarak sinirsiz link uretir. Istersen ayni sayfadan tek tusla yeni bir link de
+          alabiliriz. Telefon guvenilir cihaz olarak kalir; uzak adres degisirse aktif link otomatik guncellenir.
+        </div>
+        <div class="meta">
+          <div class="meta-row">
+            <div class="meta-label">Kisa Tani</div>
+            <div class="meta-value" id="diag-box">Kontrol ediliyor...</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script>
+    const INITIAL = {{PAIRING_JSON}};
+    const REFRESH_API = '{{PAIRING_API_PATH}}';
+    const HEALTH_API = '/health';
+
+    const qrImage = document.getElementById('qr-image');
+    const qrWrap = document.getElementById('qr-wrap');
+    const lanUrlEl = document.getElementById('lan-url');
+    const activeUrlEl = document.getElementById('active-url');
+    const connectionModeEl = document.getElementById('connection-mode');
+    const sessionMetaEl = document.getElementById('session-meta');
+    const localLinkEl = document.getElementById('local-link');
+    const openLinkEl = document.getElementById('open-link');
+    const statusBox = document.getElementById('status-box');
+    const chipTtl = document.getElementById('chip-ttl');
+    const chipRoute = document.getElementById('chip-route');
+    const copyBtn = document.getElementById('copy-btn');
+    const refreshBtn = document.getElementById('refresh-btn');
+    const durationRow = document.getElementById('duration-row');
+    const diagBox = document.getElementById('diag-box');
+
+    const DURATION_OPTIONS = [
+      { minutes: 0, label: 'Sinirsiz' },
+      { minutes: 15, label: '15 dk' },
+      { minutes: 45, label: '45 dk' },
+      { minutes: 120, label: '2 sa' }
+    ];
+
+    let pairing = INITIAL;
+    let ttlTimer = null;
+    let selectedMinutes = Number(INITIAL.duration_minutes ?? INITIAL.default_minutes ?? 0) || 0;
+    let autoRefreshedForWan = Boolean(INITIAL.wan_url);
+
+    function escapeHtml(text) {
+      return String(text || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#39;');
+    }
+
+    function formatRemaining(seconds) {
+      if (seconds === null || seconds === undefined) return 'Sinirsiz';
+      const value = Math.max(0, Math.round(Number(seconds) || 0));
+      if (value < 60) return `${value} sn`;
+      const minutes = Math.floor(value / 60);
+      const rem = value % 60;
+      if (minutes < 60) return rem ? `${minutes} dk ${rem} sn` : `${minutes} dk`;
+      const hours = Math.floor(minutes / 60);
+      const mins = minutes % 60;
+      return mins ? `${hours} sa ${mins} dk` : `${hours} sa`;
+    }
+
+    function preferredUrl(payload) {
+      return payload.preferred_url || payload.wan_url || payload.lan_url || payload.local_url || '';
+    }
+
+    function renderQr(payload) {
+      if (payload.qr_data_url) {
+        qrImage.src = payload.qr_data_url;
+        qrImage.hidden = false;
+        qrWrap.innerHTML = '';
+        qrWrap.appendChild(qrImage);
+      } else {
+        qrWrap.innerHTML = '<div class="qr-fallback">QR kutuphanesi bulunamadi. Asagidaki aktif linki kopyalayarak devam edebiliriz.</div>';
+      }
+    }
+
+    function setStatus(text, warn = false) {
+      statusBox.textContent = text;
+      statusBox.classList.toggle('warn', warn);
+    }
+
+    function renderDurationButtons() {
+      durationRow.innerHTML = '';
+      DURATION_OPTIONS.forEach((option) => {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'duration-btn';
+        if (option.minutes === selectedMinutes) {
+          button.classList.add('active');
+        }
+        button.textContent = option.label;
+        button.addEventListener('click', () => {
+          if (selectedMinutes === option.minutes) {
+            return;
+          }
+          selectedMinutes = option.minutes;
+          renderDurationButtons();
+          refreshPairing(true);
+        });
+        durationRow.appendChild(button);
+      });
+    }
+
+    async function refreshDiagnostics() {
+      try {
+        const response = await fetch(HEALTH_API, { cache: 'no-store' });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        const lanIps = Array.isArray(payload.lan_ips) && payload.lan_ips.length
+          ? payload.lan_ips.join(', ')
+          : '-';
+        const defaultDuration = payload.default_duration_text || (payload.session_unlimited ? 'Sinirsiz' : `${payload.session_minutes || '?'} dk`);
+        const remoteState = payload.wan_pwa_available ? 'Uzak hazir' : (payload.public_tunnel_enabled ? `Uzak ${payload.public_tunnel_status}` : 'Uzak kapali');
+        const restartInfo = Number(payload.public_tunnel_restart_count || 0) > 0
+          ? ` | Tunnel toparlama: ${payload.public_tunnel_restart_count}`
+          : '';
+        diagBox.textContent = `Bridge: Hazir | Varsayilan: ${defaultDuration} | Guvenilir cihaz: ${payload.trusted_devices ?? 0} | Yerel: ${lanIps} | ${remoteState}${restartInfo}`;
+        if (payload.wan_pwa_available && !pairing.wan_url && !autoRefreshedForWan) {
+          autoRefreshedForWan = true;
+          refreshPairing(false);
+        }
+      } catch (error) {
+        diagBox.textContent = `Tani okunamadi: ${error.message}`;
+      }
+    }
+
+    function render(payload) {
+      pairing = payload || pairing;
+      selectedMinutes = Number(pairing.duration_minutes ?? pairing.default_minutes ?? selectedMinutes) || 0;
+      const activeUrl = preferredUrl(pairing);
+      const remoteReady = Boolean(pairing.wan_url);
+      renderQr(pairing);
+      lanUrlEl.textContent = pairing.lan_url || '-';
+      activeUrlEl.textContent = activeUrl || 'Hazirlaniyor';
+      connectionModeEl.textContent = remoteReady ? 'Uzak baglanti hazir' : 'Yerel baglanti hazir; uzak baglanti hazirlaniyor';
+      chipRoute.textContent = remoteReady ? 'Uzak' : 'Yerel';
+      openLinkEl.href = activeUrl || '#';
+      openLinkEl.classList.toggle('disabled', !activeUrl);
+      openLinkEl.textContent = activeUrl ? 'Baglantiyi Ac' : 'Hazirlaniyor';
+      const expiresText = pairing.expires_unlimited
+        ? 'Sinirsiz'
+        : (pairing.expires_in_text || '--');
+      const expiresAtText = pairing.expires_unlimited
+        ? 'Suresiz erisim'
+        : (pairing.expires_at ? new Date(pairing.expires_at * 1000).toLocaleString() : '');
+      sessionMetaEl.textContent = `${pairing.label || 'pair-qr'} | ${expiresText} | ${expiresAtText}`;
+      localLinkEl.href = pairing.local_url || '#';
+      chipTtl.textContent = expiresText;
+      const qrRoute = remoteReady ? 'Uzak' : 'Yerel';
+      setStatus(pairing.expires_unlimited ? `QR pairing hazir. Link sinirsiz. QR: ${qrRoute}` : `QR pairing hazir. QR: ${qrRoute}`);
+      renderDurationButtons();
+      restartTtl();
+    }
+
+    function restartTtl() {
+      if (ttlTimer) clearInterval(ttlTimer);
+      if (pairing.expires_unlimited) {
+        chipTtl.textContent = 'Sinirsiz';
+        return;
+      }
+      ttlTimer = setInterval(() => {
+        const remaining = pairing.expires_at ? Math.max(0, pairing.expires_at - (Date.now() / 1000)) : 0;
+        chipTtl.textContent = formatRemaining(remaining);
+        if (remaining <= 0) {
+          setStatus('QR suresi doldu. Yeni QR uretelim.', true);
+        }
+      }, 1000);
+    }
+
+    async function refreshPairing(fromDurationChange = false) {
+      refreshBtn.disabled = true;
+      setStatus(fromDurationChange ? 'Sure degisti, yeni QR uretiliyor...' : 'Yeni QR uretiliyor...');
+      try {
+        const response = await fetch(REFRESH_API, {
+          method: 'POST',
+          cache: 'no-store',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            minutes: selectedMinutes,
+            label: 'pair-qr'
+          })
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const payload = await response.json();
+        render(payload.pairing);
+        refreshDiagnostics();
+      } catch (error) {
+        setStatus(`Yeni QR uretilemedi: ${error.message}`, true);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    }
+
+    copyBtn.addEventListener('click', async () => {
+      const activeUrl = preferredUrl(pairing);
+      if (!activeUrl) {
+        setStatus('Link henuz hazir degil.', true);
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(activeUrl);
+        setStatus('Aktif link panoya kopyalandi.');
+      } catch (error) {
+        setStatus(`Kopyalama basarisiz: ${error.message}`, true);
+      }
+    });
+
+    refreshBtn.addEventListener('click', () => refreshPairing(false));
+
+    render(INITIAL);
+    refreshDiagnostics();
+    setInterval(refreshDiagnostics, 3500);
+  </script>
+</body>
+</html>
