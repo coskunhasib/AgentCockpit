@@ -46,6 +46,67 @@ def _session_text_matches(candidate_text, target_title):
     return cleaned == target or cleaned.startswith(short) or target.startswith(cleaned[:90])
 
 
+def _is_response_chrome_text(text):
+    cleaned = _normalize_text(text)
+    if not cleaned:
+        return True
+
+    chrome_exact = {
+        "Chat mode",
+        "Cowork mode",
+        "Code mode",
+        "Stop",
+        "Send",
+        "Type / for commands",
+        "Claude",
+        "·",
+        "1M",
+    }
+    chrome_exact.update(CLAUDE_MODEL_LABELS.values())
+    chrome_exact.update(CLAUDE_EFFORT_LABELS.values())
+    chrome_exact.update(CLAUDE_PERMISSION_LABELS.values())
+    chrome_exact.update(f"· {label}" for label in CLAUDE_EFFORT_LABELS.values())
+
+    if cleaned in chrome_exact:
+        return True
+    if re.match(r"^\d+(\.\d+)?[sm]$", cleaned):
+        return True
+    if re.match(r"^↓?\s*\d+\s+tokens$", cleaned, flags=re.IGNORECASE):
+        return True
+    return False
+
+
+def _format_response_from_visible_items(items, last_prompt=None):
+    ordered = sorted(items or [], key=lambda item: (item.get("top", 0), item.get("left", 0)))
+    start_idx = 0
+    prompt = _normalize_text(last_prompt)
+
+    if prompt:
+        for idx in range(len(ordered) - 1, -1, -1):
+            if _normalize_text(ordered[idx].get("text", "")) == prompt:
+                start_idx = idx + 1
+                break
+
+    response_parts = []
+    for item in ordered[start_idx:]:
+        text = (item.get("text") or "").strip()
+        if _is_response_chrome_text(text):
+            continue
+        if prompt and _normalize_text(text) == prompt:
+            continue
+        response_parts.append(text)
+
+    if response_parts:
+        return "\n".join(response_parts)
+
+    fallback = [
+        (item.get("text") or "").strip()
+        for item in ordered
+        if not _is_response_chrome_text(item.get("text", ""))
+    ]
+    return fallback[-1] if fallback else "(Cevap okunamadi)"
+
+
 def _get_claude_model_labels_for_mode(mode=None):
     normalized = (mode or "code").lower()
     return {
@@ -551,6 +612,7 @@ def focus_claude_input():
         ("group", "Type / for commands"),
         ("static text", "Type / for commands"),
         ("text area", "Type / for commands"),
+        ("text field", "Type / for commands"),
     ]
     for role_desc, label in candidates:
         if _click_role_text(role_desc, label):
@@ -647,5 +709,5 @@ def wait_and_read_response(timeout, last_prompt=None):
         return "[TIMEOUT] Claude cevap vermedi (5dk)."
 
     time.sleep(1)
-    parts = _collect_role_texts("static text")
-    return parts[-1] if parts else "(Cevap okunamadi)"
+    items = _collect_visible_items(["static text", "text", "text area", "text field"])
+    return _format_response_from_visible_items(items, last_prompt=last_prompt)

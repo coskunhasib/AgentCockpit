@@ -704,14 +704,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
-            startup = self.server.startup_session
-            public_url = self.server.get_public_url()
-            wan_url = _build_app_url_from_base(public_url, startup["token"])
             message = (
                 "AgentCockpit phone bridge is running.\n\n"
-                f"Current phone link ({startup['expires_in_text']}): {self.server.startup_link}\n"
-                + (f"Current WAN link: {wan_url}\n" if wan_url else "")
-                + "QR pairing dashboard is available on this PC at /pair.\n"
+                "Pairing links are only shown on the local PC or through the authorized Telegram panel.\n"
             )
             self._text_response(message)
             return

@@ -1,10 +1,11 @@
 import json
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core import codex_bridge
+from core import codex_bridge, codex_state
 
 
 def _write_rollout(path, session_id, cwd, messages):
@@ -182,6 +183,35 @@ class CodexBridgeTests(unittest.TestCase):
             self.assertTrue(codex_bridge._click_codex_macos_session("hedef session"))
 
         click_item.assert_called_once_with(visible_item)
+
+    def test_run_codex_stops_when_selected_desktop_session_cannot_open(self):
+        codex_state.reset_state_store()
+        codex_state.set_state_key("test-macos-session-open-fail")
+        state = codex_bridge.get_state()
+        state.cwd = "/tmp/agentcockpit"
+        state.session_id = "session-1"
+        state.session_title = "hedef session"
+
+        try:
+            with patch.object(codex_bridge.sys, "platform", "darwin"), patch.object(
+                codex_bridge, "ensure_codex_window", return_value="Codex"
+            ), patch.object(
+                codex_bridge, "focus_codex_window", return_value=True
+            ), patch.object(
+                codex_bridge, "open_session_in_desktop", return_value=False
+            ) as open_session, patch.object(
+                codex_bridge, "focus_codex_input"
+            ) as focus_input, patch.object(
+                codex_bridge, "paste_and_send"
+            ) as paste_and_send:
+                result = asyncio.run(codex_bridge.run_codex("merhaba"))
+        finally:
+            codex_state.reset_state_store()
+
+        self.assertIn("session acilamadi", result)
+        open_session.assert_called_once_with("hedef session", session_cwd="/tmp/agentcockpit")
+        focus_input.assert_not_called()
+        paste_and_send.assert_not_called()
 
 
 if __name__ == "__main__":

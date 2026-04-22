@@ -1157,7 +1157,8 @@ async def run_codex(prompt, cwd=None):
         return "[HATA] Codex penceresi odaga getirilemedi."
 
     if state.session_title:
-        open_session_in_desktop(state.session_title)
+        if not open_session_in_desktop(state.session_title, session_cwd=state.cwd):
+            return "[HATA] Codex Desktop'ta session acilamadi. Codex acik mi?"
     else:
         ensure_codex_sidebar_open()
 

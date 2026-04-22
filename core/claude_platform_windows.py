@@ -571,9 +571,9 @@ def wait_and_read_response(timeout, last_prompt=None):
             return "(Cevap okunamadi - prompt UI'da bulunamadi.)"
 
         ui_chrome_exact = {"Chat mode", "Cowork mode", "Code mode"}
-        ui_chrome_tokens = {"Â· Max", "Â· High", "Â· Medium", "Â· Low", "1M", "Opus 4.6"}
+        ui_chrome_tokens = {"· Max", "· High", "· Medium", "· Low", "1M", "Opus 4.6"}
         timing_pattern = re.compile(r"^\d+(\.\d+)?[sm]$")
-        token_pattern = re.compile(r"^â†“?\s*\d+\s+tokens$")
+        token_pattern = re.compile(r"^↓?\s*\d+\s+tokens$")
 
         response_parts = []
         for elem in elements[start_idx:]:
@@ -590,7 +590,7 @@ def wait_and_read_response(timeout, last_prompt=None):
                 continue
             if timing_pattern.match(txt) or token_pattern.match(txt):
                 continue
-            if txt == "Â·":
+            if txt == "·":
                 continue
             response_parts.append(txt)
 

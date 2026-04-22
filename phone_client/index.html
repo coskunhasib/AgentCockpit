@@ -1047,11 +1047,11 @@
         if (!payload || typeof payload !== 'object') {
           return;
         }
-        if (payload.public_url) {
-          publicUrl = payload.public_url;
+        if (Object.prototype.hasOwnProperty.call(payload, 'public_url')) {
+          publicUrl = payload.public_url || '';
         }
-        if (payload.wan_url) {
-          wanUrl = payload.wan_url;
+        if (Object.prototype.hasOwnProperty.call(payload, 'wan_url')) {
+          wanUrl = payload.wan_url || '';
         }
         refreshInstallUI();
       }
@@ -1497,9 +1497,6 @@
       });
       window.addEventListener('resize', updateRotateHint);
       window.addEventListener('orientationchange', () => {
-        if (isLandscapeMode()) {
-          localStorage.removeItem(STORAGE_KEYS.rotateHintDismissed);
-        }
         updateRotateHint();
       });
       topbar.addEventListener('click', () => {

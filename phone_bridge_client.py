@@ -7,7 +7,6 @@ from phone_runtime_config import get_shared_admin_token
 
 DEFAULT_PORT = int(os.getenv("PHONE_PORT", "8765"))
 DEFAULT_BASE_URL = os.getenv("PHONE_BRIDGE_URL", f"http://127.0.0.1:{DEFAULT_PORT}")
-DEFAULT_ADMIN_TOKEN = get_shared_admin_token()
 
 
 class PhoneBridgeClientError(RuntimeError):
@@ -59,7 +58,7 @@ def get_bridge_health(*, base_url=None):
 
 
 def create_phone_link(minutes=0, *, label="telegram", admin_token=None, base_url=None):
-    token = (admin_token or DEFAULT_ADMIN_TOKEN).strip()
+    token = (admin_token or get_shared_admin_token()).strip()
     if not token:
         raise PhoneBridgeClientError(
             "PHONE_ADMIN_TOKEN tanimli degil. Phone bridge ile backend'in ayni admin token'i bilmesi gerekiyor."

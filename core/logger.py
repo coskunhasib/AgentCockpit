@@ -8,6 +8,7 @@ from telegram import Bot
 
 LOG_DIR = "logs"
 CRASH_DIR = "logs/crashes"
+APP_LOG_FILE = os.path.join(LOG_DIR, f"app_{os.getpid()}.log")
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(CRASH_DIR, exist_ok=True)
@@ -28,7 +29,7 @@ logger.add(
 )
 
 logger.add(
-    f"{LOG_DIR}/app.log",
+    APP_LOG_FILE,
     rotation="00:00",
     retention="1 day",
     level="DEBUG",
