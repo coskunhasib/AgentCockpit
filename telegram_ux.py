@@ -23,7 +23,7 @@ from phone_wan_transport import (
     start_wan_session,
     stop_wan_session,
 )
-from phone_runtime_config import PHONE_NOTIFICATION_STATE_FILE
+from phone_runtime_config import PHONE_NOTIFICATION_STATE_FILE, get_shared_admin_token
 
 
 _ORIGINAL_HANDLE_MESSAGE = legacy.handle_message
@@ -66,6 +66,27 @@ def _has_provider_context(context, provider):
         codex_bridge.get_session_title()
         or context.user_data.get(_CTX_CODEX_READY, False)
     )
+
+
+def _matches_button(msg, labels):
+    canonical = legacy.canonical_button_label(msg)
+    if canonical in labels:
+        return True
+
+    for label in labels:
+        if msg == legacy.button_label(label):
+            return True
+    return False
+
+
+def _matches_any_button(msg, *label_sets):
+    labels = set()
+    for label_set in label_sets:
+        if isinstance(label_set, str):
+            labels.add(label_set)
+        else:
+            labels.update(label_set)
+    return _matches_button(msg, labels)
 
 
 def _format_last_activity(value):
@@ -166,7 +187,12 @@ def _phone_bridge_status_text(chat_id=None):
     except PhoneBridgeClientError as exc:
         lines.append("Durum: Erisilemiyor")
         lines.append(f"Neden: {exc}")
-    if os.getenv("PHONE_ADMIN_TOKEN") or os.getenv("PHONE_TOKEN"):
+    try:
+        admin_token_ready = bool(get_shared_admin_token())
+    except Exception:
+        admin_token_ready = False
+
+    if admin_token_ready:
         lines.append("Admin Token: Tanimli")
     else:
         lines.append("Admin Token: Eksik")
@@ -602,45 +628,30 @@ async def _send_codex_panel(update_or_chat, context, include_sessions=False, cha
 
 
 def _is_claude_control_message(msg):
-    controls = (
+    return _matches_any_button(
+        msg,
         legacy.BUTTON_CLAUDE_SESSIONS
-        | legacy.BUTTON_CLAUDE_NEW
-        | legacy.BUTTON_CLAUDE_TAB
-        | legacy.BUTTON_CLAUDE_MODEL
-        | legacy.BUTTON_CLAUDE_EFFORT
-        | legacy.BUTTON_CLAUDE_PERMISSION
-        | legacy.BUTTON_CLAUDE_THINKING
-        | legacy.BUTTON_CLAUDE_STATUS
-        | legacy.BUTTON_SCREENSHOT
-        | legacy.BUTTON_MAIN_BACK
+        | legacy.BUTTON_CLAUDE_NEW,
+        legacy.BUTTON_CLAUDE_TAB,
+        legacy.BUTTON_CLAUDE_MODEL,
+        legacy.BUTTON_CLAUDE_EFFORT,
+        legacy.BUTTON_CLAUDE_PERMISSION,
+        legacy.BUTTON_CLAUDE_THINKING,
+        legacy.BUTTON_CLAUDE_STATUS,
+        legacy.BUTTON_SCREENSHOT,
+        legacy.BUTTON_MAIN_BACK,
     )
-    controls |= {
-        "📋 Session Sec",
-        "🆕 Yeni Session",
-        "🧭 Sekme",
-        "🧠 Model",
-        "⚙️ Effort",
-        "🔐 Izin Modu",
-        "🔐 İzin Modu",
-        "📊 Durum",
-        "📸 Ekran Al",
-        "🔙 Ana Menu",
-        "🔙 Ana Menü",
-    }
-    return msg in controls
 
 
 def _is_codex_control_message(msg):
-    controls = legacy.BUTTON_CLAUDE_SESSIONS | legacy.BUTTON_CLAUDE_NEW | legacy.BUTTON_CLAUDE_STATUS | legacy.BUTTON_SCREENSHOT | legacy.BUTTON_MAIN_BACK
-    controls |= {
-        "📋 Session Sec",
-        "🆕 Yeni Session",
-        "📊 Durum",
-        "📸 Ekran Al",
-        "🔙 Ana Menu",
-        "🔙 Ana Menü",
-    }
-    return msg in controls
+    return _matches_any_button(
+        msg,
+        legacy.BUTTON_CLAUDE_SESSIONS,
+        legacy.BUTTON_CLAUDE_NEW,
+        legacy.BUTTON_CLAUDE_STATUS,
+        legacy.BUTTON_SCREENSHOT,
+        legacy.BUTTON_MAIN_BACK,
+    )
 
 
 async def _send_claude_guard(update, context):
@@ -724,14 +735,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data.get("mode")
     waiting = context.user_data.get("waiting_for")
 
-    if msg in legacy.BUTTON_MAIN_BACK or msg in {"🔙 Ana Menu", "🔙 Ana Menü"}:
+    if _matches_any_button(msg, legacy.BUTTON_MAIN_BACK):
         _clear_provider_ready(context, "claude")
         _clear_provider_ready(context, "codex")
         context.user_data.clear()
         await update.message.reply_text("Mod secin:", reply_markup=legacy.get_mode_keyboard())
         return
 
-    if msg in {legacy.BUTTON_MAIN_CLAUDE, "🤖 Claude Code"}:
+    if _matches_any_button(msg, legacy.BUTTON_MAIN_CLAUDE):
         context.user_data["mode"] = "claude"
         _set_provider_ready(context, "claude", bool(claude_bridge.get_session_title()))
         await _send_claude_panel(
@@ -739,7 +750,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if msg == legacy.BUTTON_MAIN_CODEX:
+    if _matches_any_button(msg, legacy.BUTTON_MAIN_CODEX):
         context.user_data["mode"] = "codex"
         _set_provider_ready(context, "codex", bool(codex_bridge.get_session_title()))
         await _send_codex_panel(
@@ -747,7 +758,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if msg == BUTTON_PHONE:
+    if _matches_any_button(msg, BUTTON_PHONE):
         await _send_phone_panel(
             update,
             context,
@@ -758,7 +769,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if mode == "claude":
-        if msg in legacy.BUTTON_CLAUDE_SESSIONS or msg == "📋 Session Sec":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_SESSIONS):
             if not legacy._supports_session_listing(claude_bridge.get_tab()):
                 await update.message.reply_text(
                     _claude_status_summary()
@@ -772,12 +783,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(session_text, reply_markup=session_markup)
             return
 
-        if msg in legacy.BUTTON_CLAUDE_NEW or msg == "🆕 Yeni Session":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_NEW):
             _set_provider_ready(context, "claude", True)
             await _ORIGINAL_HANDLE_MESSAGE(update, context)
             return
 
-        if msg in legacy.BUTTON_CLAUDE_STATUS or msg == "📊 Durum":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_STATUS):
             await update.message.reply_text(
                 _claude_status_summary(chat_id=update.effective_chat.id),
                 reply_markup=legacy.get_claude_keyboard(),
@@ -823,17 +834,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
     if mode == "codex":
-        if msg in legacy.BUTTON_CLAUDE_SESSIONS or msg == "📋 Session Sec":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_SESSIONS):
             session_markup, _session_count, session_text = get_codex_session_inline_keyboard()
             await update.message.reply_text(session_text, reply_markup=session_markup)
             return
 
-        if msg in legacy.BUTTON_CLAUDE_NEW or msg == "🆕 Yeni Session":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_NEW):
             _set_provider_ready(context, "codex", True)
             await _ORIGINAL_HANDLE_MESSAGE(update, context)
             return
 
-        if msg in legacy.BUTTON_CLAUDE_STATUS or msg == "📊 Durum":
+        if _matches_any_button(msg, legacy.BUTTON_CLAUDE_STATUS):
             await update.message.reply_text(
                 _codex_status_summary(chat_id=update.effective_chat.id),
                 reply_markup=legacy.get_codex_keyboard(),

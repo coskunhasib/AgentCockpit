@@ -64,6 +64,8 @@
       object-fit: contain;
       display: block;
       touch-action: none;
+      transform-origin: center center;
+      will-change: transform;
     }
 
     #overlay {
@@ -724,6 +726,7 @@
       let lastTapX = 0;
       let longPressTimer = null;
       let gesture = null;
+      let screenTransform = { scale: 1, panX: 0, panY: 0 };
       let boostUntil = 0;
       let consecutiveErrors = 0;
       let lastFrameAt = 0;
@@ -1265,13 +1268,80 @@
         };
       }
 
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function clampScreenTransform(transform = screenTransform) {
+        const scale = clamp(transform.scale || 1, 1, 4);
+        const viewerRect = viewer.getBoundingClientRect();
+        const baseWidth = screenEl.offsetWidth || viewerRect.width || 1;
+        const baseHeight = screenEl.offsetHeight || viewerRect.height || 1;
+        const maxPanX = Math.max(0, (baseWidth * scale - viewerRect.width) / 2);
+        const maxPanY = Math.max(0, (baseHeight * scale - viewerRect.height) / 2);
+        return {
+          scale,
+          panX: scale <= 1 ? 0 : clamp(transform.panX || 0, -maxPanX, maxPanX),
+          panY: scale <= 1 ? 0 : clamp(transform.panY || 0, -maxPanY, maxPanY)
+        };
+      }
+
+      function applyScreenTransform(nextTransform = screenTransform) {
+        screenTransform = clampScreenTransform(nextTransform);
+        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0) scale(${screenTransform.scale})`;
+      }
+
+      function isScreenZoomed() {
+        return screenTransform.scale > 1.02;
+      }
+
+      function getTouchDistance(touches) {
+        const dx = touches[0].clientX - touches[1].clientX;
+        const dy = touches[0].clientY - touches[1].clientY;
+        return Math.hypot(dx, dy);
+      }
+
+      function getTouchMidpoint(touches) {
+        return {
+          x: (touches[0].clientX + touches[1].clientX) / 2,
+          y: (touches[0].clientY + touches[1].clientY) / 2
+        };
+      }
+
+      function clearLongPressTimer() {
+        if (longPressTimer) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+      }
+
       function onTouchStart(event) {
+        if (event.touches.length === 2) {
+          event.preventDefault();
+          clearLongPressTimer();
+          const midpoint = getTouchMidpoint(event.touches);
+          const viewerRect = viewer.getBoundingClientRect();
+          gesture = {
+            type: 'pinch',
+            startedAt: Date.now(),
+            moved: true,
+            startDistance: getTouchDistance(event.touches),
+            startScale: screenTransform.scale,
+            startPanX: screenTransform.panX,
+            startPanY: screenTransform.panY,
+            centerX: midpoint.x - (viewerRect.left + viewerRect.width / 2),
+            centerY: midpoint.y - (viewerRect.top + viewerRect.height / 2)
+          };
+          return;
+        }
+
         if (event.touches.length !== 1) {
           return;
         }
         event.preventDefault();
         const touch = event.touches[0];
         gesture = {
+          type: 'touch',
           x: touch.clientX,
           y: touch.clientY,
           startedAt: Date.now(),
@@ -1293,19 +1363,49 @@
       }
 
       function onTouchMove(event) {
-        if (!gesture || event.touches.length !== 1) {
+        if (!gesture) {
           return;
         }
         event.preventDefault();
+
+        if (gesture.type === 'pinch') {
+          if (event.touches.length !== 2 || !gesture.startDistance) {
+            return;
+          }
+          const distance = getTouchDistance(event.touches);
+          const nextScale = clamp(gesture.startScale * (distance / gesture.startDistance), 1, 4);
+          const scaleRatio = nextScale / gesture.startScale;
+          applyScreenTransform({
+            scale: nextScale,
+            panX: gesture.centerX - (gesture.centerX - gesture.startPanX) * scaleRatio,
+            panY: gesture.centerY - (gesture.centerY - gesture.startPanY) * scaleRatio
+          });
+          return;
+        }
+
+        if (event.touches.length !== 1) {
+          return;
+        }
+
         const touch = event.touches[0];
         const dx = Math.abs(touch.clientX - gesture.x);
         const dy = Math.abs(touch.clientY - gesture.y);
         if (dx > 10 || dy > 10) {
           gesture.moved = true;
-          if (longPressTimer) {
-            clearTimeout(longPressTimer);
-            longPressTimer = null;
-          }
+          clearLongPressTimer();
+        }
+
+        if (!scrollMode && isScreenZoomed()) {
+          const stepX = touch.clientX - gesture.lastScrollX;
+          const stepY = touch.clientY - gesture.lastScrollY;
+          applyScreenTransform({
+            ...screenTransform,
+            panX: screenTransform.panX + stepX,
+            panY: screenTransform.panY + stepY
+          });
+          gesture.lastScrollY = touch.clientY;
+          gesture.lastScrollX = touch.clientX;
+          return;
         }
 
         if (!scrollMode) {
@@ -1334,8 +1434,24 @@
           return;
         }
         event.preventDefault();
-        if (longPressTimer) {
-          clearTimeout(longPressTimer);
+        clearLongPressTimer();
+
+        if (gesture.type === 'pinch') {
+          if (event.touches.length === 1) {
+            const touch = event.touches[0];
+            gesture = {
+              type: 'touch',
+              x: touch.clientX,
+              y: touch.clientY,
+              startedAt: Date.now(),
+              moved: true,
+              lastScrollX: touch.clientX,
+              lastScrollY: touch.clientY
+            };
+            return;
+          }
+          gesture = null;
+          return;
         }
 
         const duration = Date.now() - gesture.startedAt;
@@ -1363,6 +1479,14 @@
           lastTapTime = now;
           lastTapX = gesture.x;
         }
+        gesture = null;
+      }
+
+      function onTouchCancel(event) {
+        if (gesture) {
+          event.preventDefault();
+        }
+        clearLongPressTimer();
         gesture = null;
       }
 
@@ -1459,8 +1583,10 @@
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
+      screenEl.addEventListener('touchcancel', onTouchCancel, { passive: false });
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());
       document.addEventListener('visibilitychange', () => scheduleNextPoll(document.hidden ? 2600 : 220));
+      window.addEventListener('resize', () => applyScreenTransform());
       window.addEventListener('online', () => {
         setOfflineBanner(false);
         setWanSheetVisible(false);
