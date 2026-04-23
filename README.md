@@ -44,6 +44,7 @@ Linux/macOS:
 Bu giris artik telefon bridge'i, PWA/pairing sayfasini ve tek Telegram botunu birlikte acar.
 `TELEGRAM_TOKEN` bos veya placeholder ise ilk acilista tarayicida local kurulum sayfasi acilir; BotFather token'i burada dogrulanip `.env` dosyasina kaydedilir.
 Startup asamasinda platform uyumluluk kontrolu de yapilir; tarayici, masaustu otomasyonu veya quick tunnel bu PC'de tam desteklenmiyorsa sistem kisitli modda yine acilmaya calisir.
+Port, localhost hostu, runtime root ve benzeri varsayilanlar artik tek merkezden env ile override edilebilir; daginik hardcoded degerlere bagli degildir.
 Eski cekirdek botu test etmek gerekirse:
 
 ```powershell

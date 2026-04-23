@@ -4,8 +4,9 @@ import shutil
 import tempfile
 from pathlib import Path
 
+from core.app_config import PROJECT_ROOT, get_str
 
-ROOT_DIR = Path(__file__).resolve().parent
+ROOT_DIR = PROJECT_ROOT
 LEGACY_RUNTIME_DIR = ROOT_DIR / "runtime"
 LEGACY_V2_RUNTIME_DIR = ROOT_DIR / "v2" / "runtime"
 LEGACY_ADMIN_TOKEN_FILE = LEGACY_RUNTIME_DIR / "phone_admin_token.txt"
@@ -13,16 +14,20 @@ LEGACY_INSTALL_ID_FILE = LEGACY_RUNTIME_DIR / "install_id.txt"
 
 
 def _default_runtime_root():
-    custom = (os.getenv("AGENTCOCKPIT_HOME") or "").strip()
+    custom = get_str("AGENTCOCKPIT_HOME")
     if custom:
         return Path(custom).expanduser()
 
     if os.name == "nt":
-        local_appdata = (os.getenv("LOCALAPPDATA") or "").strip()
+        local_appdata = get_str("LOCALAPPDATA")
         if local_appdata:
             return Path(local_appdata) / "AgentCockpit"
 
-    return Path.home() / ".agentcockpit"
+    state_home = get_str("XDG_STATE_HOME")
+    if state_home:
+        return Path(state_home).expanduser() / "agentcockpit"
+
+    return ROOT_DIR / ".agentcockpit"
 
 
 RUNTIME_ROOT = None
@@ -59,11 +64,11 @@ def _set_runtime_root(runtime_root):
 
 
 def _fallback_runtime_roots():
-    custom_runtime_dir = (os.getenv("AGENTCOCKPIT_RUNTIME_DIR") or "").strip()
+    custom_runtime_dir = get_str("AGENTCOCKPIT_RUNTIME_DIR")
     if custom_runtime_dir:
         yield Path(custom_runtime_dir).expanduser()
 
-    yield ROOT_DIR / ".agentcockpit"
+    yield Path.home() / ".agentcockpit"
     yield Path(tempfile.gettempdir()) / "agentcockpit"
 
 

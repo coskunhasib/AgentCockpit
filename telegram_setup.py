@@ -9,6 +9,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
+from core.app_config import get_str
 
 PLACEHOLDER_TOKENS = {
     "",
@@ -16,6 +17,7 @@ PLACEHOLDER_TOKENS = {
     "YOUR_TELEGRAM_BOT_TOKEN",
     "TELEGRAM_TOKEN",
 }
+SETUP_HOST = get_str("TELEGRAM_SETUP_HOST")
 
 
 def _read_env_values(env_path):
@@ -349,7 +351,7 @@ def ensure_telegram_setup(project_root, *, open_browser=True):
         return True
 
     try:
-        server = _TelegramSetupServer(("127.0.0.1", 0), _TelegramSetupHandler, env_path)
+        server = _TelegramSetupServer((SETUP_HOST, 0), _TelegramSetupHandler, env_path)
     except OSError as exc:
         print("[SETUP] Telegram token bulunamadi.")
         print(
@@ -358,7 +360,7 @@ def ensure_telegram_setup(project_root, *, open_browser=True):
         )
         return False
 
-    setup_url = f"http://127.0.0.1:{server.server_port}/setup"
+    setup_url = f"http://{SETUP_HOST}:{server.server_port}/setup"
 
     print("[SETUP] Telegram token bulunamadi. Ilk kurulum sayfasi aciliyor.")
     print(f"[SETUP] Sayfa acilmazsa bu adresi kullan: {setup_url}")

@@ -12,6 +12,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from core.app_config import get_float, get_int, get_str
 from core.logger import get_logger
 from phone_runtime_config import CLOUDFLARED_BIN_DIR, CLOUDFLARED_URL_FILE
 
@@ -22,11 +23,11 @@ TUNNEL_URL_RE = re.compile(r"https://[-a-zA-Z0-9.]+\.trycloudflare\.com")
 
 
 def default_tunnel_mode():
-    return os.getenv("PHONE_PUBLIC_TUNNEL", "auto").strip().lower()
+    return get_str("PHONE_PUBLIC_TUNNEL").lower()
 
 
 def default_download_enabled():
-    return os.getenv("PHONE_PUBLIC_TUNNEL_DOWNLOAD", "1").strip().lower()
+    return get_str("PHONE_PUBLIC_TUNNEL_DOWNLOAD").lower()
 
 
 def tunnel_enabled(value=None):
@@ -75,7 +76,7 @@ def _local_cloudflared_path():
 
 
 def find_cloudflared():
-    env_path = (os.getenv("CLOUDFLARED_EXE") or "").strip()
+    env_path = get_str("CLOUDFLARED_EXE")
     if env_path and Path(env_path).exists():
         return Path(env_path)
 
@@ -170,12 +171,8 @@ class QuickTunnel:
         self.error = ""
         self.restart_count = 0
         self.last_exit_code = None
-        self.restart_delay = max(
-            1.0, float(os.getenv("PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC", "3"))
-        )
-        self.max_restarts = max(
-            0, int(os.getenv("PHONE_PUBLIC_TUNNEL_MAX_RESTARTS", "0"))
-        )
+        self.restart_delay = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC", "3"))
+        self.max_restarts = max(0, get_int("PHONE_PUBLIC_TUNNEL_MAX_RESTARTS", "0"))
         self._binary = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -345,9 +342,7 @@ class QuickTunnel:
             return url
 
         now = time.monotonic()
-        cache_ttl = max(
-            1.0, float(os.getenv("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC", "8"))
-        )
+        cache_ttl = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC", "8"))
         if validation_ok and (now - checked_at) < cache_ttl:
             return url
         if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
@@ -413,5 +408,5 @@ def start_public_tunnel(target_url, *, mode=None, allow_download=None):
     )
     tunnel.start()
     # Quick Tunnel genelde 2-5 saniyede URL verir; server yine de hemen servis vermeye devam eder.
-    tunnel.wait_for_url(timeout=float(os.getenv("PHONE_PUBLIC_TUNNEL_WAIT_SEC", "1.5")))
+    tunnel.wait_for_url(timeout=get_float("PHONE_PUBLIC_TUNNEL_WAIT_SEC"))
     return tunnel

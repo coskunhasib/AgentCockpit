@@ -22,6 +22,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from PIL import Image, ImageDraw
+from core.app_config import get_int, get_str
 from dotenv import load_dotenv
 try:
     import qrcode
@@ -46,16 +47,17 @@ _PYAUTOGUI = None
 
 PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 
-DEFAULT_BIND = os.getenv("PHONE_BIND", "0.0.0.0")
-DEFAULT_PORT = int(os.getenv("PHONE_PORT", "8765"))
+LOCAL_HOST = get_str("AGENTCOCKPIT_LOCAL_HOST")
+DEFAULT_BIND = get_str("PHONE_BIND")
+DEFAULT_PORT = get_int("PHONE_PORT")
 DEFAULT_ADMIN_TOKEN = get_shared_admin_token()
-DEFAULT_QUALITY = max(20, min(95, int(os.getenv("PHONE_SCREENSHOT_QUALITY", "55"))))
-DEFAULT_MAX_WIDTH = max(640, int(os.getenv("PHONE_SCREENSHOT_MAX_WIDTH", "1600")))
-DEFAULT_POLL_MS = max(500, int(os.getenv("PHONE_POLL_MS", "1400")))
-DEFAULT_SESSION_MINUTES = int(os.getenv("PHONE_SESSION_MINUTES", "0"))
-DEFAULT_TELEGRAM_URL = os.getenv("PHONE_TELEGRAM_URL", "").strip()
-DEFAULT_TELEGRAM_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
-DEFAULT_PUBLIC_TUNNEL = os.getenv("PHONE_PUBLIC_TUNNEL", "auto")
+DEFAULT_QUALITY = max(20, min(95, get_int("PHONE_SCREENSHOT_QUALITY")))
+DEFAULT_MAX_WIDTH = max(640, get_int("PHONE_SCREENSHOT_MAX_WIDTH"))
+DEFAULT_POLL_MS = max(500, get_int("PHONE_POLL_MS"))
+DEFAULT_SESSION_MINUTES = get_int("PHONE_SESSION_MINUTES")
+DEFAULT_TELEGRAM_URL = get_str("PHONE_TELEGRAM_URL")
+DEFAULT_TELEGRAM_USERNAME = get_str("TELEGRAM_BOT_USERNAME").lstrip("@")
+DEFAULT_PUBLIC_TUNNEL = get_str("PHONE_PUBLIC_TUNNEL")
 
 
 def _get_pyautogui():
@@ -112,7 +114,7 @@ def _get_local_ip():
         sock.close()
         return ip
     except OSError:
-        return "127.0.0.1"
+        return LOCAL_HOST
 
 
 def _get_local_ipv4_candidates():
@@ -662,7 +664,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             for ip in lan_ips
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
-        local_url = _build_app_url("127.0.0.1", self.server.server_port, session["token"])
+        local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
         public_url = self.server.get_public_url()
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
@@ -1164,9 +1166,9 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         for ip in lan_ips
     ]
     lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), port, startup_session["token"])
-    localhost_url = _build_app_url("127.0.0.1", port, startup_session["token"])
+    localhost_url = _build_app_url(LOCAL_HOST, port, startup_session["token"])
     server.public_tunnel = start_public_tunnel(
-        f"http://127.0.0.1:{port}",
+        f"http://{LOCAL_HOST}:{port}",
         mode=public_tunnel,
     )
     public_url = server.get_public_url()
@@ -1181,7 +1183,7 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     logger.info(f"Phone admin token: {admin_token}")
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
-    print(f"Pairing Dashboard (this PC): http://127.0.0.1:{port}/pair")
+    print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")
     print(f"LAN URL ({startup_session['expires_in_text']}): {lan_url}")
     if len(lan_urls) > 1:
         for index, alt_url in enumerate(lan_urls[1:], start=2):

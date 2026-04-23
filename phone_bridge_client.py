@@ -1,12 +1,15 @@
 import json
-import os
 import urllib.error
 import urllib.request
 
+from core.app_config import get_int, get_str
 from phone_runtime_config import get_shared_admin_token
 
-DEFAULT_PORT = int(os.getenv("PHONE_PORT", "8765"))
-DEFAULT_BASE_URL = os.getenv("PHONE_BRIDGE_URL", f"http://127.0.0.1:{DEFAULT_PORT}")
+DEFAULT_PORT = get_int("PHONE_PORT")
+DEFAULT_BASE_URL = get_str(
+    "PHONE_BRIDGE_URL",
+    f"http://{get_str('AGENTCOCKPIT_LOCAL_HOST')}:{DEFAULT_PORT}",
+)
 
 
 class PhoneBridgeClientError(RuntimeError):
@@ -24,7 +27,7 @@ def get_bridge_base_url(base_url=None):
     return _normalize_base_url(base_url)
 
 
-def _request_json(path, *, method="GET", body=None, headers=None, base_url=None, timeout=6):
+def _request_json(path, *, method="GET", body=None, headers=None, base_url=None, timeout=None):
     url = _normalize_base_url(base_url) + path
     payload = None
     request_headers = {"Content-Type": "application/json"}
@@ -39,6 +42,7 @@ def _request_json(path, *, method="GET", body=None, headers=None, base_url=None,
         headers=request_headers,
         method=method,
     )
+    timeout = get_int("PHONE_BRIDGE_TIMEOUT_SEC") if timeout is None else timeout
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))

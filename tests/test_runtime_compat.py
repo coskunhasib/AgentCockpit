@@ -1,5 +1,6 @@
 import unittest
 
+from core.app_config import get_int, get_str
 from core.runtime_compat import (
     apply_runtime_defaults,
     desktop_automation_help_text,
@@ -69,6 +70,10 @@ class RuntimeCompatTests(unittest.TestCase):
         lines = format_runtime_compatibility(report)
 
         self.assertTrue(any(line.startswith("[COMPAT] Platform: win32") for line in lines))
+
+    def test_app_config_defaults_are_centralized(self):
+        self.assertEqual(get_str("AGENTCOCKPIT_LOCAL_HOST"), "127.0.0.1")
+        self.assertEqual(get_int("PHONE_PORT"), 8765)
 
 
 if __name__ == "__main__":
