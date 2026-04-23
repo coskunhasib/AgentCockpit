@@ -1,10 +1,10 @@
 import asyncio
+import importlib
 import io
 import os
 import time
 from dataclasses import dataclass, field
 
-import pyautogui
 from PIL import Image, ImageChops, ImageDraw, ImageStat
 from telegram import InputMediaPhoto
 from telegram.error import BadRequest
@@ -13,6 +13,7 @@ from core.logger import get_logger
 
 
 logger = get_logger("phone_wan_transport")
+_PYAUTOGUI = None
 
 DEFAULT_INTERVAL_SEC = max(0.8, float(os.getenv("PHONE_WAN_INTERVAL_SEC", "1.4")))
 DEFAULT_MAX_WIDTH = max(640, int(os.getenv("PHONE_WAN_MAX_WIDTH", "1280")))
@@ -45,7 +46,26 @@ class WanSnapshotSession:
 _sessions: dict[int, WanSnapshotSession] = {}
 
 
+def _get_pyautogui():
+    global _PYAUTOGUI
+    if _PYAUTOGUI is not None:
+        return _PYAUTOGUI
+
+    try:
+        _PYAUTOGUI = importlib.import_module("pyautogui")
+        return _PYAUTOGUI
+    except Exception as exc:
+        logger.error(f"WAN pyautogui kullanilamiyor: {exc}")
+        return None
+
+
 def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
+    pyautogui = _get_pyautogui()
+    if not pyautogui:
+        raise RuntimeError(
+            "Masaustu yakalama kullanilamiyor. macOS izinlerini kontrol edin."
+        )
+
     screenshot = pyautogui.screenshot()
 
     try:
