@@ -42,6 +42,7 @@ Linux/macOS:
 ```
 
 Bu giris artik telefon bridge'i, PWA/pairing sayfasini ve tek Telegram botunu birlikte acar.
+`TELEGRAM_TOKEN` bos veya placeholder ise ilk acilista tarayicida local kurulum sayfasi acilir; BotFather token'i burada dogrulanip `.env` dosyasina kaydedilir.
 Eski cekirdek botu test etmek gerekirse:
 
 ```powershell
@@ -54,6 +55,12 @@ Telefon/PWA kurulum notlari:
 
 - `docs/PHONE_CLIENT_SETUP.md`
 - `docs/PHONE_INTEGRATION_NOTES.md`
+
+Kisa notlar:
+
+- Pairing dashboard: `http://127.0.0.1:8765/pair`
+- QR, uzak tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
+- macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
 
 ## Dokumanlar
 

@@ -9,6 +9,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+import urllib.error
 from pathlib import Path
 
 from core.logger import get_logger
@@ -181,6 +182,8 @@ class QuickTunnel:
         self._url_event = threading.Event()
         self._reader_thread = None
         self._watchdog_thread = None
+        self._validation_checked_at = 0.0
+        self._validation_ok = False
 
     def start(self):
         if not tunnel_enabled(self.mode):
@@ -241,6 +244,8 @@ class QuickTunnel:
             self.status = "baslatiliyor"
             self.error = ""
             self.last_exit_code = None
+            self._validation_checked_at = 0.0
+            self._validation_ok = False
             self._url_event.clear()
             clear_public_url()
 
@@ -268,6 +273,8 @@ class QuickTunnel:
                     self.public_url = url.rstrip("/")
                     self.status = "hazir"
                     self.error = ""
+                    self._validation_checked_at = 0.0
+                    self._validation_ok = False
                 write_public_url(self.public_url)
                 self._url_event.set()
 
@@ -282,6 +289,8 @@ class QuickTunnel:
                 return
             self.last_exit_code = exit_code
             self.public_url = ""
+            self._validation_checked_at = 0.0
+            self._validation_ok = False
             self._url_event.clear()
             clear_public_url()
             if self._stop_event.is_set():
@@ -319,8 +328,56 @@ class QuickTunnel:
             self._url_event.wait(timeout)
         return self.public_url
 
+    def get_public_url(self, *, validate=True):
+        with self._lock:
+            url = self.public_url
+            process = self.process
+            checked_at = self._validation_checked_at
+            validation_ok = self._validation_ok
+
+        if not url:
+            return ""
+
+        if process and process.poll() is not None:
+            return ""
+
+        if not validate:
+            return url
+
+        now = time.monotonic()
+        cache_ttl = max(
+            1.0, float(os.getenv("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC", "8"))
+        )
+        if validation_ok and (now - checked_at) < cache_ttl:
+            return url
+        if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
+            return ""
+
+        health_url = f"{url}/health"
+        request = urllib.request.Request(
+            health_url,
+            headers={"User-Agent": "AgentCockpit/2.0"},
+            method="GET",
+        )
+        ok = False
+        try:
+            with urllib.request.urlopen(request, timeout=2.5) as response:
+                ok = 200 <= response.status < 300
+        except (urllib.error.URLError, TimeoutError, ValueError):
+            ok = False
+        except Exception:
+            ok = False
+
+        with self._lock:
+            if url == self.public_url:
+                self._validation_checked_at = now
+                self._validation_ok = ok
+
+        return url if ok else ""
+
     def snapshot(self):
-        if self.public_url and self.process and self.process.poll() is None:
+        public_url = self.get_public_url(validate=True)
+        if public_url and self.process and self.process.poll() is None:
             status = "hazir"
         elif self.status == "baslatiliyor" and self.process and self.process.poll() is not None:
             status = "yeniden_baslatiliyor"
@@ -329,7 +386,7 @@ class QuickTunnel:
         return {
             "enabled": tunnel_enabled(self.mode),
             "status": status,
-            "public_url": self.public_url,
+            "public_url": public_url,
             "error": self.error,
             "restart_count": self.restart_count,
             "last_exit_code": self.last_exit_code,

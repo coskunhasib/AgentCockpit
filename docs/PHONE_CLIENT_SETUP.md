@@ -27,6 +27,7 @@ En kolay yol:
 
 Bu tek giris hem `phone_bridge_server.py` hem de tek Telegram botunu birlikte kaldirir.
 Ek olarak local pairing sayfasini tarayicida otomatik acar.
+`TELEGRAM_TOKEN` placeholder ise bundan once local ilk kurulum sayfasi acilir; BotFather token'i burada dogrulanip `.env` dosyasina yazilir.
 
 Bridge acildiginda pairing dashboard da hazir olur:
 
@@ -66,6 +67,7 @@ QR pairing dashboard sadece bu PC'den acilir; boylece link mint etme sayfasi LAN
 Ilk pairing sonrasi telefon guvenilir cihaz olarak kaydolur; bot/bridge yeniden baslasa da ayni origin uzerinden PWA tekrar QR istemeden acilabilir.
 Not: Hesapsiz Quick Tunnel uzak adresi yeniden baslatmalarda degisebilir. Bu eslesmeyi silmez.
 Bot aciksa adres degisimini izler ve yeni `Uzak Ac` linkini Telegram'a otomatik yollar; bu yeni linke dokunmak tekrar QR okutma yerine gecer.
+QR artik sadece saglik kontrolunden gecen bir WAN adresini kullanir; tunnel hazir gorunse bile ulasilamiyorsa pairing otomatik olarak LAN linkine duser. Eski/olu bir Quick Tunnel adresi 530 verirse pairing sayfasini yenileyip yeni QR uretmek yeterlidir.
 
 ## Opsiyonel Ayarlar
 
@@ -85,6 +87,11 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_PUBLIC_TUNNEL_DOWNLOAD=1`
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
+
+## Ekran ve Isaretci Notu
+
+- macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
+- Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
 
 ## Guvenlik Notu
 

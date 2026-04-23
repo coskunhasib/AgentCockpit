@@ -24,6 +24,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    Updater,
     filters,
 )
 
@@ -84,6 +85,22 @@ from core.system_tools import SystemOps
 
 logger = get_logger("bot_engine")
 _codex_delivery_tasks = {}
+_UPDATER_POLLING_CLEANUP_STATE = {}
+
+
+def _patch_ptb_updater_slot_bug():
+    cleanup_attr = "_Updater__polling_cleanup_cb"
+    if hasattr(Updater, cleanup_attr):
+        return
+
+    def _get_cleanup_cb(instance):
+        return _UPDATER_POLLING_CLEANUP_STATE.get(id(instance))
+
+    def _set_cleanup_cb(instance, value):
+        _UPDATER_POLLING_CLEANUP_STATE[id(instance)] = value
+
+    setattr(Updater, cleanup_attr, property(_get_cleanup_cb, _set_cleanup_cb))
+    logger.info("Applied PTB Updater slot workaround for Python 3.13 compatibility")
 
 if sys.platform == "win32":
     import io
@@ -1446,6 +1463,8 @@ def run_bot():
     global restart_counter
     restart_counter = 0
     max_restart = 3
+
+    _patch_ptb_updater_slot_bug()
 
     if not TOKEN:
         logger.error("TOKEN bulunamadi!")

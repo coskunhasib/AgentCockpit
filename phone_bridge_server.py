@@ -159,12 +159,22 @@ def _render_qr_data_url(data):
     return f"data:image/png;base64,{encoded}"
 
 
+def _mouse_overlay_point(image_size):
+    mouse_x, mouse_y = pyautogui.position()
+    logical_width, logical_height = pyautogui.size()
+    image_width, image_height = image_size
+
+    scale_x = image_width / logical_width if logical_width else 1.0
+    scale_y = image_height / logical_height if logical_height else 1.0
+    return mouse_x * scale_x, mouse_y * scale_y
+
+
 def _capture_payload(quality, max_width):
     screenshot = pyautogui.screenshot()
     screen_width, screen_height = screenshot.size
 
     try:
-        mouse_x, mouse_y = pyautogui.position()
+        mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
         draw = ImageDraw.Draw(screenshot)
         radius = 10
         draw.ellipse(
@@ -1014,7 +1024,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
     def get_public_url(self):
         if not self.public_tunnel:
             return ""
-        return self.public_tunnel.public_url
+        return self.public_tunnel.get_public_url(validate=True)
 
     def public_tunnel_snapshot(self):
         if not self.public_tunnel:

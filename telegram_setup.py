@@ -348,7 +348,16 @@ def ensure_telegram_setup(project_root, *, open_browser=True):
     if not needs_telegram_setup(env_path):
         return True
 
-    server = _TelegramSetupServer(("127.0.0.1", 0), _TelegramSetupHandler, env_path)
+    try:
+        server = _TelegramSetupServer(("127.0.0.1", 0), _TelegramSetupHandler, env_path)
+    except OSError as exc:
+        print("[SETUP] Telegram token bulunamadi.")
+        print(
+            "[SETUP] Yerel kurulum sayfasi acilamadi. "
+            f".env dosyasina TELEGRAM_TOKEN ekleyip tekrar calistirin. ({exc})"
+        )
+        return False
+
     setup_url = f"http://127.0.0.1:{server.server_port}/setup"
 
     print("[SETUP] Telegram token bulunamadi. Ilk kurulum sayfasi aciliyor.")

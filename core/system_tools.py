@@ -13,6 +13,16 @@ logger = get_logger("system_tools")
 pyautogui.FAILSAFE = os.environ.get("FAILSAFE_OFF", "").lower() != "true"
 
 
+def _mouse_overlay_point(image_size):
+    mouse_x, mouse_y = pyautogui.position()
+    logical_width, logical_height = pyautogui.size()
+    image_width, image_height = image_size
+
+    scale_x = image_width / logical_width if logical_width else 1.0
+    scale_y = image_height / logical_height if logical_height else 1.0
+    return mouse_x * scale_x, mouse_y * scale_y
+
+
 class SystemOps:
     KEY_ALIASES = {
         "escape": "esc",
@@ -105,7 +115,7 @@ class SystemOps:
             screenshot = pyautogui.screenshot()
 
             try:
-                mouse_x, mouse_y = pyautogui.position()
+                mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
                 draw = ImageDraw.Draw(screenshot)
                 r = 10
                 draw.ellipse(

@@ -1,6 +1,7 @@
 import os
 import secrets
 import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -24,15 +25,49 @@ def _default_runtime_root():
     return Path.home() / ".agentcockpit"
 
 
-RUNTIME_ROOT = _default_runtime_root()
-RUNTIME_DIR = RUNTIME_ROOT / "runtime"
-LEGACY_APP_RUNTIME_DIR = RUNTIME_ROOT / "v2"
-ADMIN_TOKEN_FILE = RUNTIME_DIR / "phone_admin_token.txt"
-INSTALL_ID_FILE = RUNTIME_DIR / "install_id.txt"
-TRUSTED_DEVICES_FILE = RUNTIME_DIR / "trusted_devices.json"
-CLOUDFLARED_BIN_DIR = RUNTIME_DIR / "bin"
-CLOUDFLARED_URL_FILE = RUNTIME_DIR / "public_tunnel_url.txt"
-PHONE_NOTIFICATION_STATE_FILE = RUNTIME_DIR / "phone_notification_state.json"
+RUNTIME_ROOT = None
+RUNTIME_DIR = None
+LEGACY_APP_RUNTIME_DIR = None
+ADMIN_TOKEN_FILE = None
+INSTALL_ID_FILE = None
+TRUSTED_DEVICES_FILE = None
+CLOUDFLARED_BIN_DIR = None
+CLOUDFLARED_URL_FILE = None
+PHONE_NOTIFICATION_STATE_FILE = None
+
+
+def _set_runtime_root(runtime_root):
+    global RUNTIME_ROOT
+    global RUNTIME_DIR
+    global LEGACY_APP_RUNTIME_DIR
+    global ADMIN_TOKEN_FILE
+    global INSTALL_ID_FILE
+    global TRUSTED_DEVICES_FILE
+    global CLOUDFLARED_BIN_DIR
+    global CLOUDFLARED_URL_FILE
+    global PHONE_NOTIFICATION_STATE_FILE
+
+    RUNTIME_ROOT = Path(runtime_root)
+    RUNTIME_DIR = RUNTIME_ROOT / "runtime"
+    LEGACY_APP_RUNTIME_DIR = RUNTIME_ROOT / "v2"
+    ADMIN_TOKEN_FILE = RUNTIME_DIR / "phone_admin_token.txt"
+    INSTALL_ID_FILE = RUNTIME_DIR / "install_id.txt"
+    TRUSTED_DEVICES_FILE = RUNTIME_DIR / "trusted_devices.json"
+    CLOUDFLARED_BIN_DIR = RUNTIME_DIR / "bin"
+    CLOUDFLARED_URL_FILE = RUNTIME_DIR / "public_tunnel_url.txt"
+    PHONE_NOTIFICATION_STATE_FILE = RUNTIME_DIR / "phone_notification_state.json"
+
+
+def _fallback_runtime_roots():
+    custom_runtime_dir = (os.getenv("AGENTCOCKPIT_RUNTIME_DIR") or "").strip()
+    if custom_runtime_dir:
+        yield Path(custom_runtime_dir).expanduser()
+
+    yield ROOT_DIR / ".agentcockpit"
+    yield Path(tempfile.gettempdir()) / "agentcockpit"
+
+
+_set_runtime_root(_default_runtime_root())
 
 
 def _read_text(path):
@@ -46,7 +81,22 @@ def _read_text(path):
 
 
 def _ensure_runtime_dir():
-    RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    global RUNTIME_DIR
+
+    try:
+        RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        return
+    except OSError as first_error:
+        for candidate in _fallback_runtime_roots():
+            if candidate == RUNTIME_ROOT:
+                continue
+            try:
+                _set_runtime_root(candidate)
+                RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+                return
+            except OSError:
+                continue
+        raise first_error
 
 
 def _read_with_legacy(primary, *legacy_paths):
