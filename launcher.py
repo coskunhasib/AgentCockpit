@@ -4,6 +4,11 @@ import sys
 import time
 import webbrowser
 
+from core.runtime_compat import (
+    apply_runtime_defaults,
+    detect_runtime_compatibility,
+    format_runtime_compatibility,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -135,8 +140,8 @@ def ensure_bridge_running():
     return process, False, base_url
 
 
-def open_pairing_dashboard(base_url):
-    if not base_url:
+def open_pairing_dashboard(base_url, *, browser_available=True):
+    if not base_url or not browser_available:
         return
     pairing_url = f"{base_url.rstrip('/')}/pair"
     try:
@@ -152,9 +157,16 @@ def run_stack():
     except ImportError:
         pass
 
+    compatibility = apply_runtime_defaults(detect_runtime_compatibility())
+    for line in format_runtime_compatibility(compatibility):
+        print(line)
+
     from telegram_setup import ensure_telegram_setup
 
-    if not ensure_telegram_setup(PROJECT_ROOT):
+    if not ensure_telegram_setup(
+        PROJECT_ROOT,
+        open_browser=compatibility["browser_available"],
+    ):
         print("[SETUP] Telegram kurulumu tamamlanamadi. Bot baslatilmiyor.")
         return
 
@@ -164,7 +176,13 @@ def run_stack():
 
     bridge_process, bridge_ready, bridge_base_url = ensure_bridge_running()
     if bridge_ready:
-        open_pairing_dashboard(bridge_base_url)
+        if compatibility["browser_available"]:
+            open_pairing_dashboard(
+                bridge_base_url,
+                browser_available=compatibility["browser_available"],
+            )
+        else:
+            print(f"[PHONE] Pairing dashboard hazir: {bridge_base_url}/pair")
 
     try:
         from telegram_ux import run_bot

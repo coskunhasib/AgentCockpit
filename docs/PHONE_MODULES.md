@@ -36,6 +36,7 @@ Ana giris noktasi proje kokundeki `main.py`:
 `main.py` acildiginda local pairing sayfasi tarayicida otomatik acilir.
 Ilk kurulumda `TELEGRAM_TOKEN` yoksa once sadece bu PC'de calisan local kurulum sayfasi acilir.
 BotFather token'ini bu sayfaya yapistirinca token dogrulanir, `.env` dosyasina kaydedilir ve bot kullanici adi otomatik bulunur.
+Yeni startup katmani tarayici, GUI oturumu ve public tunnel destegini de onceden kontrol eder; eksik olan kisimlar icin kisitli mod fallback'i uygular.
 
 Telefon istemcisi:
 
@@ -59,3 +60,4 @@ Hesapsiz uzak tunnel adresi degisirse bot yeni `Uzak Ac` linkini Telegram'a otom
 Ek not:
 
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
+- Ortam tanisi icin `python main.py --doctor` komutu kullanilabilir.

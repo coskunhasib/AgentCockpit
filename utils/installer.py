@@ -14,6 +14,7 @@ def install_and_check():
         "dotenv": "python-dotenv",
         "pyperclip": "pyperclip",
         "loguru": "loguru",
+        "qrcode": "qrcode",
     }
 
     # Platform-specific deps

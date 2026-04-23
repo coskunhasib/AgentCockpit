@@ -66,6 +66,11 @@ def is_legacy_mode(argv=None):
     return any(arg in {"--legacy", "legacy"} for arg in args)
 
 
+def is_doctor_mode(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    return any(arg in {"--doctor", "doctor"} for arg in args)
+
+
 def is_venv():
     from launcher import is_venv as launcher_is_venv
 
@@ -96,7 +101,24 @@ def run_legacy_application():
     run_bot()
 
 
+def run_doctor():
+    from core.runtime_compat import (
+        apply_runtime_defaults,
+        detect_runtime_compatibility,
+        format_runtime_compatibility,
+    )
+
+    print("[DOCTOR] AgentCockpit uyumluluk kontrolu")
+    report = apply_runtime_defaults(detect_runtime_compatibility())
+    for line in format_runtime_compatibility(report):
+        print(line)
+
+
 def run_application(argv=None):
+    if is_doctor_mode(argv):
+        run_doctor()
+        return
+
     if is_legacy_mode(argv):
         run_legacy_application()
         return

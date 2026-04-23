@@ -10,6 +10,7 @@ from telegram import InputMediaPhoto
 from telegram.error import BadRequest
 
 from core.logger import get_logger
+from core.runtime_compat import desktop_automation_help_text
 
 
 logger = get_logger("phone_wan_transport")
@@ -62,9 +63,7 @@ def _get_pyautogui():
 def _mouse_overlay_point(image_size):
     pyautogui = _get_pyautogui()
     if not pyautogui:
-        raise RuntimeError(
-            "Masaustu yakalama kullanilamiyor. macOS izinlerini kontrol edin."
-        )
+        raise RuntimeError(desktop_automation_help_text())
 
     mouse_x, mouse_y = pyautogui.position()
     logical_width, logical_height = pyautogui.size()
@@ -78,9 +77,7 @@ def _mouse_overlay_point(image_size):
 def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
     pyautogui = _get_pyautogui()
     if not pyautogui:
-        raise RuntimeError(
-            "Masaustu yakalama kullanilamiyor. macOS izinlerini kontrol edin."
-        )
+        raise RuntimeError(desktop_automation_help_text())
 
     screenshot = pyautogui.screenshot()
 

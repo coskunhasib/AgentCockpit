@@ -28,11 +28,18 @@ En kolay yol:
 Bu tek giris hem `phone_bridge_server.py` hem de tek Telegram botunu birlikte kaldirir.
 Ek olarak local pairing sayfasini tarayicida otomatik acar.
 `TELEGRAM_TOKEN` placeholder ise bundan once local ilk kurulum sayfasi acilir; BotFather token'i burada dogrulanip `.env` dosyasina yazilir.
+Tarayici veya masaustu otomasyonu bu makinede hazir degilse AgentCockpit bunu startup sirasinda raporlar ve mumkun olan kisimlari kisitli modda calistirir.
 
 Bridge acildiginda pairing dashboard da hazir olur:
 
 ```text
 http://127.0.0.1:8765/pair
+```
+
+PC uyumlulugunu hizli kontrol etmek istersen:
+
+```powershell
+python main.py --doctor
 ```
 
 En temiz ilk kurulum akisi:

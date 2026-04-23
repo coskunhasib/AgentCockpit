@@ -8,6 +8,7 @@ from PIL import ImageDraw
 
 from core.data_manager import DataManager
 from core.logger import get_logger, log_crash
+from core.runtime_compat import desktop_automation_help_text
 
 logger = get_logger("system_tools")
 
@@ -46,7 +47,7 @@ def _get_pyperclip():
 def _mouse_overlay_point(image_size):
     pyautogui = _get_pyautogui()
     if not pyautogui:
-        raise RuntimeError("pyautogui kullanilamiyor")
+        raise RuntimeError(desktop_automation_help_text())
 
     mouse_x, mouse_y = pyautogui.position()
     logical_width, logical_height = pyautogui.size()

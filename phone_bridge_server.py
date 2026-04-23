@@ -29,6 +29,7 @@ except ImportError:
     qrcode = None
 
 from core.logger import get_logger
+from core.runtime_compat import desktop_automation_help_text, detect_runtime_compatibility
 from core.system_tools import SystemOps
 from phone_runtime_config import (
     TRUSTED_DEVICES_FILE,
@@ -74,9 +75,7 @@ def _get_pyautogui():
 def _require_pyautogui():
     pyautogui = _get_pyautogui()
     if not pyautogui:
-        raise RuntimeError(
-            "Masaustu denetimi kullanilamiyor. macOS icin Screen Recording ve Accessibility izinlerini kontrol edin."
-        )
+        raise RuntimeError(desktop_automation_help_text())
     return pyautogui
 
 
@@ -203,9 +202,7 @@ def _render_qr_data_url(data):
 def _mouse_overlay_point(image_size):
     pyautogui = _get_pyautogui()
     if not pyautogui:
-        raise RuntimeError(
-            "Masaustu denetimi kullanilamiyor. macOS icin Screen Recording ve Accessibility izinlerini kontrol edin."
-        )
+        raise RuntimeError(desktop_automation_help_text())
 
     mouse_x, mouse_y = pyautogui.position()
     logical_width, logical_height = pyautogui.size()
@@ -734,6 +731,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             lan_ips = _get_local_ipv4_candidates()
             tunnel_snapshot = self.server.public_tunnel_snapshot()
             screen = _get_screen_metrics()
+            compatibility = detect_runtime_compatibility()
             self._json_response(
                 {
                     "status": "ok",
@@ -743,6 +741,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
                     "screen_available": screen["available"],
+                    "runtime_platform": compatibility["platform"],
+                    "gui_session": compatibility["gui_session"],
+                    "browser_available": compatibility["browser_available"],
+                    "desktop_automation_available": compatibility["desktop_automation_available"],
+                    "desktop_automation_reason": compatibility["desktop_automation_reason"],
                     "session_minutes": self.server.default_session_minutes,
                     "session_unlimited": self.server.default_session_minutes <= 0,
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
