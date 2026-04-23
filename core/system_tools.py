@@ -1,19 +1,53 @@
 # core/system_tools.py
-import pyautogui
-import os
 import datetime
-import pyperclip
+import importlib
+import os
 import sys
+
 from PIL import ImageDraw
+
 from core.data_manager import DataManager
-from core.logger import log_crash, get_logger
+from core.logger import get_logger, log_crash
 
 logger = get_logger("system_tools")
 
-pyautogui.FAILSAFE = os.environ.get("FAILSAFE_OFF", "").lower() != "true"
+_PYAUTOGUI = None
+_PYPERCLIP = None
+
+
+def _get_pyautogui():
+    global _PYAUTOGUI
+    if _PYAUTOGUI is not None:
+        return _PYAUTOGUI
+
+    try:
+        module = importlib.import_module("pyautogui")
+        module.FAILSAFE = os.environ.get("FAILSAFE_OFF", "").lower() != "true"
+        _PYAUTOGUI = module
+        return module
+    except Exception as exc:
+        logger.error(f"pyautogui kullanilamiyor: {exc}")
+        return None
+
+
+def _get_pyperclip():
+    global _PYPERCLIP
+    if _PYPERCLIP is not None:
+        return _PYPERCLIP
+
+    try:
+        _PYPERCLIP = importlib.import_module("pyperclip")
+        return _PYPERCLIP
+    except Exception as exc:
+        logger.error(f"pyperclip kullanilamiyor: {exc}")
+        return None
 
 
 def _mouse_overlay_point(image_size):
+    pyautogui = _get_pyautogui()
+    if not pyautogui:
+        raise RuntimeError("pyautogui kullanilamiyor")
+
     mouse_x, mouse_y = pyautogui.position()
     logical_width, logical_height = pyautogui.size()
     image_width, image_height = image_size
@@ -82,14 +116,11 @@ class SystemOps:
 
     @staticmethod
     def mouse_move(direction):
-        """
-        Fareyi belirtilen yöne hareket ettirir.
-        Hızı her seferinde 'hotkeys.json' dosyasından canlı okur.
-        """
-        # HIZ AYARINI BURADA ÇEKİYORUZ
-        step = DataManager.get_mouse_speed()
+        pyautogui = _get_pyautogui()
+        if not pyautogui:
+            return False
 
-        # Eğer okuyamazsa güvenlik amacıyla 50 yap
+        step = DataManager.get_mouse_speed()
         if not isinstance(step, int):
             step = 50
 
@@ -101,11 +132,15 @@ class SystemOps:
             pyautogui.moveRel(-step, 0)
         elif direction == "right":
             pyautogui.moveRel(step, 0)
+        return True
 
     @staticmethod
     def take_screenshot():
-        """Ekran görüntüsü alır ve imleci çizer."""
         try:
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return None
+
             if not os.path.exists("temp_screens"):
                 os.makedirs("temp_screens")
 
@@ -117,24 +152,25 @@ class SystemOps:
             try:
                 mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
                 draw = ImageDraw.Draw(screenshot)
-                r = 10
+                radius = 10
                 draw.ellipse(
-                    (mouse_x - r, mouse_y - r, mouse_x + r, mouse_y + r),
+                    (mouse_x - radius, mouse_y - radius, mouse_x + radius, mouse_y + radius),
                     outline="red",
                     width=3,
                 )
                 draw.ellipse(
-                    (mouse_x - 2, mouse_y - 2, mouse_x + 2, mouse_y + 2), fill="red"
+                    (mouse_x - 2, mouse_y - 2, mouse_x + 2, mouse_y + 2),
+                    fill="red",
                 )
             except Exception:
                 pass
 
             screenshot.save(filename)
-            logger.info(f"Screenshot alındı: {filename}")
+            logger.info(f"Screenshot alindi: {filename}")
             return filename
-        except Exception as e:
-            logger.error(f"Screenshot hatası: {e}")
-            crash_file = log_crash("system_tools.take_screenshot", str(e))
+        except Exception as exc:
+            logger.error(f"Screenshot hatasi: {exc}")
+            log_crash("system_tools.take_screenshot", str(exc))
             return None
 
     @staticmethod
@@ -145,70 +181,81 @@ class SystemOps:
     @staticmethod
     def restart_pc():
         from core.platform_utils import restart_pc
+
         restart_pc()
 
     @staticmethod
     def restart_script():
-        """Yazılımı yeniden başlatır."""
-        import sys
         import subprocess
 
-        # Mevcut Python yolunu al (venv içindeki)
         python_path = sys.executable
-
-        # Ana scriptin tam yolunu bul
         if hasattr(sys, "_MEIPASS"):
-            # PyInstaller ile paketlenmişse
             script_path = sys.executable
         else:
             script_path = os.path.abspath(sys.argv[0])
 
-        print("Sistem yeniden başlatılıyor...")
-
-        # Argümanlarla birlikte yeniden başlat
+        print("Sistem yeniden baslatiliyor...")
         subprocess.Popen([python_path, script_path] + sys.argv[1:])
         sys.exit(0)
 
     @staticmethod
     def mouse_click(action="left"):
+        pyautogui = _get_pyautogui()
+        if not pyautogui:
+            return False
+
         if action == "left":
             pyautogui.click()
         elif action == "right":
             pyautogui.rightClick()
         elif action == "double":
             pyautogui.doubleClick()
+        return True
 
     @staticmethod
     def press_key(key_name):
         try:
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
             pyautogui.press(SystemOps._normalize_key_name(key_name))
             return True
-        except:
+        except Exception:
             return False
 
     @staticmethod
     def execute_hotkey(keys_list):
-        """Tuş kombinasyonu (Hız ayarlı ve WinLeft düzeltmeli)"""
         try:
-            corrected_keys = SystemOps.normalize_hotkey(keys_list)
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
 
+            corrected_keys = SystemOps.normalize_hotkey(keys_list)
             pyautogui.hotkey(*corrected_keys, interval=0.1)
             logger.debug(f"Hotkey: {corrected_keys}")
             return True
-        except Exception as e:
-            logger.error(f"Hotkey hatası: {e}")
-            crash_file = log_crash("system_tools.execute_hotkey", str(e))
+        except Exception as exc:
+            logger.error(f"Hotkey hatasi: {exc}")
+            log_crash("system_tools.execute_hotkey", str(exc))
             return False
 
     @staticmethod
     def type_text(text):
         try:
-            pyperclip.copy(text)
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
+
+            pyperclip = _get_pyperclip()
             mod_key = "command" if sys.platform == "darwin" else "ctrl"
-            pyautogui.hotkey(mod_key, "v")
-            logger.debug(f"Yazıldı: {text[:20]}...")
+            if pyperclip:
+                pyperclip.copy(text)
+                pyautogui.hotkey(mod_key, "v")
+            else:
+                pyautogui.write(text)
+            logger.debug(f"Yazildi: {text[:20]}...")
             return True
-        except Exception as e:
-            logger.error(f"Yazma hatası: {e}")
-            crash_file = log_crash("system_tools.type_text", str(e))
+        except Exception as exc:
+            logger.error(f"Yazma hatasi: {exc}")
+            log_crash("system_tools.type_text", str(exc))
             return False

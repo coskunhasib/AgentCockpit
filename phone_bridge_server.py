@@ -1,5 +1,6 @@
 import argparse
 import base64
+import importlib
 import ipaddress
 import io
 import json
@@ -20,7 +21,6 @@ PROJECT_ROOT = ROOT_DIR
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import pyautogui
 from PIL import Image, ImageDraw
 from dotenv import load_dotenv
 try:
@@ -41,6 +41,7 @@ from phone_public_tunnel import start_public_tunnel
 
 load_dotenv(PROJECT_ROOT / ".env")
 logger = get_logger("phone_bridge")
+_PYAUTOGUI = None
 
 PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 
@@ -54,6 +55,46 @@ DEFAULT_SESSION_MINUTES = int(os.getenv("PHONE_SESSION_MINUTES", "0"))
 DEFAULT_TELEGRAM_URL = os.getenv("PHONE_TELEGRAM_URL", "").strip()
 DEFAULT_TELEGRAM_USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@")
 DEFAULT_PUBLIC_TUNNEL = os.getenv("PHONE_PUBLIC_TUNNEL", "auto")
+
+
+def _get_pyautogui():
+    global _PYAUTOGUI
+    if _PYAUTOGUI is not None:
+        return _PYAUTOGUI
+
+    try:
+        _PYAUTOGUI = importlib.import_module("pyautogui")
+        _PYAUTOGUI.FAILSAFE = os.environ.get("FAILSAFE_OFF", "").lower() != "true"
+        return _PYAUTOGUI
+    except Exception as exc:
+        logger.error(f"Phone bridge pyautogui kullanilamiyor: {exc}")
+        return None
+
+
+def _require_pyautogui():
+    pyautogui = _get_pyautogui()
+    if not pyautogui:
+        raise RuntimeError(
+            "Masaustu denetimi kullanilamiyor. macOS icin Screen Recording ve Accessibility izinlerini kontrol edin."
+        )
+    return pyautogui
+
+
+def _get_screen_metrics():
+    pyautogui = _get_pyautogui()
+    if not pyautogui:
+        return {"width": 0, "height": 0, "available": False}
+
+    try:
+        size = pyautogui.size()
+        return {
+            "width": int(size.width),
+            "height": int(size.height),
+            "available": True,
+        }
+    except Exception as exc:
+        logger.error(f"Ekran boyutu okunamadi: {exc}")
+        return {"width": 0, "height": 0, "available": False}
 
 
 def _telegram_bot_url():
@@ -160,6 +201,12 @@ def _render_qr_data_url(data):
 
 
 def _mouse_overlay_point(image_size):
+    pyautogui = _get_pyautogui()
+    if not pyautogui:
+        raise RuntimeError(
+            "Masaustu denetimi kullanilamiyor. macOS icin Screen Recording ve Accessibility izinlerini kontrol edin."
+        )
+
     mouse_x, mouse_y = pyautogui.position()
     logical_width, logical_height = pyautogui.size()
     image_width, image_height = image_size
@@ -170,6 +217,7 @@ def _mouse_overlay_point(image_size):
 
 
 def _capture_payload(quality, max_width):
+    pyautogui = _require_pyautogui()
     screenshot = pyautogui.screenshot()
     screen_width, screen_height = screenshot.size
 
@@ -211,6 +259,7 @@ def _capture_payload(quality, max_width):
 
 
 def _perform_click(x_ratio, y_ratio, button="left"):
+    pyautogui = _require_pyautogui()
     screen_width, screen_height = pyautogui.size()
     x = int(_clamp_ratio(x_ratio) * screen_width)
     y = int(_clamp_ratio(y_ratio) * screen_height)
@@ -226,6 +275,7 @@ def _perform_click(x_ratio, y_ratio, button="left"):
 
 
 def _perform_scroll(x_ratio, y_ratio, delta):
+    pyautogui = _require_pyautogui()
     screen_width, screen_height = pyautogui.size()
     x = int(_clamp_ratio(x_ratio) * screen_width)
     y = int(_clamp_ratio(y_ratio) * screen_height)
@@ -683,12 +733,16 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         if route == "/health":
             lan_ips = _get_local_ipv4_candidates()
             tunnel_snapshot = self.server.public_tunnel_snapshot()
+            screen = _get_screen_metrics()
             self._json_response(
                 {
                     "status": "ok",
                     "client": "phone-bridge",
                     "transport": "http",
-                    "screen": f"{pyautogui.size().width}x{pyautogui.size().height}",
+                    "screen": f"{screen['width']}x{screen['height']}" if screen["available"] else "unavailable",
+                    "screen_width": screen["width"],
+                    "screen_height": screen["height"],
+                    "screen_available": screen["available"],
                     "session_minutes": self.server.default_session_minutes,
                     "session_unlimited": self.server.default_session_minutes <= 0,
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
@@ -814,10 +868,18 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
-            payload = _capture_payload(
-                self.server.screenshot_quality,
-                self.server.max_width,
-            )
+            try:
+                payload = _capture_payload(
+                    self.server.screenshot_quality,
+                    self.server.max_width,
+                )
+            except Exception as exc:
+                logger.exception("Phone bridge screenshot failed: %s", exc)
+                self._json_response(
+                    {"status": "error", "message": str(exc)},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
             payload["session"] = self._build_session_payload(session)
             payload["public_url"] = self.server.get_public_url()
             payload["wan_url"] = _build_app_url_from_base(
@@ -836,11 +898,13 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            screen = _get_screen_metrics()
             self._json_response(
                 {
                     "status": "ok",
-                    "screen_width": pyautogui.size().width,
-                    "screen_height": pyautogui.size().height,
+                    "screen_width": screen["width"],
+                    "screen_height": screen["height"],
+                    "screen_available": screen["available"],
                     "poll_ms": self.server.poll_ms,
                     "quality": self.server.screenshot_quality,
                     "max_width": self.server.max_width,
