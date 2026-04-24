@@ -125,6 +125,19 @@ def _patch_ptb_updater_slot_bug():
     setattr(Updater, cleanup_attr, property(_get_cleanup_cb, _set_cleanup_cb))
     logger.info("Applied PTB Updater slot workaround for Python 3.13 compatibility")
 
+
+def _get_or_create_event_loop():
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            raise RuntimeError("Current event loop is closed")
+        return loop
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop
+
+
 try:
     import io
     if hasattr(sys.stdout, "buffer") and (sys.stdout.encoding or "").lower() not in ("utf-8", "utf8"):
@@ -1548,6 +1561,7 @@ def run_bot():
 
             logger.info("AgentCockpit baslatildi")
             print("AgentCockpit baslatildi...")
+            _get_or_create_event_loop()
             app.run_polling()
 
         except Exception as exc:

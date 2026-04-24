@@ -21,6 +21,17 @@ class PhoneBridgeClientTests(unittest.TestCase):
             {"X-AgentCockpit-Admin": "fresh-token"},
         )
 
+    def test_request_json_wraps_timeout_error(self):
+        with patch.object(
+            phone_bridge_client.urllib.request,
+            "urlopen",
+            side_effect=TimeoutError("timed out"),
+        ):
+            with self.assertRaises(phone_bridge_client.PhoneBridgeClientError) as context:
+                phone_bridge_client._request_json("/health")
+
+        self.assertIn("zaman asimina", str(context.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

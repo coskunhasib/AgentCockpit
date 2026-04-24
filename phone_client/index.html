@@ -1100,10 +1100,21 @@
             ...(options.headers || {})
           }
         });
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
+        let data = null;
+        try {
+          data = await response.json();
+        } catch (_) {
+          data = null;
         }
-        const data = await response.json();
+        if (!response.ok) {
+          const message = (data && (data.message || data.status))
+            ? (data.message || data.status)
+            : `HTTP ${response.status}`;
+          throw new Error(message);
+        }
+        if (!data || typeof data !== 'object') {
+          throw new Error('Gecersiz sunucu yaniti');
+        }
         data.__elapsed = Math.round(performance.now() - startedAt);
         return data;
       }
@@ -1146,7 +1157,11 @@
         } catch (error) {
           connected = false;
           consecutiveErrors += 1;
-          setStatus('Baglanti kesildi', 'Sunucuya yeniden ulasmaya calisiyorum', false);
+          const reason = (error && error.message) ? error.message : 'Sunucuya yeniden ulasmaya calisiyorum';
+          const title = /Siyah ekran|Screen Recording|ekran kilitli|uykuda/i.test(reason)
+            ? 'Ekran yakalama sorunu'
+            : 'Baglanti kesildi';
+          setStatus(title, reason, false);
           setOfflineBanner(true, navigator.onLine
             ? 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.'
             : 'Su an offline gorunuyorsun. App shell acik kaldi, baglanti gelince toparlayacagim.');

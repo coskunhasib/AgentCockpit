@@ -1,4 +1,5 @@
 import json
+import socket
 import urllib.error
 import urllib.request
 
@@ -46,6 +47,8 @@ def _request_json(path, *, method="GET", body=None, headers=None, base_url=None,
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except (TimeoutError, socket.timeout) as exc:
+        raise PhoneBridgeClientError("Bridge istegi zaman asimina ugradi.") from exc
     except urllib.error.HTTPError as exc:
         try:
             data = json.loads(exc.read().decode("utf-8"))
@@ -55,6 +58,8 @@ def _request_json(path, *, method="GET", body=None, headers=None, base_url=None,
         raise PhoneBridgeClientError(message) from exc
     except urllib.error.URLError as exc:
         raise PhoneBridgeClientError(str(exc.reason)) from exc
+    except Exception as exc:
+        raise PhoneBridgeClientError(f"Bridge istegi basarisiz: {exc}") from exc
 
 
 def get_bridge_health(*, base_url=None):

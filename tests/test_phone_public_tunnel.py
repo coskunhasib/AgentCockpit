@@ -61,6 +61,18 @@ class PhonePublicTunnelTests(unittest.TestCase):
                 "https://live.trycloudflare.com",
             )
 
+    def test_snapshot_can_skip_validation(self):
+        tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
+        tunnel.public_url = "https://live.trycloudflare.com"
+
+        with patch(
+            "phone_public_tunnel.urllib.request.urlopen",
+            side_effect=AssertionError("validation should be skipped"),
+        ):
+            snapshot = tunnel.snapshot(validate=False)
+
+        self.assertEqual(snapshot["public_url"], "https://live.trycloudflare.com")
+
 
 if __name__ == "__main__":
     unittest.main()

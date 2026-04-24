@@ -1,8 +1,8 @@
 python-telegram-bot==20.7
-pyautogui>=0.9.54
+pyautogui==0.9.54
 Pillow>=10.4.0,<12
 python-dotenv==1.0.0
-pip-system-certs; sys_platform == "win32"
+pip-system-certs
 pyperclip
 loguru
 qrcode>=7.4.2,<9

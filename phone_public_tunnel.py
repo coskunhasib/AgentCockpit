@@ -370,8 +370,8 @@ class QuickTunnel:
 
         return url if ok else ""
 
-    def snapshot(self):
-        public_url = self.get_public_url(validate=True)
+    def snapshot(self, *, validate=True):
+        public_url = self.get_public_url(validate=validate)
         if public_url and self.process and self.process.poll() is None:
             status = "hazir"
         elif self.status == "baslatiliyor" and self.process and self.process.poll() is not None:

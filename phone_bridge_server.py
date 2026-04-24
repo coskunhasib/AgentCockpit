@@ -7,7 +7,9 @@ import json
 import os
 import secrets
 import socket
+import subprocess
 import sys
+import tempfile
 import threading
 import time
 from http import HTTPStatus
@@ -217,7 +219,18 @@ def _mouse_overlay_point(image_size):
 
 def _capture_payload(quality, max_width):
     pyautogui = _require_pyautogui()
-    screenshot = pyautogui.screenshot()
+    screenshot = pyautogui.screenshot().convert("RGB")
+
+    if _is_nearly_black_frame(screenshot):
+        fallback = _capture_with_screencapture()
+        if fallback and not _is_nearly_black_frame(fallback):
+            screenshot = fallback
+        else:
+            raise RuntimeError(
+                "Siyah ekran algilandi. Ekran kilitli/uykuda olabilir veya Screen Recording izni eksik. "
+                "macOS'ta Terminal/iTerm icin Screen Recording iznini acip uygulamayi yeniden baslatin."
+            )
+
     screen_width, screen_height = screenshot.size
 
     try:
@@ -244,7 +257,6 @@ def _capture_payload(quality, max_width):
         )
 
     buffer = io.BytesIO()
-    screenshot = screenshot.convert("RGB")
     screenshot.save(buffer, format="JPEG", quality=quality, optimize=True)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
     return {
@@ -255,6 +267,48 @@ def _capture_payload(quality, max_width):
         "screen_height": screen_height,
         "timestamp": time.time(),
     }
+
+
+def _is_nearly_black_frame(image, *, max_channel=4):
+    try:
+        extrema = image.convert("RGB").getextrema()
+    except Exception:
+        return False
+
+    return all(channel_max <= max_channel for _, channel_max in extrema)
+
+
+def _capture_with_screencapture():
+    if sys.platform != "darwin":
+        return None
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            temp_path = tmp.name
+
+        result = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", temp_path],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if result.returncode != 0:
+            return None
+
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
+            return None
+
+        with Image.open(temp_path) as captured:
+            return captured.convert("RGB")
+    except Exception:
+        return None
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def _perform_click(x_ratio, y_ratio, button="left"):
@@ -534,7 +588,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("JSON response client tarafinda erken kapatildi.")
 
     def _text_response(
         self,
@@ -551,7 +608,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("Text response client tarafinda erken kapatildi.")
 
     def _serve_file(self, path, content_type, *, cacheable=False, extra_headers=None):
         if not path.exists():
@@ -568,7 +628,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         for key, value in (extra_headers or {}).items():
             self.send_header(key, value)
         self.end_headers()
-        self.wfile.write(raw)
+        try:
+            self.wfile.write(raw)
+        except (BrokenPipeError, ConnectionResetError):
+            logger.debug("File response client tarafinda erken kapatildi.")
 
     def _extract_token(self):
         query = self._query()
@@ -666,7 +729,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
         local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
-        public_url = self.server.get_public_url()
+        public_url = self.server.get_public_url(validate=False)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
             **self._build_session_payload(session),
@@ -732,7 +795,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
 
         if route == "/health":
             lan_ips = _get_local_ipv4_candidates()
-            tunnel_snapshot = self.server.public_tunnel_snapshot()
+            # /health icinde kendi uzerinden tekrar /health dogrulamasi yapma.
+            tunnel_snapshot = self.server.public_tunnel_snapshot(validate=False)
             screen = _get_screen_metrics()
             compatibility = detect_runtime_compatibility()
             self._json_response(
@@ -781,6 +845,12 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             self._text_response(message)
             return
 
+        if route == "/qr":
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/pair")
+            self.end_headers()
+            return
+
         if route == "/pair":
             if not self._require_local_pairing_access():
                 return
@@ -798,7 +868,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
             html = html_path.read_text(encoding="utf-8")
-            public_url = self.server.get_public_url()
+            public_url = self.server.get_public_url(validate=False)
             handoff_token = (
                 session.get("token", "")
                 if auth_kind == "link"
@@ -887,9 +957,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
             payload["session"] = self._build_session_payload(session)
-            payload["public_url"] = self.server.get_public_url()
+            public_url = self.server.get_public_url(validate=False)
+            payload["public_url"] = public_url
             payload["wan_url"] = _build_app_url_from_base(
-                self.server.get_public_url(),
+                public_url,
                 handoff_token,
             )
             self._json_response(payload)
@@ -905,6 +976,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 else self.server.startup_session.get("token", "")
             )
             screen = _get_screen_metrics()
+            public_url = self.server.get_public_url(validate=False)
             self._json_response(
                 {
                     "status": "ok",
@@ -915,9 +987,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "quality": self.server.screenshot_quality,
                     "max_width": self.server.max_width,
                     "auth_kind": auth_kind,
-                    "public_url": self.server.get_public_url(),
+                    "public_url": public_url,
                     "wan_url": _build_app_url_from_base(
-                        self.server.get_public_url(),
+                        public_url,
                         handoff_token,
                     ),
                     "session": self._build_session_payload(session),
@@ -1033,9 +1105,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 self.server.screenshot_quality,
                 self.server.max_width,
             )
-            screenshot_payload["public_url"] = self.server.get_public_url()
+            public_url = self.server.get_public_url(validate=False)
+            screenshot_payload["public_url"] = public_url
             screenshot_payload["wan_url"] = _build_app_url_from_base(
-                self.server.get_public_url(),
+                public_url,
                 handoff_token,
             )
             self._json_response(
@@ -1043,9 +1116,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "action": action_type,
                     "session": self._build_session_payload(refreshed_session),
-                    "public_url": self.server.get_public_url(),
+                    "public_url": public_url,
                     "wan_url": _build_app_url_from_base(
-                        self.server.get_public_url(),
+                        public_url,
                         handoff_token,
                     ),
                     "screenshot": screenshot_payload,
@@ -1091,12 +1164,12 @@ class PhoneBridgeServer(ThreadingHTTPServer):
             self.startup_session["token"],
         )
 
-    def get_public_url(self):
+    def get_public_url(self, *, validate=True):
         if not self.public_tunnel:
             return ""
-        return self.public_tunnel.get_public_url(validate=True)
+        return self.public_tunnel.get_public_url(validate=validate)
 
-    def public_tunnel_snapshot(self):
+    def public_tunnel_snapshot(self, *, validate=True):
         if not self.public_tunnel:
             return {
                 "enabled": False,
@@ -1104,7 +1177,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
                 "public_url": "",
                 "error": "",
             }
-        return self.public_tunnel.snapshot()
+        return self.public_tunnel.snapshot(validate=validate)
 
 
 def build_arg_parser():
@@ -1172,7 +1245,7 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         f"http://{LOCAL_HOST}:{port}",
         mode=public_tunnel,
     )
-    public_url = server.get_public_url()
+    public_url = server.get_public_url(validate=False)
     wan_url = _build_app_url_from_base(public_url, startup_session["token"])
 
     logger.info("AgentCockpit phone bridge basladi")

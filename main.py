@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -71,15 +72,85 @@ def is_doctor_mode(argv=None):
 
 
 def is_venv():
-    from launcher import is_venv as launcher_is_venv
+    return hasattr(sys, "real_prefix") or (
+        hasattr(sys, "base_prefix") and sys.base_prefix != sys.prefix
+    )
 
-    return launcher_is_venv()
+
+def _is_venv_valid(venv_dir):
+    pyvenv_cfg = venv_dir / "pyvenv.cfg"
+    if not pyvenv_cfg.exists():
+        return False
+
+    try:
+        for line in pyvenv_cfg.read_text(encoding="utf-8").splitlines():
+            if line.startswith("home = "):
+                return Path(line.split("=", 1)[1].strip()).exists()
+    except Exception:
+        return False
+
+    return False
+
+
+def _bootstrap_without_launcher(script_path):
+    venv_dir = PROJECT_ROOT / "venv"
+    venv_python = (
+        venv_dir / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    )
+
+    print(f"[BOOTSTRAP] AgentCockpit hazirlaniyor... (PID: {os.getpid()})")
+    print(f"[BOOTSTRAP] Surum: {__version__}")
+
+    if venv_dir.exists() and not _is_venv_valid(venv_dir):
+        print("[BOOTSTRAP] Venv gecersiz. Yeniden olusturuluyor...")
+        import shutil
+
+        shutil.rmtree(venv_dir, ignore_errors=True)
+
+    if not venv_python.exists():
+        subprocess.check_call([sys.executable, "-m", "venv", "venv"], cwd=PROJECT_ROOT)
+
+    requirements_file = PROJECT_ROOT / "requirements.txt"
+    try:
+        subprocess.call(
+            [str(venv_python), "-m", "pip", "install", "--upgrade", "pip"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            cwd=PROJECT_ROOT,
+        )
+        if requirements_file.exists():
+            subprocess.check_call(
+                [
+                    str(venv_python),
+                    "-m",
+                    "pip",
+                    "install",
+                    "-r",
+                    str(requirements_file),
+                    "--trusted-host",
+                    "pypi.org",
+                    "--trusted-host",
+                    "pypi.python.org",
+                    "--trusted-host",
+                    "files.pythonhosted.org",
+                ],
+                cwd=PROJECT_ROOT,
+            )
+    except Exception as exc:
+        print(f"[UYARI] Bagimlilik kurulumunda sorun: {exc}. Devam ediyorum.")
+
+    subprocess.call([str(venv_python), script_path] + sys.argv[1:], cwd=PROJECT_ROOT)
+    sys.exit()
 
 
 def create_venv_and_restart():
-    from launcher import create_venv_and_restart as launcher_create_venv_and_restart
+    script_path = str(Path(__file__).resolve())
+    try:
+        from launcher import create_venv_and_restart as launcher_create_venv_and_restart
 
-    launcher_create_venv_and_restart(script_path=str(Path(__file__).resolve()))
+        launcher_create_venv_and_restart(script_path=script_path)
+    except ModuleNotFoundError:
+        _bootstrap_without_launcher(script_path)
 
 
 def run_legacy_application():

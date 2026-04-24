@@ -50,11 +50,11 @@ def install_and_check():
                 ]
                 + missing
             )
-            print(" \- [SUCCESS] All packages installed.")
+            print(" \\- [SUCCESS] All packages installed.")
         except Exception as e:
-            print(f" \- [ERROR] Installation failed: {e}")
+            print(f" \\- [ERROR] Installation failed: {e}")
             sys.exit(1)
     else:
-        print(" \- All requirements already installed.")
+        print(" \\- All requirements already installed.")
 
     print("-" * 40)

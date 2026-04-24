@@ -4,12 +4,6 @@ import sys
 import time
 import webbrowser
 
-from core.runtime_compat import (
-    apply_runtime_defaults,
-    detect_runtime_compatibility,
-    format_runtime_compatibility,
-)
-
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 if PROJECT_ROOT not in sys.path:
@@ -109,6 +103,8 @@ def _bridge_health():
         return True, get_bridge_base_url(), health
     except PhoneBridgeClientError as exc:
         return False, get_bridge_base_url(), str(exc)
+    except Exception as exc:
+        return False, get_bridge_base_url(), f"Beklenmeyen health hatasi: {exc}"
 
 
 def ensure_bridge_running():
@@ -155,6 +151,12 @@ def run_stack():
         import pip_system_certs  # noqa: F401
     except ImportError:
         pass
+
+    from core.runtime_compat import (
+        apply_runtime_defaults,
+        detect_runtime_compatibility,
+        format_runtime_compatibility,
+    )
 
     compatibility = apply_runtime_defaults(detect_runtime_compatibility())
     for line in format_runtime_compatibility(compatibility):
