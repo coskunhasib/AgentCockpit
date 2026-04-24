@@ -1,8 +1,19 @@
 # core/bot_engine.py
 import asyncio
+import contextvars
+import functools
 import logging
 import os
 import sys
+
+
+async def _run_in_thread_with_context(func, *args, **kwargs):
+    """asyncio.to_thread replacement that copies ContextVars (Python <3.12 safe)."""
+    ctx = contextvars.copy_context()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, functools.partial(ctx.run, func, *args, **kwargs)
+    )
 import time
 import traceback
 
@@ -93,20 +104,35 @@ def _patch_ptb_updater_slot_bug():
     if hasattr(Updater, cleanup_attr):
         return
 
+    import weakref
+    _updater_weak_refs = {}
+
     def _get_cleanup_cb(instance):
         return _UPDATER_POLLING_CLEANUP_STATE.get(id(instance))
 
     def _set_cleanup_cb(instance, value):
-        _UPDATER_POLLING_CLEANUP_STATE[id(instance)] = value
+        inst_id = id(instance)
+        _UPDATER_POLLING_CLEANUP_STATE[inst_id] = value
+        # Clean up when instance is garbage collected
+        if inst_id not in _updater_weak_refs:
+            try:
+                _updater_weak_refs[inst_id] = weakref.ref(
+                    instance, lambda ref, _id=inst_id: _UPDATER_POLLING_CLEANUP_STATE.pop(_id, None)
+                )
+            except TypeError:
+                pass
 
     setattr(Updater, cleanup_attr, property(_get_cleanup_cb, _set_cleanup_cb))
     logger.info("Applied PTB Updater slot workaround for Python 3.13 compatibility")
 
-if sys.platform == "win32":
+try:
     import io
-
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stdout, "buffer") and (sys.stdout.encoding or "").lower() not in ("utf-8", "utf8"):
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer") and (sys.stderr.encoding or "").lower() not in ("utf-8", "utf8"):
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -240,39 +266,51 @@ def _save_user_id_to_env(user_id):
     """Append user ID to the .env ALLOWED_USER_ID field."""
     env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env")
     lines = []
-    found = False
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
-    except FileNotFoundError:
-        pass
+    import threading
+    _env_lock = getattr(_save_user_id_to_env, "_lock", None)
+    if _env_lock is None:
+        _env_lock = threading.Lock()
+        _save_user_id_to_env._lock = _env_lock
 
-    new_lines = []
-    for line in lines:
-        if line.startswith("ALLOWED_USER_ID="):
-            existing = line.strip().split("=", 1)[1]
-            ids = [uid.strip() for uid in existing.split(",") if uid.strip()]
-            if user_id not in ids:
-                ids.append(user_id)
-            new_lines.append(f"ALLOWED_USER_ID={','.join(ids)}\n")
-            found = True
-        else:
-            new_lines.append(line)
+    with _env_lock:
+        found = False
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            pass
 
-    if not found:
-        new_lines.append(f"ALLOWED_USER_ID={user_id}\n")
+        new_lines = []
+        for line in lines:
+            if line.startswith("ALLOWED_USER_ID="):
+                existing = line.strip().split("=", 1)[1]
+                ids = [uid.strip() for uid in existing.split(",") if uid.strip()]
+                if user_id not in ids:
+                    ids.append(user_id)
+                new_lines.append(f"ALLOWED_USER_ID={','.join(ids)}\n")
+                found = True
+            else:
+                new_lines.append(line)
 
-    with open(env_path, "w", encoding="utf-8") as f:
-        f.writelines(new_lines)
+        if not found:
+            new_lines.append(f"ALLOWED_USER_ID={user_id}\n")
+
+        with open(env_path, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
 
     ALLOWED_IDS.add(user_id)
     logger.info(f"Yeni kullanici kaydedildi: {user_id}")
 
 
+_auto_register_done = False
+
+
 async def check_auth(update: Update):
+    global _auto_register_done
     user_id = str(update.effective_user.id)
 
-    if not ALLOWED_IDS:
+    if not ALLOWED_IDS and not _auto_register_done:
+        _auto_register_done = True  # Tek kullanici kaydi, race engellendir
         _save_user_id_to_env(user_id)
         name = update.effective_user.first_name or "Kullanici"
         await update.message.reply_text(
@@ -380,7 +418,7 @@ def get_codex_session_inline_keyboard():
         label_title = session.get("display_title") or session["title"]
         button_label = f"{index}. {workspace}"
         session_id = session.get("id") or session["title"]
-        cb_data = f"codses:{session_id}"
+        cb_data = f"codses:{str(session_id)[:20]}"
         session_cache[cb_data] = {
             "id": session.get("id"),
             "title": session["title"],
@@ -720,7 +758,7 @@ async def _apply_claude_setting(query, setter, value, options, context=None):
         await query.edit_message_text("Secim kaydedilemedi.")
         return
 
-    synced, sync_message = await asyncio.to_thread(sync_claude_settings)
+    synced, sync_message = await _run_in_thread_with_context(sync_claude_settings)
     label = _get_option_label(options, value)
     status = "canli uygulandi" if synced else "kaydedildi"
     detail = sync_message if synced else "Claude acikken sonraki promptta uygulanacak."
@@ -826,7 +864,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             handle = find_claude_window()
             if handle and focus_window(handle):
                 if click_new_session():
-                    await asyncio.to_thread(sync_claude_settings)
+                    await _run_in_thread_with_context(sync_claude_settings)
                     await update.message.reply_text(
                         "Yeni session acildi.", reply_markup=get_claude_keyboard()
                     )
@@ -1183,7 +1221,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         button_text = permission_cache[data]
         await query.edit_message_text(f"Tiklandi: {button_text}")
 
-        clicked = await asyncio.to_thread(click_permission_button, button_text)
+        clicked = await _run_in_thread_with_context(click_permission_button, button_text)
         if not clicked:
             await context.bot.send_message(
                 chat_id=query.message.chat_id,
@@ -1235,7 +1273,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         handle = find_claude_window()
         if handle and focus_window(handle):
             if click_new_session():
-                await asyncio.to_thread(sync_claude_settings)
+                await _run_in_thread_with_context(sync_claude_settings)
                 await query.edit_message_text("Yeni session acildi.")
             else:
                 await query.edit_message_text("Yeni session acilamadi.")
@@ -1244,6 +1282,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     session_cache = get_session_cache()
+    if data.startswith("ses:") and data not in session_cache and data != "ses:new":
+        await query.edit_message_text("Session suresi doldu. Tekrar sec.")
+        return
     if data.startswith("ses:") and data in session_cache:
         info = session_cache[data]
         sid = info["id"]
@@ -1258,8 +1299,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"{title}\nSession aciliyor...")
         opened = False
         if transport == "desktop":
-            opened = await asyncio.to_thread(open_session_in_desktop, title, get_tab())
-            await asyncio.to_thread(sync_claude_settings)
+            opened = await _run_in_thread_with_context(open_session_in_desktop, title, get_tab())
+            await _run_in_thread_with_context(sync_claude_settings)
 
         status_text = f"Session: {title}\n"
         if transport == "desktop":
@@ -1324,7 +1365,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["mode"] = "codex"
 
         await query.edit_message_text(f"{title}\nCodex session aciliyor...")
-        opened = await asyncio.to_thread(
+        opened = await _run_in_thread_with_context(
             codex_bridge.open_session_in_desktop, title, session_cwd
         )
         status_text = f"Session: {title}\n"
@@ -1533,15 +1574,14 @@ def run_bot():
             try:
                 first_id = next(iter(ALLOWED_IDS), None)
                 if first_id:
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        asyncio.create_task(
-                            notify_crash(TOKEN, first_id, crash_file, str(exc))
-                        )
-                    else:
+                    try:
+                        loop = asyncio.new_event_loop()
                         loop.run_until_complete(
                             notify_crash(TOKEN, first_id, crash_file, str(exc))
                         )
+                        loop.close()
+                    except Exception:
+                        pass
             except Exception as notify_err:
                 logger.error(f"Bildirim hatasi: {notify_err}")
 

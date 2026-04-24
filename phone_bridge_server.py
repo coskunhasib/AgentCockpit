@@ -626,7 +626,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         return None, None
 
     def _require_admin(self):
-        if self._extract_admin_token() == self.server.admin_token:
+        import hmac
+        if hmac.compare_digest(self._extract_admin_token() or "", self.server.admin_token or ""):
             return True
         self._json_response(
             {"status": "forbidden", "message": "Invalid admin token."},

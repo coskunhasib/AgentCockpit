@@ -43,8 +43,15 @@ class ClaudePlatformMacOSTests(unittest.TestCase):
             {"text": "Claude cevap satir 2", "left": 500, "top": 290},
             {"text": "Type / for commands", "left": 420, "top": 760},
         ]
+        call_count = {"n": 0}
+        def mock_collect_role_texts(role):
+            call_count["n"] += 1
+            if call_count["n"] <= 2:
+                return ["Stop"]  # Phase 1: Stop appears
+            return ["Send"]     # Phase 2: Stop disappears
+
         with patch.object(
-            claude_platform_macos, "_collect_role_texts", return_value=["Send"]
+            claude_platform_macos, "_collect_role_texts", side_effect=mock_collect_role_texts
         ), patch.object(
             claude_platform_macos, "_collect_visible_items", return_value=visible_items
         ), patch.object(claude_platform_macos.time, "sleep"):

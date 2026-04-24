@@ -37,11 +37,11 @@ class SnapshotFrame:
 class WanSnapshotSession:
     chat_id: int
     task: asyncio.Task
-    message_id: int | None = None
+    message_id: "int | None" = None
     started_at: float = field(default_factory=time.time)
     last_sent_at: float = 0.0
     last_change_score: float = 0.0
-    signature: Image.Image | None = None
+    signature: "Image.Image | None" = None
 
 
 _sessions: dict[int, WanSnapshotSession] = {}

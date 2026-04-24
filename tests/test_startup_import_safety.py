@@ -1,5 +1,6 @@
 import builtins
 import importlib.util
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -17,6 +18,8 @@ def _load_module_with_blocked_imports(relative_path, temp_name, blocked_roots):
     source_path = ROOT / relative_path
     spec = importlib.util.spec_from_file_location(temp_name, source_path)
     module = importlib.util.module_from_spec(spec)
+    # Register in sys.modules so dataclass annotation resolution works
+    sys.modules[temp_name] = module
     real_import = builtins.__import__
 
     def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
@@ -25,8 +28,11 @@ def _load_module_with_blocked_imports(relative_path, temp_name, blocked_roots):
             raise ImportError(f"blocked import: {name}")
         return real_import(name, globals, locals, fromlist, level)
 
-    with patch("builtins.__import__", side_effect=guarded_import):
-        spec.loader.exec_module(module)
+    try:
+        with patch("builtins.__import__", side_effect=guarded_import):
+            spec.loader.exec_module(module)
+    finally:
+        sys.modules.pop(temp_name, None)
     return module
 
 

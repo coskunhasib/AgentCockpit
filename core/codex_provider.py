@@ -1,3 +1,4 @@
+from __future__ import annotations
 from core import codex_bridge
 from core.provider_contract import SessionRecord
 

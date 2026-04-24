@@ -690,7 +690,22 @@ def open_session_in_desktop(title, mode="code"):
 
 
 def wait_and_read_response(timeout, last_prompt=None):
-    time.sleep(2)
+    time.sleep(1)
+
+    # Faz 1: Stop butonunun GORUNMESINI bekle (Claude cevap vermeye basladi)
+    appear_start = time.time()
+    stop_appeared = False
+    while time.time() - appear_start < 30:
+        buttons = _collect_role_texts("button")
+        if "Stop" in buttons:
+            stop_appeared = True
+            break
+        time.sleep(0.5)
+
+    if not stop_appeared:
+        return "(Claude cevap vermeye baslamadi. Claude Desktop'u kontrol et.)"
+
+    # Faz 2: Stop KAYBOLMASINI bekle (Claude cevabi tamamladi)
     start = time.time()
     while time.time() - start < timeout:
         buttons = _collect_role_texts("button")

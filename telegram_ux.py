@@ -490,7 +490,7 @@ def _build_claude_session_browser(mode=None):
             or (active_title and title == active_title)
         )
         marker = "●" if is_active else "○"
-        cb_data = f"ses:{session_id}"
+        cb_data = f"ses:{str(session_id)[:20]}"
         session_cache[cb_data] = {
             "id": session.get("id"),
             "title": title,
@@ -541,7 +541,7 @@ def get_codex_session_inline_keyboard():
             or (active_title and title == active_title)
         )
         marker = "●" if is_active else "○"
-        cb_data = f"codses:{session_id}"
+        cb_data = f"codses:{str(session_id)[:20]}"
         session_cache[cb_data] = {
             "id": session.get("id"),
             "title": session.get("title"),

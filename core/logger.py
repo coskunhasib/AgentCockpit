@@ -15,11 +15,14 @@ os.makedirs(CRASH_DIR, exist_ok=True)
 
 logger.remove()
 
-# Windows stderr emoji fix: wrap with utf-8 to avoid charmap crash
+# stderr UTF-8 fix: Windows charmap + macOS LANG=C
 _stderr_sink = sys.stderr
-if sys.platform == "win32":
+try:
     import io
-    _stderr_sink = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "buffer") and (sys.stderr.encoding or "").lower() not in ("utf-8", "utf8"):
+        _stderr_sink = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 logger.add(
     _stderr_sink,

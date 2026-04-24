@@ -1,5 +1,7 @@
 # core/claude_bridge.py
 import asyncio
+import contextvars
+import functools
 import html
 import json
 import os
@@ -7,6 +9,15 @@ import subprocess
 import sys
 import time
 import uuid
+
+
+async def _run_in_thread_with_context(func, *args, **kwargs):
+    """asyncio.to_thread replacement that copies ContextVars (Python <3.12 safe)."""
+    ctx = contextvars.copy_context()
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, functools.partial(ctx.run, func, *args, **kwargs)
+    )
 
 from core.claude_state import get_state, get_state_key, save_profile
 from core.claude_ui_config import (
@@ -72,6 +83,7 @@ DEDUP_WINDOW = 5  # seconds
 _chat_storage_entries_cache = {"signature": None, "entries": []}
 _chat_conversations_cache = {"signature": None, "items": []}
 _chat_message_cache = {}
+_CHAT_MESSAGE_CACHE_MAX = 500
 
 
 def _claude_cli_available():
@@ -278,9 +290,13 @@ def _find_chat_message_by_uuid(message_uuid):
         except Exception:
             continue
         if isinstance(obj, dict) and obj.get("uuid") == message_uuid:
+            if len(_chat_message_cache) >= _CHAT_MESSAGE_CACHE_MAX:
+                _chat_message_cache.clear()
             _chat_message_cache[cache_key] = obj
             return obj
 
+    if len(_chat_message_cache) >= _CHAT_MESSAGE_CACHE_MAX:
+        _chat_message_cache.clear()
     _chat_message_cache[cache_key] = None
     return None
 
@@ -683,7 +699,7 @@ async def continue_after_permission():
         return "[HATA] Anlik izin devami sadece Desktop modunda destekleniyor."
     state = get_state()
     logger.info(f"[permission-continue] state={get_state_key()} prompt_len={len(state.last_prompt or '')}")
-    response = await asyncio.to_thread(
+    response = await _run_in_thread_with_context(
         wait_and_read_response, 300, state.last_prompt or None
     )
     return response
@@ -711,7 +727,7 @@ async def run_claude(prompt, cwd=None):
         )
         if transport == "cli":
             logger.info("Claude CLI fallback kullaniliyor")
-            return await asyncio.to_thread(_run_claude_cli, prompt, target_cwd)
+            return await _run_in_thread_with_context(_run_claude_cli, prompt, target_cwd)
         if transport == "none":
             return "[HATA] Claude Desktop veya Claude CLI bulunamadi."
 
@@ -719,23 +735,23 @@ async def run_claude(prompt, cwd=None):
             if not open_session_in_desktop(state.session_title, mode=state.tab):
                 if _claude_cli_available():
                     logger.warning("Desktop session acilamadi, Claude CLI fallback kullaniliyor")
-                    return await asyncio.to_thread(_run_claude_cli, prompt, target_cwd)
+                    return await _run_in_thread_with_context(_run_claude_cli, prompt, target_cwd)
                 return "[HATA] Claude Desktop'ta session acilamadi. Claude acik mi?"
         else:
             handle = find_claude_window()
             if not focus_window(handle):
                 if _claude_cli_available():
                     logger.warning("Desktop bulunamadi, Claude CLI fallback kullaniliyor")
-                    return await asyncio.to_thread(_run_claude_cli, prompt, target_cwd)
+                    return await _run_in_thread_with_context(_run_claude_cli, prompt, target_cwd)
                 return "[HATA] Claude Desktop penceresi bulunamadi. Claude acik mi?"
             await asyncio.sleep(0.5)
 
-        await asyncio.to_thread(sync_claude_settings, True)
+        await _run_in_thread_with_context(sync_claude_settings, True)
 
         paste_and_send(prompt)
         logger.info(f"Prompt gonderildi ({len(prompt)} karakter)")
 
-        response = await asyncio.to_thread(wait_and_read_response, TIMEOUT, prompt)
+        response = await _run_in_thread_with_context(wait_and_read_response, TIMEOUT, prompt)
         return response
     except Exception as exc:
         logger.error(f"SendKeys hata: {exc}")
@@ -795,7 +811,7 @@ def _list_cowork_sessions(limit=10):
         for fname in files:
             if not fname.endswith(".json"):
                 continue
-            if "\\agent\\" not in os.path.join(root, fname):
+            if f"{os.sep}agent{os.sep}" not in os.path.join(root, fname):
                 continue
 
             fpath = os.path.join(root, fname)

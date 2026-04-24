@@ -1,6 +1,32 @@
 # core/data_manager.py
 import json
 import os
+import sys
+import threading
+
+_data_lock = threading.Lock()
+
+
+def _platform_hotkeys():
+    if sys.platform == "darwin":
+        return {
+            "Masaustu": ["command", "f3"],
+            "Spotlight": ["command", "space"],
+            "Kopyala": ["command", "c"],
+            "Yapistir": ["command", "v"],
+        }
+    elif sys.platform == "win32":
+        return {
+            "Masaustu": ["winleft", "d"],
+            "Gorev Yon.": ["ctrl", "shift", "esc"],
+            "Kopyala": ["ctrl", "c"],
+            "Yapistir": ["ctrl", "v"],
+        }
+    else:
+        return {
+            "Kopyala": ["ctrl", "c"],
+            "Yapistir": ["ctrl", "v"],
+        }
 
 DATA_FILE = "hotkeys.json"
 DEFAULT_CLAUDE_SETTINGS = {
@@ -25,12 +51,7 @@ class DataManager:
             "settings": {"mouse_speed": DEFAULT_MOUSE_SPEED},
             "claude_profiles": {"default": DEFAULT_CLAUDE_SETTINGS.copy()},
             "codex_profiles": {"default": DEFAULT_CODEX_SETTINGS.copy()},
-            "hotkeys": {
-                "Masaustu": ["winleft", "d"],
-                "Gorev Yon.": ["ctrl", "shift", "esc"],
-                "Kopyala": ["ctrl", "c"],
-                "Yapistir": ["ctrl", "v"],
-            },
+            "hotkeys": _platform_hotkeys(),
         }
 
     @staticmethod
@@ -99,21 +120,27 @@ class DataManager:
     @staticmethod
     def load_data():
         """Load all persisted bot data."""
-        if not os.path.exists(DATA_FILE):
-            default_data = DataManager._default_data()
-            DataManager.save_data(default_data)
-            return default_data
+        with _data_lock:
+            if not os.path.exists(DATA_FILE):
+                default_data = DataManager._default_data()
+                DataManager._save_unlocked(default_data)
+                return default_data
 
-        try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception:
-            return DataManager._default_data()
+            try:
+                with open(DATA_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception:
+                return DataManager._default_data()
 
-        return DataManager._normalize_data(data)
+            return DataManager._normalize_data(data)
 
     @staticmethod
     def save_data(data):
+        with _data_lock:
+            DataManager._save_unlocked(data)
+
+    @staticmethod
+    def _save_unlocked(data):
         data = DataManager._normalize_data(data)
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4, ensure_ascii=False)

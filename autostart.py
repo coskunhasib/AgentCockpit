@@ -81,7 +81,7 @@ def register_mac():
 </plist>"""
 
     os.makedirs(os.path.dirname(plist_path), exist_ok=True)
-    with open(plist_path, "w") as f:
+    with open(plist_path, "w", encoding="utf-8") as f:
         f.write(plist_content)
 
     if os.path.exists(legacy_plist_path):
@@ -141,7 +141,7 @@ WantedBy=default.target
             os.remove(legacy_service_path)
         except OSError:
             pass
-    with open(service_path, "w") as f:
+    with open(service_path, "w", encoding="utf-8") as f:
         f.write(service_content)
 
     subprocess.run(["systemctl", "--user", "daemon-reload"])

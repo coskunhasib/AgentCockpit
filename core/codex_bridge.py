@@ -651,6 +651,8 @@ def read_session_history(session_id=None, last_n=10):
 
 
 def _get_ui_window():
+    if sys.platform != "win32":
+        return None
     from pywinauto import Desktop
 
     desktop = Desktop(backend="uia")
@@ -681,17 +683,18 @@ def _candidate_codex_executables():
     except Exception:
         pass
 
-    windows_apps = Path(os.getenv("ProgramFiles", r"C:\Program Files")) / "WindowsApps"
-    try:
-        for path in windows_apps.glob(r"OpenAI.Codex_*\app\Codex.exe"):
-            candidates.append(str(path))
-    except Exception:
-        pass
-    try:
-        for path in windows_apps.glob(r"OpenAI.Codex_*\app\resources\codex.exe"):
-            candidates.append(str(path))
-    except Exception:
-        pass
+    if sys.platform == "win32":
+        windows_apps = Path(os.getenv("ProgramFiles", r"C:\Program Files")) / "WindowsApps"
+        try:
+            for path in windows_apps.glob(r"OpenAI.Codex_*\app\Codex.exe"):
+                candidates.append(str(path))
+        except Exception:
+            pass
+        try:
+            for path in windows_apps.glob(r"OpenAI.Codex_*\app\resources\codex.exe"):
+                candidates.append(str(path))
+        except Exception:
+            pass
 
     unique = []
     seen = set()
