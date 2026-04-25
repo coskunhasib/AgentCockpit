@@ -39,6 +39,15 @@ class DataManagerTests(unittest.TestCase):
         self.assertEqual(u2["tab"], "code")
         self.assertEqual(u2["code_model"], "opus_1m")
 
+    def test_windows_defaults_include_escape_hotkeys(self):
+        with patch.object(data_manager.sys, "platform", "win32"):
+            hotkeys = data_manager._platform_hotkeys()
+
+        self.assertEqual(hotkeys["Gorev Yon."], ["ctrl", "shift", "esc"])
+        self.assertEqual(hotkeys["Gorev Yon. Kapat"], ["taskmgr-close"])
+        self.assertEqual(hotkeys["Pencere Kapat"], ["alt", "f4"])
+        self.assertEqual(hotkeys["Gorev Degistir"], ["alt", "tab"])
+
 
 if __name__ == "__main__":
     unittest.main()

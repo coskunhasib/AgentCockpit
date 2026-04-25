@@ -19,6 +19,9 @@ def _platform_hotkeys():
         return {
             "Masaustu": ["winleft", "d"],
             "Gorev Yon.": ["ctrl", "shift", "esc"],
+            "Gorev Yon. Kapat": ["taskmgr-close"],
+            "Pencere Kapat": ["alt", "f4"],
+            "Gorev Degistir": ["alt", "tab"],
             "Kopyala": ["ctrl", "c"],
             "Yapistir": ["ctrl", "v"],
         }

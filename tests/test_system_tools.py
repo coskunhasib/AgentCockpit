@@ -23,6 +23,22 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["command", "v"]), ["ctrl", "v"])
             self.assertEqual(SystemOps.normalize_hotkey(["option", "tab"]), ["alt", "tab"])
 
+    def test_task_manager_close_command_uses_windows_taskkill(self):
+        completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+        with patch.object(system_tools.sys, "platform", "win32"), patch(
+            "core.system_tools.subprocess.run", return_value=completed
+        ) as run_mock:
+            self.assertTrue(SystemOps.close_task_manager())
+            self.assertTrue(SystemOps.press_key("taskmgr-close"))
+            self.assertTrue(SystemOps.execute_hotkey(["taskmgr-close"]))
+
+        run_mock.assert_called_with(
+            ["taskkill", "/IM", "Taskmgr.exe", "/F"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

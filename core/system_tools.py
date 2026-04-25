@@ -2,6 +2,7 @@
 import datetime
 import importlib
 import os
+import subprocess
 import sys
 
 from PIL import ImageDraw
@@ -98,11 +99,44 @@ class SystemOps:
         "win": "winleft",
         "windows": "winleft",
     }
+    SPECIAL_COMMANDS = {
+        "taskmgr-close",
+        "close-taskmgr",
+        "task-manager-close",
+    }
 
     @staticmethod
     def _normalize_key_name(key_name):
         key = str(key_name or "").strip().lower()
         return SystemOps.KEY_ALIASES.get(key, key)
+
+    @staticmethod
+    def close_task_manager():
+        if sys.platform != "win32":
+            return False
+
+        try:
+            result = subprocess.run(
+                ["taskkill", "/IM", "Taskmgr.exe", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                logger.info("Task Manager kapatildi.")
+                return True
+
+            combined = f"{result.stdout}\n{result.stderr}".lower()
+            if "not found" in combined or "bulunamad" in combined:
+                logger.info("Task Manager zaten kapali.")
+                return True
+
+            logger.error(f"Task Manager kapatilamadi: {result.stderr or result.stdout}")
+            return False
+        except Exception as exc:
+            logger.error(f"Task Manager kapatma hatasi: {exc}")
+            log_crash("system_tools.close_task_manager", str(exc))
+            return False
 
     @staticmethod
     def normalize_hotkey(keys_list):
@@ -216,10 +250,14 @@ class SystemOps:
     @staticmethod
     def press_key(key_name):
         try:
+            normalized = SystemOps._normalize_key_name(key_name)
+            if normalized in SystemOps.SPECIAL_COMMANDS:
+                return SystemOps.close_task_manager()
+
             pyautogui = _get_pyautogui()
             if not pyautogui:
                 return False
-            pyautogui.press(SystemOps._normalize_key_name(key_name))
+            pyautogui.press(normalized)
             return True
         except Exception:
             return False
@@ -227,11 +265,19 @@ class SystemOps:
     @staticmethod
     def execute_hotkey(keys_list):
         try:
+            normalized_keys = [
+                SystemOps._normalize_key_name(key) for key in keys_list or []
+            ]
+            if normalized_keys and all(
+                key in SystemOps.SPECIAL_COMMANDS for key in normalized_keys
+            ):
+                return SystemOps.close_task_manager()
+
             pyautogui = _get_pyautogui()
             if not pyautogui:
                 return False
 
-            corrected_keys = SystemOps.normalize_hotkey(keys_list)
+            corrected_keys = SystemOps.normalize_hotkey(normalized_keys)
             pyautogui.hotkey(*corrected_keys, interval=0.1)
             logger.debug(f"Hotkey: {corrected_keys}")
             return True
