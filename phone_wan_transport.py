@@ -2,6 +2,9 @@ import asyncio
 import importlib
 import io
 import os
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 
@@ -75,11 +78,23 @@ def _mouse_overlay_point(image_size):
 
 
 def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
-    pyautogui = _get_pyautogui()
-    if not pyautogui:
-        raise RuntimeError(desktop_automation_help_text())
-
-    screenshot = pyautogui.screenshot()
+    screenshot = None
+    capture_error = None
+    if sys.platform == "darwin":
+        screenshot = _capture_with_screencapture()
+        if screenshot is None:
+            capture_error = RuntimeError("screencapture ile ekran alinmadi")
+    if screenshot is None:
+        pyautogui = _get_pyautogui()
+        if not pyautogui:
+            raise RuntimeError(desktop_automation_help_text())
+        try:
+            screenshot = pyautogui.screenshot()
+        except Exception as exc:
+            capture_error = exc
+            raise RuntimeError(
+                f"Ekran goruntusu olusturulamadi. Asil hata: {exc}"
+            ) from exc
 
     try:
         mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
@@ -114,6 +129,38 @@ def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
         height=screenshot.height,
         signature=signature,
     )
+
+
+def _capture_with_screencapture():
+    if sys.platform != "darwin":
+        return None
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            temp_path = tmp.name
+
+        result = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", temp_path],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if result.returncode != 0:
+            return None
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
+            return None
+
+        with Image.open(temp_path) as captured:
+            return captured.convert("RGB")
+    except Exception:
+        return None
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def _change_score(previous, current):

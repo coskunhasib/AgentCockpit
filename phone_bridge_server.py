@@ -218,8 +218,33 @@ def _mouse_overlay_point(image_size):
 
 
 def _capture_payload(quality, max_width):
-    pyautogui = _require_pyautogui()
-    screenshot = pyautogui.screenshot().convert("RGB")
+    primary_capture_error = None
+    fallback_capture_error = None
+
+    screenshot = None
+    if sys.platform == "darwin":
+        screenshot = _capture_with_screencapture()
+        if screenshot is None:
+            primary_capture_error = RuntimeError("screencapture ile ekran alinmadi")
+            try:
+                pyautogui = _require_pyautogui()
+                screenshot = pyautogui.screenshot().convert("RGB")
+            except Exception as exc:
+                fallback_capture_error = exc
+    else:
+        try:
+            pyautogui = _require_pyautogui()
+            screenshot = pyautogui.screenshot().convert("RGB")
+        except Exception as exc:
+            primary_capture_error = exc
+
+    if screenshot is None:
+        detail = fallback_capture_error or primary_capture_error
+        raise RuntimeError(
+            "Ekran goruntusu olusturulamadi. "
+            "macOS'ta Screen Recording iznini kontrol edin ve kilitli/uykuda ekran olmadigindan emin olun. "
+            f"Asil hata: {detail}"
+        ) from detail
 
     if _is_nearly_black_frame(screenshot):
         fallback = _capture_with_screencapture()
@@ -230,6 +255,11 @@ def _capture_payload(quality, max_width):
                 "Siyah ekran algilandi. Ekran kilitli/uykuda olabilir veya Screen Recording izni eksik. "
                 "macOS'ta Terminal/iTerm icin Screen Recording iznini acip uygulamayi yeniden baslatin."
             )
+    elif primary_capture_error is not None or fallback_capture_error is not None:
+        logger.warning(
+            "Primary screenshot path failed, backup screenshot path kullanildi: %s",
+            fallback_capture_error or primary_capture_error,
+        )
 
     screen_width, screen_height = screenshot.size
 
