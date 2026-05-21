@@ -1,47 +1,106 @@
-# autostart.py
-"""Register/unregister bot for auto-start on system login."""
-import sys
+"""Register/unregister AgentCockpit for auto-start on user login."""
+
+from __future__ import annotations
+
+import argparse
 import os
+import plistlib
 import subprocess
+import sys
+from pathlib import Path
 
 
-def get_bot_dir():
-    return os.path.dirname(os.path.abspath(__file__))
+APP_LABEL = "com.agentcockpit.bot"
+WINDOWS_TASK_NAME = "AgentCockpitBot"
+LINUX_SERVICE_NAME = "agentcockpit-bot"
+
+LEGACY_MAC_LABELS = ("com.antigravity.bot",)
+LEGACY_WINDOWS_TASKS = ("AntigravityBot",)
+LEGACY_LINUX_SERVICES = ("antigravity-bot",)
 
 
-def register_windows():
+def get_bot_dir() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _first_existing(paths):
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[-1]
+
+
+def _python_executable(bot_dir: Path, *, windows_gui: bool = False) -> Path:
+    if os.name == "nt":
+        script_dir = bot_dir / "venv" / "Scripts"
+        candidates = []
+        if windows_gui:
+            candidates.append(script_dir / "pythonw.exe")
+        candidates.extend([script_dir / "python.exe", Path(sys.executable)])
+        return _first_existing(candidates)
+
+    return _first_existing(
+        [
+            bot_dir / "venv" / "bin" / "python3",
+            bot_dir / "venv" / "bin" / "python",
+            Path(sys.executable),
+        ]
+    )
+
+
+def _ensure_log_dir(bot_dir: Path) -> Path:
+    logs_dir = bot_dir / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    return logs_dir
+
+
+def _run(command, *, check: bool = False):
+    return subprocess.run(command, capture_output=True, text=True, check=check)
+
+
+def _print_completed(prefix: str, result):
+    output = (result.stdout or result.stderr or "").strip()
+    if output:
+        print(f"{prefix} {output}")
+
+
+def register_windows(*, start_now: bool = False, bot_dir: Path | None = None):
     """Register via Windows Task Scheduler (no admin required)."""
-    bot_dir = get_bot_dir()
-    python_exe = os.path.join(bot_dir, "venv", "Scripts", "pythonw.exe")
-    main_py = os.path.join(bot_dir, "main.py")
-    task_name = "AgentCockpitBot"
+    bot_dir = Path(bot_dir or get_bot_dir())
+    python_exe = _python_executable(bot_dir, windows_gui=True)
+    main_py = bot_dir / "main.py"
+    command = subprocess.list2cmdline([str(python_exe), str(main_py)])
 
-    # Remove old task names if they exist.
-    for old_name in ("AntigravityBot", task_name):
-        subprocess.run(
-            ["schtasks", "/Delete", "/TN", old_name, "/F"],
-            capture_output=True
-        )
+    for old_name in (*LEGACY_WINDOWS_TASKS, WINDOWS_TASK_NAME):
+        _run(["schtasks", "/Delete", "/TN", old_name, "/F"])
 
-    # Create task that runs at logon
-    subprocess.run([
-        "schtasks", "/Create",
-        "/TN", task_name,
-        "/TR", f'"{python_exe}" "{main_py}"',
-        "/SC", "ONLOGON",
-        "/RL", "LIMITED",
-        "/F",
-    ], check=True)
-    print(f"[OK] '{task_name}' auto-start kaydedildi.")
+    _run(
+        [
+            "schtasks",
+            "/Create",
+            "/TN",
+            WINDOWS_TASK_NAME,
+            "/TR",
+            command,
+            "/SC",
+            "ONLOGON",
+            "/RL",
+            "LIMITED",
+            "/F",
+        ],
+        check=True,
+    )
+    print(f"[OK] '{WINDOWS_TASK_NAME}' auto-start kaydedildi.")
+
+    if start_now:
+        _run(["schtasks", "/Run", "/TN", WINDOWS_TASK_NAME], check=True)
+        print(f"[OK] '{WINDOWS_TASK_NAME}' simdi baslatildi.")
 
 
 def unregister_windows():
     removed = False
-    for task_name in ("AgentCockpitBot", "AntigravityBot"):
-        result = subprocess.run(
-            ["schtasks", "/Delete", "/TN", task_name, "/F"],
-            capture_output=True
-        )
+    for task_name in (WINDOWS_TASK_NAME, *LEGACY_WINDOWS_TASKS):
+        result = _run(["schtasks", "/Delete", "/TN", task_name, "/F"])
         if result.returncode == 0:
             print(f"[OK] '{task_name}' auto-start kaldirildi.")
             removed = True
@@ -49,128 +108,253 @@ def unregister_windows():
         print("[OK] Auto-start gorevi zaten kayitli degildi.")
 
 
-def register_mac():
-    """Register via launchd plist."""
-    bot_dir = get_bot_dir()
-    python_exe = os.path.join(bot_dir, "venv", "bin", "python3")
-    main_py = os.path.join(bot_dir, "main.py")
-    plist_name = "com.agentcockpit.bot"
-    plist_path = os.path.expanduser(f"~/Library/LaunchAgents/{plist_name}.plist")
-    legacy_plist_path = os.path.expanduser("~/Library/LaunchAgents/com.antigravity.bot.plist")
-
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{plist_name}</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{python_exe}</string>
-        <string>{main_py}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>WorkingDirectory</key>
-    <string>{bot_dir}</string>
-    <key>StandardOutPath</key>
-    <string>{bot_dir}/logs/launchd.log</string>
-    <key>StandardErrorPath</key>
-    <string>{bot_dir}/logs/launchd_err.log</string>
-</dict>
-</plist>"""
-
-    os.makedirs(os.path.dirname(plist_path), exist_ok=True)
-    with open(plist_path, "w", encoding="utf-8") as f:
-        f.write(plist_content)
-
-    if os.path.exists(legacy_plist_path):
-        subprocess.run(["launchctl", "unload", legacy_plist_path], capture_output=True)
-        try:
-            os.remove(legacy_plist_path)
-        except OSError:
-            pass
-
-    subprocess.run(["launchctl", "load", plist_path])
-    print(f"[OK] '{plist_name}' auto-start kaydedildi.")
+def status_windows():
+    result = _run(["schtasks", "/Query", "/TN", WINDOWS_TASK_NAME])
+    if result.returncode == 0:
+        print(f"[OK] '{WINDOWS_TASK_NAME}' kayitli.")
+        _print_completed("[INFO]", result)
+    else:
+        print(f"[INFO] '{WINDOWS_TASK_NAME}' kayitli degil.")
 
 
-def unregister_mac():
+def _mac_domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _mac_target(label: str = APP_LABEL) -> str:
+    return f"{_mac_domain()}/{label}"
+
+
+def _bootout_mac_label(label: str):
+    _run(["launchctl", "bootout", _mac_target(label)])
+
+
+def _mac_plist_payload(bot_dir: Path, python_exe: Path, main_py: Path, logs_dir: Path):
+    return {
+        "Label": APP_LABEL,
+        "ProgramArguments": [str(python_exe), str(main_py)],
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "WorkingDirectory": str(bot_dir),
+        "EnvironmentVariables": {
+            "PYTHONIOENCODING": "utf-8",
+            "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+        },
+        "StandardOutPath": str(logs_dir / "launchd.log"),
+        "StandardErrorPath": str(logs_dir / "launchd_err.log"),
+        "LimitLoadToSessionType": "Aqua",
+    }
+
+
+def register_mac(
+    *,
+    start_now: bool = True,
+    bot_dir: Path | None = None,
+    launch_agents_dir: Path | None = None,
+):
+    """Register via launchd LaunchAgent."""
+    bot_dir = Path(bot_dir or get_bot_dir())
+    python_exe = _python_executable(bot_dir)
+    main_py = bot_dir / "main.py"
+    logs_dir = _ensure_log_dir(bot_dir)
+    launch_agents_dir = Path(launch_agents_dir or Path.home() / "Library" / "LaunchAgents")
+    plist_path = launch_agents_dir / f"{APP_LABEL}.plist"
+
+    launch_agents_dir.mkdir(parents=True, exist_ok=True)
+
+    for label in (APP_LABEL, *LEGACY_MAC_LABELS):
+        _bootout_mac_label(label)
+        legacy_path = launch_agents_dir / f"{label}.plist"
+        _run(["launchctl", "unload", str(legacy_path)])
+        if label != APP_LABEL and legacy_path.exists():
+            legacy_path.unlink()
+
+    with plist_path.open("wb") as plist_file:
+        plistlib.dump(
+            _mac_plist_payload(bot_dir, python_exe, main_py, logs_dir),
+            plist_file,
+            sort_keys=False,
+        )
+
+    _run(["launchctl", "enable", _mac_target(APP_LABEL)])
+
+    if start_now:
+        result = _run(["launchctl", "bootstrap", _mac_domain(), str(plist_path)])
+        if result.returncode != 0:
+            _bootout_mac_label(APP_LABEL)
+            result = _run(["launchctl", "bootstrap", _mac_domain(), str(plist_path)])
+        if result.returncode != 0:
+            _print_completed("[HATA]", result)
+            raise RuntimeError("launchctl bootstrap basarisiz oldu")
+        print(f"[OK] '{APP_LABEL}' auto-start kaydedildi ve baslatildi.")
+    else:
+        print(f"[OK] '{APP_LABEL}' auto-start kaydedildi. Bir sonraki giriste baslayacak.")
+
+    print(f"[INFO] LaunchAgent: {plist_path}")
+
+
+def unregister_mac(*, launch_agents_dir: Path | None = None):
+    launch_agents_dir = Path(launch_agents_dir or Path.home() / "Library" / "LaunchAgents")
     removed = False
-    for plist_name in ("com.agentcockpit.bot", "com.antigravity.bot"):
-        plist_path = os.path.expanduser(f"~/Library/LaunchAgents/{plist_name}.plist")
-        subprocess.run(["launchctl", "unload", plist_path], capture_output=True)
-        if os.path.exists(plist_path):
-            os.remove(plist_path)
-            print(f"[OK] '{plist_name}' auto-start kaldirildi.")
+    for label in (APP_LABEL, *LEGACY_MAC_LABELS):
+        plist_path = launch_agents_dir / f"{label}.plist"
+        _bootout_mac_label(label)
+        _run(["launchctl", "unload", str(plist_path)])
+        if plist_path.exists():
+            plist_path.unlink()
+            print(f"[OK] '{label}' auto-start kaldirildi.")
             removed = True
     if not removed:
         print("[OK] Auto-start plist'i zaten kayitli degildi.")
 
 
-def register_linux():
+def status_mac(*, launch_agents_dir: Path | None = None):
+    launch_agents_dir = Path(launch_agents_dir or Path.home() / "Library" / "LaunchAgents")
+    plist_path = launch_agents_dir / f"{APP_LABEL}.plist"
+    if plist_path.exists():
+        print(f"[OK] LaunchAgent kayitli: {plist_path}")
+    else:
+        print(f"[INFO] LaunchAgent kayitli degil: {plist_path}")
+
+    result = _run(["launchctl", "print", _mac_target(APP_LABEL)])
+    if result.returncode == 0:
+        print(f"[OK] '{APP_LABEL}' su an launchd tarafinda yuklu.")
+    elif plist_path.exists():
+        print(f"[INFO] '{APP_LABEL}' su an yuklu degil; bir sonraki kullanici girisinde yuklenecek.")
+    else:
+        print(f"[INFO] '{APP_LABEL}' su an yuklu degil.")
+
+
+def _systemd_quote(value: Path | str) -> str:
+    raw = str(value)
+    return '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def register_linux(*, start_now: bool = True, bot_dir: Path | None = None):
     """Register via systemd user service."""
-    bot_dir = get_bot_dir()
-    python_exe = os.path.join(bot_dir, "venv", "bin", "python3")
-    main_py = os.path.join(bot_dir, "main.py")
-    service_name = "agentcockpit-bot"
-    service_dir = os.path.expanduser("~/.config/systemd/user")
-    service_path = os.path.join(service_dir, f"{service_name}.service")
-    legacy_service_path = os.path.join(service_dir, "antigravity-bot.service")
+    bot_dir = Path(bot_dir or get_bot_dir())
+    python_exe = _python_executable(bot_dir)
+    main_py = bot_dir / "main.py"
+    service_dir = Path.home() / ".config" / "systemd" / "user"
+    service_path = service_dir / f"{LINUX_SERVICE_NAME}.service"
 
     service_content = f"""[Unit]
 Description=AgentCockpit Telegram Bot
-After=network.target
+After=network-online.target
+Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory={bot_dir}
-ExecStart={python_exe} {main_py}
+WorkingDirectory={_systemd_quote(bot_dir)}
+ExecStart={_systemd_quote(python_exe)} {_systemd_quote(main_py)}
 Restart=on-failure
 RestartSec=10
+Environment=PYTHONIOENCODING=utf-8
 
 [Install]
 WantedBy=default.target
 """
 
-    os.makedirs(service_dir, exist_ok=True)
-    if os.path.exists(legacy_service_path):
-        subprocess.run(["systemctl", "--user", "stop", "antigravity-bot"], capture_output=True)
-        subprocess.run(["systemctl", "--user", "disable", "antigravity-bot"], capture_output=True)
-        try:
-            os.remove(legacy_service_path)
-        except OSError:
-            pass
-    with open(service_path, "w", encoding="utf-8") as f:
-        f.write(service_content)
+    service_dir.mkdir(parents=True, exist_ok=True)
+    for service_name in (*LEGACY_LINUX_SERVICES, LINUX_SERVICE_NAME):
+        _run(["systemctl", "--user", "stop", service_name])
+        _run(["systemctl", "--user", "disable", service_name])
+        legacy_path = service_dir / f"{service_name}.service"
+        if service_name != LINUX_SERVICE_NAME and legacy_path.exists():
+            legacy_path.unlink()
 
-    subprocess.run(["systemctl", "--user", "daemon-reload"])
-    subprocess.run(["systemctl", "--user", "enable", service_name])
-    subprocess.run(["systemctl", "--user", "start", service_name])
-    print(f"[OK] '{service_name}' auto-start kaydedildi.")
+    service_path.write_text(service_content, encoding="utf-8")
+    _run(["systemctl", "--user", "daemon-reload"], check=True)
+    _run(["systemctl", "--user", "enable", LINUX_SERVICE_NAME], check=True)
+    if start_now:
+        _run(["systemctl", "--user", "start", LINUX_SERVICE_NAME], check=True)
+        print(f"[OK] '{LINUX_SERVICE_NAME}' auto-start kaydedildi ve baslatildi.")
+    else:
+        print(f"[OK] '{LINUX_SERVICE_NAME}' auto-start kaydedildi. Bir sonraki giriste baslayacak.")
 
 
 def unregister_linux():
     removed = False
-    for service_name in ("agentcockpit-bot", "antigravity-bot"):
-        subprocess.run(["systemctl", "--user", "stop", service_name], capture_output=True)
-        subprocess.run(["systemctl", "--user", "disable", service_name], capture_output=True)
-        service_path = os.path.expanduser(f"~/.config/systemd/user/{service_name}.service")
-        if os.path.exists(service_path):
-            os.remove(service_path)
+    for service_name in (LINUX_SERVICE_NAME, *LEGACY_LINUX_SERVICES):
+        _run(["systemctl", "--user", "stop", service_name])
+        _run(["systemctl", "--user", "disable", service_name])
+        service_path = Path.home() / ".config" / "systemd" / "user" / f"{service_name}.service"
+        if service_path.exists():
+            service_path.unlink()
             print(f"[OK] '{service_name}' auto-start kaldirildi.")
             removed = True
-    subprocess.run(["systemctl", "--user", "daemon-reload"])
+    _run(["systemctl", "--user", "daemon-reload"])
     if not removed:
         print("[OK] Auto-start servisi zaten kayitli degildi.")
 
 
-if __name__ == "__main__":
-    action = sys.argv[1] if len(sys.argv) > 1 else "register"
+def status_linux():
+    result = _run(["systemctl", "--user", "is-enabled", LINUX_SERVICE_NAME])
+    if result.returncode == 0:
+        print(f"[OK] '{LINUX_SERVICE_NAME}' enabled.")
+    else:
+        print(f"[INFO] '{LINUX_SERVICE_NAME}' enabled degil.")
+
+    result = _run(["systemctl", "--user", "is-active", LINUX_SERVICE_NAME])
+    if result.returncode == 0:
+        print(f"[OK] '{LINUX_SERVICE_NAME}' aktif.")
+    else:
+        print(f"[INFO] '{LINUX_SERVICE_NAME}' aktif degil.")
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description="AgentCockpit auto-start yonetimi")
+    parser.add_argument(
+        "action",
+        nargs="?",
+        choices=("register", "unregister", "status"),
+        default="register",
+        help="register: kaydet, unregister: kaldir, status: durumu goster",
+    )
+    parser.add_argument(
+        "--no-start",
+        action="store_true",
+        help="Kaydi yap ama mevcut oturumda hemen baslatma.",
+    )
+    parser.add_argument(
+        "--start-now",
+        action="store_true",
+        help="Kayittan sonra mevcut oturumda hemen baslat.",
+    )
+    args = parser.parse_args(argv)
+    if args.no_start and args.start_now:
+        parser.error("--no-start ve --start-now birlikte kullanilamaz")
+    return args
+
+
+def main(argv=None):
+    args = _parse_args(argv)
 
     if sys.platform == "win32":
-        unregister_windows() if action == "unregister" else register_windows()
-    elif sys.platform == "darwin":
-        unregister_mac() if action == "unregister" else register_mac()
+        if args.action == "unregister":
+            unregister_windows()
+        elif args.action == "status":
+            status_windows()
+        else:
+            register_windows(start_now=args.start_now)
+        return
+
+    if sys.platform == "darwin":
+        if args.action == "unregister":
+            unregister_mac()
+        elif args.action == "status":
+            status_mac()
+        else:
+            register_mac(start_now=not args.no_start)
+        return
+
+    if args.action == "unregister":
+        unregister_linux()
+    elif args.action == "status":
+        status_linux()
     else:
-        unregister_linux() if action == "unregister" else register_linux()
+        register_linux(start_now=not args.no_start)
+
+
+if __name__ == "__main__":
+    main()

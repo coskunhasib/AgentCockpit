@@ -57,6 +57,34 @@ Ortam tani raporu almak icin:
 python main.py --doctor
 ```
 
+## Sistem Baslangicinda Acma
+
+AgentCockpit'i kullanici oturumu acilinca otomatik baslatmak icin:
+
+```bash
+python autostart.py register
+```
+
+Bu komut macOS'ta LaunchAgent, Windows'ta Task Scheduler, Linux'ta systemd user
+service kaydi olusturur. Uygulama zaten aciksa ve sadece sonraki oturum icin
+kaydetmek istiyorsan:
+
+```bash
+python autostart.py register --no-start
+```
+
+Durumu kontrol etmek veya kaydi kaldirmak icin:
+
+```bash
+python autostart.py status
+python autostart.py unregister
+```
+
+macOS'ta ekran aktarimi icin Sistem Ayarlari > Gizlilik ve Guvenlik > Ekran ve
+Sistem Sesi Kaydi altinda AgentCockpit'i baslatan uygulamaya izin verilmis
+olmasi gerekir. Elle baslatmada bu uygulama genelde terminal/Codex, otomatik
+baslatmada ise Python olabilir.
+
 ## Telefon ve PWA
 
 Telefon/PWA kurulum notlari:
