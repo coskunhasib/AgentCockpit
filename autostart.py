@@ -5,12 +5,14 @@ from __future__ import annotations
 import argparse
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
 APP_LABEL = "com.agentcockpit.bot"
+MAC_SCREEN_SESSION = "agentcockpit"
 WINDOWS_TASK_NAME = "AgentCockpitBot"
 LINUX_SERVICE_NAME = "agentcockpit-bot"
 
@@ -129,10 +131,34 @@ def _bootout_mac_label(label: str):
     _run(["launchctl", "bootout", _mac_target(label)])
 
 
+def _mac_screen_executable() -> Path | None:
+    screen = shutil.which("screen")
+    return Path(screen) if screen else None
+
+
+def _mac_program_arguments(python_exe: Path, main_py: Path):
+    screen_exe = _mac_screen_executable()
+    if screen_exe:
+        return [
+            str(screen_exe),
+            "-DmS",
+            MAC_SCREEN_SESSION,
+            str(python_exe),
+            str(main_py),
+        ]
+    return [str(python_exe), str(main_py)]
+
+
+def _quit_mac_screen_session():
+    screen_exe = _mac_screen_executable()
+    if screen_exe:
+        _run([str(screen_exe), "-S", MAC_SCREEN_SESSION, "-X", "quit"])
+
+
 def _mac_plist_payload(bot_dir: Path, python_exe: Path, main_py: Path, logs_dir: Path):
     return {
         "Label": APP_LABEL,
-        "ProgramArguments": [str(python_exe), str(main_py)],
+        "ProgramArguments": _mac_program_arguments(python_exe, main_py),
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
         "WorkingDirectory": str(bot_dir),
@@ -161,6 +187,8 @@ def register_mac(
     plist_path = launch_agents_dir / f"{APP_LABEL}.plist"
 
     launch_agents_dir.mkdir(parents=True, exist_ok=True)
+
+    _quit_mac_screen_session()
 
     for label in (APP_LABEL, *LEGACY_MAC_LABELS):
         _bootout_mac_label(label)
@@ -196,6 +224,7 @@ def register_mac(
 def unregister_mac(*, launch_agents_dir: Path | None = None):
     launch_agents_dir = Path(launch_agents_dir or Path.home() / "Library" / "LaunchAgents")
     removed = False
+    _quit_mac_screen_session()
     for label in (APP_LABEL, *LEGACY_MAC_LABELS):
         plist_path = launch_agents_dir / f"{label}.plist"
         _bootout_mac_label(label)

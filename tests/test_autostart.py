@@ -34,7 +34,7 @@ class AutostartTests(unittest.TestCase):
 
             with patch("autostart.subprocess.run", side_effect=fake_run), patch(
                 "autostart.os.getuid", return_value=501
-            ):
+            ), patch("autostart.shutil.which", return_value="/usr/bin/screen"):
                 autostart.register_mac(
                     start_now=False,
                     bot_dir=bot_dir,
@@ -45,12 +45,25 @@ class AutostartTests(unittest.TestCase):
             payload = plistlib.loads(plist_path.read_bytes())
 
             self.assertEqual(payload["Label"], autostart.APP_LABEL)
-            self.assertEqual(payload["ProgramArguments"], [str(python_exe), str(main_py)])
+            self.assertEqual(
+                payload["ProgramArguments"],
+                [
+                    "/usr/bin/screen",
+                    "-DmS",
+                    autostart.MAC_SCREEN_SESSION,
+                    str(python_exe),
+                    str(main_py),
+                ],
+            )
             self.assertEqual(payload["WorkingDirectory"], str(bot_dir))
             self.assertEqual(payload["EnvironmentVariables"]["PYTHONIOENCODING"], "utf-8")
             self.assertTrue((bot_dir / "logs").is_dir())
             self.assertFalse(any("bootstrap" in command for command in calls))
             self.assertIn(["launchctl", "enable", "gui/501/com.agentcockpit.bot"], calls)
+            self.assertIn(
+                ["/usr/bin/screen", "-S", autostart.MAC_SCREEN_SESSION, "-X", "quit"],
+                calls,
+            )
 
     def test_systemd_quote_preserves_paths_with_spaces(self):
         self.assertEqual(
