@@ -684,7 +684,7 @@
       <button class="keyboard-close" id="btn-keyboard-close" type="button">Kapat</button>
     </div>
     <div class="input-row">
-      <input id="type-input" type="text" placeholder="Yaz ve gonder" autocomplete="off">
+      <input id="type-input" type="password" placeholder="Yaz ve gonder" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
       <button class="send-btn" id="send-text">Send</button>
     </div>
     <div class="key-row">
@@ -1745,7 +1745,7 @@
         if (!value) {
           return;
         }
-        postAction({ type: 'type', text: value, delay: 0.12 });
+        postAction({ type: 'type', text: value, sensitive: true, delay: 0.12 });
         typeInput.value = '';
       });
 

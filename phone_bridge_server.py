@@ -363,18 +363,36 @@ def _perform_scroll(x_ratio, y_ratio, delta):
 
 def _perform_keypress(keys):
     if not keys:
-        return
+        return True
     if "+" in keys:
-        SystemOps.execute_hotkey(
+        return SystemOps.execute_hotkey(
             [part.strip() for part in keys.split("+") if part.strip()]
         )
-    else:
-        SystemOps.press_key(keys.strip())
+    return SystemOps.press_key(keys.strip())
 
 
-def _perform_type(text):
-    if text:
-        SystemOps.type_text(text)
+def _can_type_directly(text):
+    return all(ch in "\n\r\t" or 32 <= ord(ch) <= 126 for ch in text)
+
+
+def _perform_type(text, *, sensitive=False):
+    if not text:
+        return True
+
+    pyautogui = _require_pyautogui()
+    if _can_type_directly(text):
+        # Password fields commonly block paste, so phone typing must be real
+        # keystrokes and must not leave the value in the clipboard.
+        pyautogui.write(text, interval=0.02)
+        return True
+
+    if sensitive:
+        raise RuntimeError(
+            "Bu metin dogrudan klavye ile yazilamayan karakterler iceriyor. "
+            "Sifre alanlari icin ASCII karakter kullanin veya fiziksel klavyeden girin."
+        )
+
+    return SystemOps.type_text(text)
 
 
 def _parse_cookie_header(raw_cookie):
@@ -1102,9 +1120,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("delta", 0),
                 )
             elif action_type == "key":
-                _perform_keypress(payload.get("keys", ""))
+                if not _perform_keypress(payload.get("keys", "")):
+                    raise RuntimeError("Klavye kisayolu uygulanamadi. Accessibility iznini kontrol edin.")
             elif action_type == "type":
-                _perform_type(payload.get("text", ""))
+                if not _perform_type(
+                    payload.get("text", ""),
+                    sensitive=bool(payload.get("sensitive", False)),
+                ):
+                    raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
                 pass
             else:

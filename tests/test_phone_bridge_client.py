@@ -5,6 +5,14 @@ import phone_bridge_server
 import phone_bridge_client
 
 
+class _FakePyAutoGui:
+    def __init__(self):
+        self.writes = []
+
+    def write(self, text, interval=0.0):
+        self.writes.append((text, interval))
+
+
 class PhoneBridgeClientTests(unittest.TestCase):
     def test_create_phone_link_reads_admin_token_at_call_time(self):
         with patch.object(
@@ -87,6 +95,25 @@ class PhoneBridgeClientTests(unittest.TestCase):
             self.assertEqual(server.server_port, 54321)
         finally:
             server.server_close()
+
+    def test_sensitive_phone_typing_uses_direct_keystrokes_without_clipboard(self):
+        fake = _FakePyAutoGui()
+
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake), patch.object(
+            phone_bridge_server.SystemOps,
+            "type_text",
+            side_effect=AssertionError("clipboard fallback should not be used"),
+        ):
+            self.assertTrue(phone_bridge_server._perform_type("Password123!", sensitive=True))
+
+        self.assertEqual(fake.writes, [("Password123!", 0.02)])
+
+    def test_sensitive_phone_typing_rejects_non_direct_characters(self):
+        fake = _FakePyAutoGui()
+
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            with self.assertRaises(RuntimeError):
+                phone_bridge_server._perform_type("şifre", sensitive=True)
 
 
 if __name__ == "__main__":

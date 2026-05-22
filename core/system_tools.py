@@ -300,7 +300,7 @@ class SystemOps:
                 pyautogui.hotkey(mod_key, "v")
             else:
                 pyautogui.write(text)
-            logger.debug(f"Yazildi: {text[:20]}...")
+            logger.debug("Metin yazildi.")
             return True
         except Exception as exc:
             logger.error(f"Yazma hatasi: {exc}")
