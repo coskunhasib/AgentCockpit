@@ -108,6 +108,20 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         self.assertEqual(fake.writes, [("Password123!", 0.02)])
 
+    def test_normal_phone_typing_uses_clipboard_paste_path(self):
+        with patch.object(
+            phone_bridge_server,
+            "_require_pyautogui",
+            side_effect=AssertionError("direct keystrokes should not be used"),
+        ), patch.object(
+            phone_bridge_server.SystemOps,
+            "type_text",
+            return_value=True,
+        ) as type_text:
+            self.assertTrue(phone_bridge_server._perform_type("normal text", sensitive=False))
+
+        type_text.assert_called_once_with("normal text")
+
     def test_sensitive_phone_typing_rejects_non_direct_characters(self):
         fake = _FakePyAutoGui()
 

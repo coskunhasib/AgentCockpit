@@ -379,10 +379,13 @@ def _perform_type(text, *, sensitive=False):
     if not text:
         return True
 
-    pyautogui = _require_pyautogui()
+    if not sensitive:
+        return SystemOps.type_text(text)
+
     if _can_type_directly(text):
         # Password fields commonly block paste, so phone typing must be real
         # keystrokes and must not leave the value in the clipboard.
+        pyautogui = _require_pyautogui()
         pyautogui.write(text, interval=0.02)
         return True
 
