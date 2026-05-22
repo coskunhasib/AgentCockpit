@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+import phone_bridge_server
 import phone_bridge_client
 
 
@@ -31,6 +32,61 @@ class PhoneBridgeClientTests(unittest.TestCase):
                 phone_bridge_client._request_json("/health")
 
         self.assertIn("zaman asimina", str(context.exception))
+
+    def test_local_ipv4_candidates_does_not_use_blocking_fqdn_lookup(self):
+        with patch.object(phone_bridge_server, "_get_local_ip", return_value="192.168.1.8"), patch.object(
+            phone_bridge_server.socket, "gethostname", return_value="macbook"
+        ), patch.object(
+            phone_bridge_server.socket,
+            "getfqdn",
+            side_effect=AssertionError("getfqdn should not be called"),
+        ), patch.object(
+            phone_bridge_server.socket,
+            "getaddrinfo",
+            return_value=[
+                (
+                    phone_bridge_server.socket.AF_INET,
+                    phone_bridge_server.socket.SOCK_DGRAM,
+                    0,
+                    "",
+                    ("192.168.1.9", 0),
+                )
+            ],
+        ):
+            ips = phone_bridge_server._get_local_ipv4_candidates()
+
+        self.assertEqual(ips, ["192.168.1.8", "192.168.1.9"])
+
+    def test_phone_bridge_server_bind_does_not_use_blocking_fqdn_lookup(self):
+        def fake_server_bind(server):
+            server.server_address = ("127.0.0.1", 54321)
+
+        with patch.object(phone_bridge_server.TCPServer, "server_bind", fake_server_bind), patch.object(
+            phone_bridge_server.TCPServer, "server_activate", lambda server: None
+        ), patch.object(
+            phone_bridge_server, "_get_local_ipv4_candidates", return_value=[]
+        ), patch.object(
+            phone_bridge_server, "_get_local_ip", return_value="127.0.0.1"
+        ), patch.object(
+            phone_bridge_server.socket,
+            "getfqdn",
+            side_effect=AssertionError("getfqdn should not be called"),
+        ):
+            server = phone_bridge_server.PhoneBridgeServer(
+                ("127.0.0.1", 0),
+                phone_bridge_server.PhoneBridgeHandler,
+                admin_token="admin",
+                screenshot_quality=60,
+                max_width=1280,
+                poll_ms=1000,
+                default_session_minutes=0,
+            )
+
+        try:
+            self.assertEqual(server.server_name, "127.0.0.1")
+            self.assertEqual(server.server_port, 54321)
+        finally:
+            server.server_close()
 
 
 if __name__ == "__main__":

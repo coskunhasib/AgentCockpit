@@ -15,6 +15,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlparse
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -110,11 +111,9 @@ def _telegram_bot_url():
 
 def _get_local_ip():
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
     except OSError:
         return LOCAL_HOST
 
@@ -136,13 +135,9 @@ def _get_local_ipv4_candidates():
     preferred = _get_local_ip()
     add(preferred)
 
+    # socket.getfqdn() can block on macOS while doing reverse mDNS lookups.
+    # Hostname + active route IP is enough for LAN phone links.
     host_names = [socket.gethostname()]
-    try:
-        fqdn = socket.getfqdn()
-        if fqdn and fqdn not in host_names:
-            host_names.append(fqdn)
-    except Exception:
-        pass
 
     for host in host_names:
         try:
@@ -1163,6 +1158,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
 
 
 class PhoneBridgeServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind() calls socket.getfqdn(), which can hang on
+        # macOS mDNS reverse lookups before the bridge even starts listening.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host or LOCAL_HOST
+        self.server_port = port
+
     def __init__(
         self,
         server_address,
