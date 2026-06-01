@@ -1396,11 +1396,18 @@
       }
 
       async function postScrollAction(payload) {
-        pendingScrollPayload = payload;
         if (scrollRequestInFlight) {
+          if (pendingScrollPayload && pendingScrollPayload.type === 'scroll' && payload.type === 'scroll') {
+            pendingScrollPayload.delta += payload.delta;
+            pendingScrollPayload.x = payload.x;
+            pendingScrollPayload.y = payload.y;
+          } else {
+            pendingScrollPayload = payload;
+          }
           return;
         }
 
+        pendingScrollPayload = payload;
         scrollRequestInFlight = true;
         try {
           while (pendingScrollPayload) {
@@ -1628,8 +1635,9 @@
           return;
         }
 
-        const magnitude = Math.max(140, Math.min(1200, Math.round(Math.abs(stepY) * 8)));
-        const delta = stepY > 0 ? magnitude : -magnitude;
+        // Map roughly 30 pixels of finger drag to 1 wheel notch (120 units on Windows).
+        // Clamp the max delta to 10 notches (1200 units) to prevent sudden jumps.
+        const delta = Math.max(-1200, Math.min(1200, Math.round(stepY * 4)));
         gesture.lastScrollY = touch.clientY;
         gesture.lastScrollX = touch.clientX;
         postScrollAction({ type: 'scroll', x: coords.x, y: coords.y, delta, delay: 0.02 });

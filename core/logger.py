@@ -5,9 +5,11 @@ import asyncio
 from datetime import datetime
 from loguru import logger
 from telegram import Bot
+from pathlib import Path
 
-LOG_DIR = "logs"
-CRASH_DIR = "logs/crashes"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOG_DIR = str(PROJECT_ROOT / "logs")
+CRASH_DIR = str(PROJECT_ROOT / "logs/crashes")
 APP_LOG_FILE = os.path.join(LOG_DIR, f"app_{os.getpid()}.log")
 
 os.makedirs(LOG_DIR, exist_ok=True)

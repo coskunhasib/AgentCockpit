@@ -145,8 +145,9 @@ def _mac_program_arguments(python_exe: Path, main_py: Path):
             MAC_SCREEN_SESSION,
             str(python_exe),
             str(main_py),
+            "--autostart",
         ]
-    return [str(python_exe), str(main_py)]
+    return [str(python_exe), str(main_py), "--autostart"]
 
 
 def _quit_mac_screen_session():
@@ -165,6 +166,7 @@ def _mac_plist_payload(bot_dir: Path, python_exe: Path, main_py: Path, logs_dir:
         "EnvironmentVariables": {
             "PYTHONIOENCODING": "utf-8",
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "AGENTCOCKPIT_AUTOSTART": "true",
         },
         "StandardOutPath": str(logs_dir / "launchd.log"),
         "StandardErrorPath": str(logs_dir / "launchd_err.log"),
@@ -275,10 +277,10 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory={_systemd_quote(bot_dir)}
-ExecStart={_systemd_quote(python_exe)} {_systemd_quote(main_py)}
+ExecStart={_systemd_quote(python_exe)} {_systemd_quote(main_py)} --autostart
 Restart=on-failure
 RestartSec=10
-Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONIOENCODING=utf-8 AGENTCOCKPIT_AUTOSTART=true
 
 [Install]
 WantedBy=default.target

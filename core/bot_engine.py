@@ -1478,17 +1478,109 @@ def _cleanup_lock():
         pass
 
 
+def _is_pid_alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as e:
+        import errno
+        return e.errno != errno.ESRCH
+
+
 def _kill_old_instances():
     from core.platform_utils import kill_process
+    import subprocess
 
+    is_autostart = "--autostart" in sys.argv or os.environ.get("AGENTCOCKPIT_AUTOSTART") == "true"
+    my_pid = os.getpid()
+
+    # 1. Sistem genelinde diger cakisabilecek AgentCockpit sureclerini ara ve temizle
+    other_pids = []
+    if sys.platform != "win32":
+        try:
+            output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], encoding="utf-8", errors="ignore")
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) < 2:
+                    continue
+                pid_str, cmd = parts
+                try:
+                    pid = int(pid_str)
+                except ValueError:
+                    continue
+                if pid == my_pid:
+                    continue
+                
+                cmd_lower = cmd.lower()
+                is_agent = "agentcockpit" in cmd_lower
+                is_py = "python" in cmd_lower
+                is_main = "main.py" in cmd_lower or "telegram_ux.py" in cmd_lower
+                
+                if is_agent and is_py and is_main:
+                    other_pids.append((pid, cmd))
+        except Exception as e:
+            logger.warning(f"Sistem geneli surec taramasi basarisiz (Unix): {e}")
+    else:
+        try:
+            cmd_args = ["powershell", "-NoProfile", "-Command", 
+                        "Get-CimInstance Win32_Process -Filter \"name like 'python%'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"]
+            output = subprocess.check_output(cmd_args, encoding="utf-8", errors="ignore").strip()
+            if output:
+                import json
+                try:
+                    data = json.loads(output)
+                    if not isinstance(data, list):
+                        data = [data]
+                    for item in data:
+                        pid = item.get("ProcessId")
+                        cmdline = item.get("CommandLine") or ""
+                        if pid and pid != my_pid:
+                            cmd_lower = cmdline.lower()
+                            if "agentcockpit" in cmd_lower and ("main.py" in cmd_lower or "telegram_ux.py" in cmd_lower):
+                                other_pids.append((pid, cmdline))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Sistem geneli surec taramasi basarisiz (Windows): {e}")
+
+    if other_pids:
+        if is_autostart:
+            logger.info(
+                f"Sistem genelinde aktif baska bir AgentCockpit sureci calisiyor (PID: {other_pids[0][0]}). "
+                "Cakismalari onlemek icin autostart sureci sessizce sonlandiriliyor."
+            )
+            sys.exit(0)
+        else:
+            for pid, cmd in other_pids:
+                logger.info(f"Cakisabilecek diger AgentCockpit sureci sonlandiriliyor: PID {pid} ({cmd})")
+                kill_process(pid)
+            time.sleep(2)
+
+    # 2. Yerel lock dosyasi kontrolu (ekstra guvenlik icin)
     if os.path.exists(LOCK_FILE):
         try:
             with open(LOCK_FILE, "r", encoding="utf-8") as f:
                 old_pid = int(f.read().strip())
-            if old_pid != os.getpid():
-                kill_process(old_pid)
-                logger.info(f"Eski bot process kapatildi: PID {old_pid}")
-                time.sleep(2)
+            if old_pid != my_pid and _is_pid_alive(old_pid):
+                if is_autostart:
+                    logger.info(
+                        f"Diger aktif bot sureci calisiyor (PID: {old_pid}). "
+                        "Autostart daemon cakismalari onlemek icin sessizce sonlandiriliyor."
+                    )
+                    sys.exit(0)
+                else:
+                    kill_process(old_pid)
+                    logger.info(f"Eski yerel bot process kapatildi: PID {old_pid}")
+                    time.sleep(2)
         except (ValueError, OSError):
             pass
 
@@ -1543,6 +1635,10 @@ def run_bot():
 
     while restart_counter < max_restart:
         try:
+            # Force a fresh event loop on every start/retry iteration to prevent "Event loop is closed" errors
+            _fresh_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_fresh_loop)
+
             app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
             app.add_handler(CommandHandler("start", start))

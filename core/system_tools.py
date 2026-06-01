@@ -4,6 +4,7 @@ import importlib
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 from PIL import ImageDraw
 
@@ -176,11 +177,13 @@ class SystemOps:
             if not pyautogui:
                 return None
 
-            if not os.path.exists("temp_screens"):
-                os.makedirs("temp_screens")
+            PROJECT_ROOT = Path(__file__).resolve().parent.parent
+            temp_dir = PROJECT_ROOT / "temp_screens"
+            if not temp_dir.exists():
+                temp_dir.mkdir(parents=True, exist_ok=True)
 
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-            filename = f"temp_screens/scr_{timestamp}.png"
+            filename = str(temp_dir / f"scr_{timestamp}.png")
 
             screenshot = pyautogui.screenshot()
 

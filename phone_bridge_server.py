@@ -358,7 +358,18 @@ def _perform_scroll(x_ratio, y_ratio, delta):
     x = int(_clamp_ratio(x_ratio) * screen_width)
     y = int(_clamp_ratio(y_ratio) * screen_height)
     pyautogui.moveTo(x, y)
-    pyautogui.scroll(int(delta))
+    
+    # PyAutoGUI has a platform-dependent inconsistency:
+    # - On Windows, pyautogui.scroll() expects units where 120 is one scroll notch.
+    # - On macOS and Linux, it expects units where 1 is one scroll notch/line.
+    # The client sends values in Windows-compatible units (e.g. approx 120 per notch).
+    if sys.platform in ("darwin", "linux", "linux2"):
+        scaled_delta = int(delta / 120)
+        if scaled_delta == 0 and delta != 0:
+            scaled_delta = 1 if delta > 0 else -1
+        pyautogui.scroll(scaled_delta)
+    else:
+        pyautogui.scroll(int(delta))
 
 
 def _perform_keypress(keys):

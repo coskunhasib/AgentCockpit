@@ -72,15 +72,32 @@ def get_claude_projects_dir():
 
 
 def kill_process(pid):
-    """Kill a process by PID, cross-platform."""
+    """Kill a process by PID, cross-platform, with escalation to SIGKILL."""
     try:
         if PLATFORM == "win32":
             subprocess.run(
                 ["taskkill", "/F", "/PID", str(pid)], capture_output=True, timeout=5
             )
+            return True
         else:
+            # Send SIGTERM first
             os.kill(pid, signal.SIGTERM)
-        return True
+            
+            # Wait up to 2 seconds for process to exit
+            for _ in range(20):
+                time.sleep(0.1)
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    # Process successfully terminated
+                    return True
+            
+            # If still alive, escalate to SIGKILL
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            return True
     except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
         return False
 

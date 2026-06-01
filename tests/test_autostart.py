@@ -53,10 +53,12 @@ class AutostartTests(unittest.TestCase):
                     autostart.MAC_SCREEN_SESSION,
                     str(python_exe),
                     str(main_py),
+                    "--autostart",
                 ],
             )
             self.assertEqual(payload["WorkingDirectory"], str(bot_dir))
             self.assertEqual(payload["EnvironmentVariables"]["PYTHONIOENCODING"], "utf-8")
+            self.assertEqual(payload["EnvironmentVariables"]["AGENTCOCKPIT_AUTOSTART"], "true")
             self.assertTrue((bot_dir / "logs").is_dir())
             self.assertFalse(any("bootstrap" in command for command in calls))
             self.assertIn(["launchctl", "enable", "gui/501/com.agentcockpit.bot"], calls)
