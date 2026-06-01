@@ -73,6 +73,14 @@ class TelegramUxTests(unittest.TestCase):
         self.assertIn("Admin Token: Tanimli", text)
         self.assertNotIn("secret-token", text)
 
+    def test_notification_targets_include_env_allowed_users(self):
+        with patch("telegram_ux._load_phone_notification_state", return_value={"chat_ids": ["111"]}), patch.object(
+            telegram_ux.legacy, "ALLOWED_IDS", {"222"}
+        ), patch.dict(os.environ, {"ALLOWED_USER_ID": "333, 444"}, clear=False):
+            targets = telegram_ux._notification_target_chat_ids()
+
+        self.assertEqual(targets, ["111", "222", "333", "444"])
+
 
 if __name__ == "__main__":
     unittest.main()

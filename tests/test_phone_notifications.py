@@ -1,7 +1,9 @@
 import asyncio
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import core.bot_engine as legacy
 import telegram_ux as ux
@@ -45,10 +47,11 @@ class PhoneNotificationTests(unittest.TestCase):
 
                 ux._remember_phone_chat(111)
 
-                self.assertEqual(
-                    ux._notification_target_chat_ids(),
-                    ["111", "222", "333"],
-                )
+                with patch.dict(os.environ, {"ALLOWED_USER_ID": ""}, clear=False):
+                    self.assertEqual(
+                        ux._notification_target_chat_ids(),
+                        ["111", "222", "333"],
+                    )
         finally:
             ux.PHONE_NOTIFICATION_STATE_FILE = original_path
             legacy.ALLOWED_IDS.clear()

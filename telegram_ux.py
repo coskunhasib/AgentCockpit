@@ -329,6 +329,11 @@ def _notification_target_chat_ids():
     state = _load_phone_notification_state()
     targets = {str(value) for value in state.get("chat_ids", []) if str(value).strip()}
     targets.update(str(value) for value in getattr(legacy, "ALLOWED_IDS", set()) if str(value).strip())
+    targets.update(
+        value.strip()
+        for value in os.getenv("ALLOWED_USER_ID", "").split(",")
+        if value.strip()
+    )
     return sorted(targets)
 
 
@@ -340,10 +345,17 @@ def _phone_notification_interval_seconds():
 
 
 def _phone_repair_text(link_payload, old_url=None):
-    old_line = f"Eski uzak adres: {old_url}\n" if old_url else ""
+    if old_url:
+        title = "Uzak baglanti adresi degisti."
+        detail = "Tekrar QR okutmana gerek yok. Bu yeni linke dokununca ayni PWA yeniden eslesir ve devam eder."
+        old_line = f"Eski uzak adres: {old_url}\n"
+    else:
+        title = "Telefon uzak baglanti hazir."
+        detail = "Bu linke dokunarak telefondan AgentCockpit'e baglanabilirsin."
+        old_line = ""
     return (
-        "Uzak baglanti adresi degisti.\n\n"
-        "Tekrar QR okutmana gerek yok. Bu yeni linke dokununca ayni PWA yeniden eslesir ve devam eder.\n\n"
+        f"{title}\n\n"
+        f"{detail}\n\n"
         f"{old_line}"
         + _phone_link_text(link_payload)
     )
@@ -375,17 +387,14 @@ async def _watch_public_phone_link(application):
             current_url = (health.get("public_url") or "").strip()
             if current_url and current_url != last_seen:
                 targets = _notification_target_chat_ids()
-                if not last_seen:
-                    _remember_notified_public_url(current_url)
-                    last_seen = current_url
-                elif targets:
+                if targets:
                     sent_any = False
                     for chat_id in targets:
                         try:
                             await _send_phone_repair_link(
                                 application.bot,
                                 chat_id,
-                                old_url=last_seen,
+                                old_url=last_seen or None,
                             )
                             sent_any = True
                         except Exception as exc:
