@@ -12,6 +12,8 @@ import sys
 import tempfile
 import threading
 import time
+import zlib
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -212,7 +214,8 @@ def _mouse_overlay_point(image_size):
     return mouse_x * scale_x, mouse_y * scale_y
 
 
-def _capture_payload(quality, max_width):
+def _capture_legacy():
+    """Capture via screencapture/pyautogui -> RGB PIL image (no cursor, no scaling)."""
     primary_capture_error = None
     fallback_capture_error = None
 
@@ -256,11 +259,107 @@ def _capture_payload(quality, max_width):
             fallback_capture_error or primary_capture_error,
         )
 
-    screen_width, screen_height = screenshot.size
+    return screenshot
 
+
+_QUARTZ_STATE = {"checked": False, "ok": False}
+
+
+def _capture_with_quartz():
+    """Fast in-memory full-screen capture via Quartz. Returns an RGB image or None."""
+    if sys.platform != "darwin":
+        return None
     try:
-        mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
-        draw = ImageDraw.Draw(screenshot)
+        import Quartz
+    except Exception:
+        return None
+    try:
+        image_ref = Quartz.CGDisplayCreateImage(Quartz.CGMainDisplayID())
+        if image_ref is None:
+            return None
+        width = Quartz.CGImageGetWidth(image_ref)
+        height = Quartz.CGImageGetHeight(image_ref)
+        if not width or not height:
+            return None
+        bytes_per_row = Quartz.CGImageGetBytesPerRow(image_ref)
+        provider = Quartz.CGImageGetDataProvider(image_ref)
+        data = Quartz.CGDataProviderCopyData(provider)
+        if data is None:
+            return None
+        # CGDisplayCreateImage yields 32-bit little-endian BGRA; map straight to RGBA.
+        image = Image.frombuffer(
+            "RGBA", (width, height), bytes(data), "raw", "BGRA", bytes_per_row, 1
+        )
+        return image.convert("RGB")
+    except Exception:
+        return None
+
+
+def _channel_means(image):
+    small = image.resize((32, 18), Image.BILINEAR)
+    pixels = list(small.getdata())
+    count = len(pixels) or 1
+    return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+
+
+def _validate_quartz_once():
+    """One-time guard: only trust Quartz if its colours match screencapture, so a
+    wrong pixel-format mapping can never silently ship miscoloured frames.
+
+    A genuine format mismatch diverges on every attempt, whereas a transient
+    screen change between the two samples only diverges sometimes -- so we retry
+    a few rounds and accept Quartz if any round matches closely.
+    """
+    if _QUARTZ_STATE["checked"]:
+        return _QUARTZ_STATE["ok"]
+    _QUARTZ_STATE["checked"] = True
+    try:
+        if _capture_with_quartz() is None:
+            _QUARTZ_STATE["ok"] = False
+            return False
+        best = None
+        for _ in range(3):
+            reference = _capture_with_screencapture()
+            quartz_frame = _capture_with_quartz()
+            if reference is None:
+                # screencapture unavailable; Quartz is our only working capture path.
+                _QUARTZ_STATE["ok"] = True
+                logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
+                return True
+            if quartz_frame is None:
+                continue
+            divergence = max(
+                abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
+            )
+            best = divergence if best is None else min(best, divergence)
+            if divergence <= 45:
+                _QUARTZ_STATE["ok"] = True
+                logger.info("Hizli Quartz ekran yakalama etkin.")
+                return True
+        _QUARTZ_STATE["ok"] = False
+        logger.warning(
+            "Quartz renkleri screencapture ile uyusmadi (en iyi fark=%s); screencapture kullanilacak.",
+            round(best) if best is not None else "?",
+        )
+    except Exception as exc:
+        logger.warning("Quartz dogrulamasi basarisiz, screencapture kullanilacak: %s", exc)
+        _QUARTZ_STATE["ok"] = False
+    return _QUARTZ_STATE["ok"]
+
+
+def _raw_capture():
+    """Capture the full screen -> RGB image. Prefers fast Quartz, falls back to screencapture."""
+    if sys.platform == "darwin" and _validate_quartz_once():
+        fast = _capture_with_quartz()
+        if fast is not None and not _is_nearly_black_frame(fast):
+            return fast
+    return _capture_legacy()
+
+
+def _draw_cursor(image):
+    try:
+        mouse_x, mouse_y = _mouse_overlay_point(image.size)
+        draw = ImageDraw.Draw(image)
         radius = 10
         draw.ellipse(
             (mouse_x - radius, mouse_y - radius, mouse_x + radius, mouse_y + radius),
@@ -273,25 +372,91 @@ def _capture_payload(quality, max_width):
         )
     except Exception:
         pass
+    return image
 
-    if screenshot.width > max_width:
-        ratio = max_width / screenshot.width
-        screenshot = screenshot.resize(
-            (max_width, int(screenshot.height * ratio)),
-            Image.LANCZOS,
+
+def _scale_to_width(image, max_width):
+    if image.width > max_width:
+        ratio = max_width / image.width
+        image = image.resize(
+            (max_width, int(image.height * ratio)),
+            Image.BILINEAR,
         )
+    return image
 
+
+def _frame_signature(raw_image):
+    """Cheap change fingerprint of a raw capture.
+
+    A tiny grayscale thumbnail plus the quantized cursor position. Folding the
+    cursor in means pointer-only movement still yields a fresh frame (so the
+    remote cursor stays live) without re-sending an otherwise unchanged screen.
+    """
+    try:
+        factor = max(1, raw_image.width // 96)
+        thumb = raw_image.reduce(factor).convert("L")
+        checksum = zlib.crc32(thumb.tobytes()) & 0xFFFFFFFF
+    except Exception:
+        checksum = 0
+    try:
+        mouse_x, mouse_y = _get_pyautogui().position()
+        checksum = zlib.crc32(f"|{mouse_x // 3},{mouse_y // 3}".encode(), checksum) & 0xFFFFFFFF
+    except Exception:
+        pass
+    return format(checksum, "08x")
+
+
+def _encode_jpeg(image, quality):
     buffer = io.BytesIO()
-    screenshot.save(buffer, format="JPEG", quality=quality, optimize=True)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    # optimize=False trades ~10% size for a much cheaper encode, which matters
+    # when frames are produced continuously for the live stream.
+    image.save(buffer, format="JPEG", quality=quality, optimize=False)
+    return buffer.getvalue()
+
+
+def _grab_frame(quality, max_width):
+    """Capture one finished frame.
+
+    Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
+    """
+    raw = _raw_capture()
+    screen_width, screen_height = raw.size
+    signature = _frame_signature(raw)
+    image = _scale_to_width(_draw_cursor(raw), max_width)
+    jpeg = _encode_jpeg(image, quality)
+    return jpeg, signature, image.width, image.height, screen_width, screen_height
+
+
+def _capture_payload(quality, max_width):
+    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(quality, max_width)
     return {
-        "image": encoded,
-        "width": screenshot.width,
-        "height": screenshot.height,
-        "screen_width": screen_width,
-        "screen_height": screen_height,
+        "image": base64.b64encode(jpeg).decode("ascii"),
+        "signature": signature,
+        "width": frame_w,
+        "height": frame_h,
+        "screen_width": screen_w,
+        "screen_height": screen_h,
         "timestamp": time.time(),
     }
+
+
+def _parse_stream_params(query, default_quality, default_width):
+    """Parse optional ?q=<jpeg quality>&w=<max width> for the frame/stream endpoints.
+
+    Width is capped at 2560 so an 'HD' client mode can ask for more detail than
+    the default while still staying well under the native Retina width.
+    """
+    try:
+        requested_quality = int(query.get("q", [""])[0])
+    except (TypeError, ValueError):
+        requested_quality = default_quality
+    quality = max(20, min(95, requested_quality))
+    try:
+        requested_width = int(query.get("w", [""])[0])
+    except (TypeError, ValueError):
+        requested_width = default_width
+    max_width = max(640, min(2560, requested_width))
+    return quality, max_width
 
 
 def _is_nearly_black_frame(image, *, max_channel=4):
@@ -581,6 +746,88 @@ class TrustedDeviceStore:
             device["last_seen"] = now
             self._save_locked()
             return self._snapshot_locked(device, include_token=True, now=now)
+
+
+class ActionDedup:
+    """Single-flight + short-TTL cache keyed by request_id.
+
+    The phone client retries a command (re-using the same request_id) when a
+    response is lost in transit. This makes such a retry safe: the command is
+    applied exactly once and every retry receives the original response instead
+    of triggering the desktop action a second time.
+    """
+
+    def __init__(self, ttl_seconds=30.0, max_entries=256, wait_timeout=15.0):
+        self._cond = threading.Condition()
+        self._done = {}          # request_id -> (timestamp, response)
+        self._inflight = set()   # request_ids currently being applied
+        self._order = deque()    # insertion order of completed ids for eviction
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._wait_timeout = wait_timeout
+
+    def _evict_locked(self, now):
+        while self._order:
+            rid = self._order[0]
+            entry = self._done.get(rid)
+            if entry is None:
+                self._order.popleft()
+                continue
+            if now - entry[0] > self._ttl:
+                self._order.popleft()
+                self._done.pop(rid, None)
+                continue
+            break
+        while len(self._done) > self._max and self._order:
+            rid = self._order.popleft()
+            self._done.pop(rid, None)
+
+    def acquire(self, request_id):
+        """Reserve a request_id for execution.
+
+        Returns ``(cached_response_or_None, is_owner)``:
+        - ``(response, False)``  -> already applied; caller replays ``response``.
+        - ``(None, True)``       -> caller owns execution; must call
+          ``complete()`` on success or ``abort()`` on failure.
+        - ``(None, False)``      -> no request_id, or the in-flight original took
+          too long; caller proceeds best-effort without caching.
+        """
+        if not request_id:
+            return (None, False)
+        deadline = time.time() + self._wait_timeout
+        with self._cond:
+            while True:
+                now = time.time()
+                self._evict_locked(now)
+                entry = self._done.get(request_id)
+                if entry is not None:
+                    return (entry[1], False)
+                if request_id not in self._inflight:
+                    self._inflight.add(request_id)
+                    return (None, True)
+                remaining = deadline - now
+                if remaining <= 0:
+                    return (None, False)
+                self._cond.wait(remaining)
+
+    def complete(self, request_id, response):
+        if not request_id:
+            return
+        now = time.time()
+        with self._cond:
+            if request_id not in self._done:
+                self._order.append(request_id)
+            self._done[request_id] = (now, response)
+            self._inflight.discard(request_id)
+            self._evict_locked(now)
+            self._cond.notify_all()
+
+    def abort(self, request_id):
+        if not request_id:
+            return
+        with self._cond:
+            self._inflight.discard(request_id)
+            self._cond.notify_all()
 
 
 def _expired_page():
@@ -1001,11 +1248,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            quality, max_width = _parse_stream_params(
+                self._query(), self.server.screenshot_quality, self.server.max_width
+            )
             try:
-                payload = _capture_payload(
-                    self.server.screenshot_quality,
-                    self.server.max_width,
-                )
+                payload = _capture_payload(quality, max_width)
             except Exception as exc:
                 logger.exception("Phone bridge screenshot failed: %s", exc)
                 self._json_response(
@@ -1021,6 +1268,156 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 handoff_token,
             )
             self._json_response(payload)
+            return
+
+        if route == "/api/frame":
+            # Long-poll, push-on-change frame stream. The request is held open
+            # until the screen differs from the client's last signature (or a
+            # short timeout), then returns a single binary JPEG. This removes the
+            # fixed polling gap and the base64 overhead of /api/screenshot.
+            session, auth_kind = self._require_viewer_session()
+            if not session:
+                return
+            query = self._query()
+            since = (query.get("since", [""])[0] or "")[:16]
+            quality, max_width = _parse_stream_params(
+                query, self.server.screenshot_quality, self.server.max_width
+            )
+
+            deadline = time.time() + 15.0
+            tick = 0.12
+            try:
+                while True:
+                    raw = _raw_capture()
+                    signature = _frame_signature(raw)
+                    if signature != since:
+                        screen_width, screen_height = raw.size
+                        image = _scale_to_width(_draw_cursor(raw), max_width)
+                        jpeg = _encode_jpeg(image, quality)
+                        self.send_response(HTTPStatus.OK)
+                        self.send_header("Content-Type", "image/jpeg")
+                        self.send_header("Content-Length", str(len(jpeg)))
+                        self.send_header("Cache-Control", "no-store")
+                        self.send_header("X-Frame-Sig", signature)
+                        self.send_header("X-Frame-Width", str(image.width))
+                        self.send_header("X-Frame-Height", str(image.height))
+                        self.send_header("X-Screen-Width", str(screen_width))
+                        self.send_header("X-Screen-Height", str(screen_height))
+                        self.end_headers()
+                        try:
+                            self.wfile.write(jpeg)
+                        except (BrokenPipeError, ConnectionResetError):
+                            pass
+                        return
+                    if time.time() >= deadline:
+                        self.send_response(HTTPStatus.NO_CONTENT)
+                        self.send_header("X-Frame-Sig", since)
+                        self.send_header("Cache-Control", "no-store")
+                        self.end_headers()
+                        return
+                    time.sleep(tick)
+                    if tick < 0.4:
+                        # Back off while the screen is static to keep idle CPU low;
+                        # an active change still returns on the next capture.
+                        tick += 0.04
+            except Exception as exc:
+                logger.exception("Phone bridge frame failed: %s", exc)
+                self._json_response(
+                    {"status": "error", "message": str(exc)},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
+        if route == "/api/stream":
+            # Persistent push stream: one connection, the server writes
+            # length-prefixed (4-byte big-endian) binary JPEG frames as the screen
+            # changes (plus a ~1/s keepalive). No per-frame round-trip, so the
+            # client sees smooth motion limited only by capture/encode + bandwidth.
+            session, auth_kind = self._require_viewer_session()
+            if not session:
+                return
+            query = self._query()
+            quality, max_width = _parse_stream_params(
+                query, self.server.screenshot_quality, self.server.max_width
+            )
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                return
+            last_sig = None
+            last_jpeg = None
+            last_send = 0.0
+            idle = 0
+            motion = 0
+            was_high_motion = False
+            capture_errors = 0
+            active_interval = 1.0 / 15.0
+            try:
+                while True:
+                    loop_start = time.time()
+                    try:
+                        raw = _raw_capture()
+                        capture_errors = 0
+                    except Exception as exc:
+                        capture_errors += 1
+                        if capture_errors > 10:
+                            break  # let the client fall back to the long-poll
+                        time.sleep(0.3)
+                        continue
+                    signature = _frame_signature(raw)
+                    changed = signature != last_sig
+                    if changed:
+                        motion = min(motion + 2, 12)
+                        idle = 0
+                    else:
+                        motion = max(motion - 1, 0)
+                        idle += 1
+                    high_motion = motion >= 5
+                    just_settled = was_high_motion and not high_motion
+                    was_high_motion = high_motion
+                    now = time.time()
+                    if changed or just_settled:
+                        # While the screen is actively moving (scrolling, video), send
+                        # smaller, lower-quality frames so they don't saturate the
+                        # uplink/tunnel and stutter; restore full detail the instant it
+                        # settles. Pixels dominate bandwidth, so trim width too.
+                        if high_motion:
+                            encode_quality = max(28, quality - 24)
+                            encode_width = max(720, (max_width * 7) // 10)
+                        else:
+                            encode_quality = quality
+                            encode_width = max_width
+                        image = _scale_to_width(_draw_cursor(raw), encode_width)
+                        last_jpeg = _encode_jpeg(image, encode_quality)
+                        last_sig = signature
+                        try:
+                            self.wfile.write(len(last_jpeg).to_bytes(4, "big"))
+                            self.wfile.write(last_jpeg)
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            break
+                        last_send = now
+                    elif now - last_send >= 1.0:
+                        # Tiny zero-length heartbeat keeps the connection warm and
+                        # lets the client confirm liveness without resending a frame.
+                        try:
+                            self.wfile.write((0).to_bytes(4, "big"))
+                            self.wfile.flush()
+                        except (BrokenPipeError, ConnectionResetError, OSError):
+                            break
+                        last_send = now
+                    # Pace fast while the screen is moving; back off when static.
+                    interval = active_interval if idle < 12 else 0.25
+                    elapsed = time.time() - loop_start
+                    if elapsed < interval:
+                        time.sleep(interval - elapsed)
+            except Exception as exc:
+                logger.debug("Phone bridge stream ended: %s", exc)
             return
 
         if route == "/api/session":
@@ -1118,6 +1515,25 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         action_type = payload.get("type", "")
+        if action_type not in ("click", "scroll", "key", "type", "refresh"):
+            self._json_response(
+                {
+                    "status": "bad_request",
+                    "message": f"Unknown action: {action_type}",
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        # Idempotency: a retried command carries the same request_id. If it has
+        # already been applied (the client never saw our first response), replay
+        # the stored result instead of executing the desktop action again.
+        request_id = str(payload.get("request_id", "")).strip()[:128]
+        cached_response, is_owner = self.server.action_dedup.acquire(request_id)
+        if cached_response is not None:
+            self._json_response(cached_response)
+            return
+
         delay = max(0.0, min(2.0, float(payload.get("delay", 0.15))))
 
         try:
@@ -1144,15 +1560,6 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
                 pass
-            else:
-                self._json_response(
-                    {
-                        "status": "bad_request",
-                        "message": f"Unknown action: {action_type}",
-                    },
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
 
             if delay:
                 time.sleep(delay)
@@ -1163,35 +1570,43 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
-            screenshot_payload = _capture_payload(
-                self.server.screenshot_quality,
-                self.server.max_width,
-            )
             public_url = self.server.get_public_url(validate=False)
-            screenshot_payload["public_url"] = public_url
-            screenshot_payload["wan_url"] = _build_app_url_from_base(
-                public_url,
-                handoff_token,
-            )
-            self._json_response(
-                {
-                    "status": "ok",
-                    "action": action_type,
-                    "session": self._build_session_payload(refreshed_session),
-                    "public_url": public_url,
-                    "wan_url": _build_app_url_from_base(
-                        public_url,
-                        handoff_token,
-                    ),
-                    "screenshot": screenshot_payload,
-                }
-            )
+            wan_url = _build_app_url_from_base(public_url, handoff_token)
+            # When the client drives a live frame stream it already shows the
+            # result, so it asks us to skip the (heavier) action screenshot.
+            if payload.get("no_screenshot"):
+                screenshot_payload = None
+            else:
+                screenshot_payload = _capture_payload(
+                    self.server.screenshot_quality,
+                    self.server.max_width,
+                )
+                screenshot_payload["public_url"] = public_url
+                screenshot_payload["wan_url"] = wan_url
+            response_body = {
+                "status": "ok",
+                "action": action_type,
+                "request_id": request_id,
+                "session": self._build_session_payload(refreshed_session),
+                "public_url": public_url,
+                "wan_url": wan_url,
+                "screenshot": screenshot_payload,
+            }
         except Exception as exc:
             logger.exception("Phone bridge action failed: %s", exc)
+            if is_owner:
+                self.server.action_dedup.abort(request_id)
             self._json_response(
                 {"status": "error", "message": str(exc)},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+            return
+
+        # Cache the result *before* writing it out so that even if the socket
+        # write fails the action is never re-applied on the client's retry.
+        if is_owner:
+            self.server.action_dedup.complete(request_id, response_body)
+        self._json_response(response_body)
 
 
 class PhoneBridgeServer(ThreadingHTTPServer):
@@ -1223,6 +1638,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.public_tunnel = None
         self.session_links = SessionLinkStore()
         self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
+        self.action_dedup = ActionDedup()
         self.startup_session = self.session_links.create(
             None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
             label="startup-phone",

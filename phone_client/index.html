@@ -647,6 +647,150 @@
       border-color: transparent;
     }
 
+    /* --- Press feedback (the default tap highlight is disabled above) --- */
+    .tool-btn, .key-btn, .send-btn, .sheet-btn,
+    .status-toggle, .keyboard-close, .sensitive-toggle,
+    .banner-dismiss, .hint-dismiss {
+      transition: transform 0.09s ease, filter 0.12s ease,
+        background 0.15s ease, box-shadow 0.16s ease, border-color 0.16s ease;
+    }
+
+    .tool-btn, .key-btn, .send-btn { position: relative; }
+
+    .tool-btn:active, .key-btn:active, .send-btn:active, .sheet-btn:active,
+    .status-toggle:active, .keyboard-close:active, .sensitive-toggle:active,
+    .banner-dismiss:active, .hint-dismiss:active,
+    .tool-btn.is-pressed, .key-btn.is-pressed, .send-btn.is-pressed,
+    .sheet-btn.is-pressed, .status-toggle.is-pressed, .keyboard-close.is-pressed,
+    .sensitive-toggle.is-pressed, .banner-dismiss.is-pressed, .hint-dismiss.is-pressed {
+      transform: scale(0.93);
+      filter: brightness(1.35);
+      box-shadow: 0 0 0 2px rgba(56, 163, 255, 0.5), 0 6px 18px rgba(0, 0, 0, 0.3);
+    }
+
+    /* --- Command lifecycle: pending -> ok / err --- */
+    @keyframes cmd-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(56, 163, 255, 0); }
+      50% { box-shadow: 0 0 0 3px rgba(56, 163, 255, 0.55); }
+    }
+    @keyframes cmd-spin { to { transform: rotate(360deg); } }
+    @keyframes cmd-flash-ok {
+      0% { box-shadow: 0 0 0 0 rgba(67, 209, 141, 0); }
+      30% { box-shadow: 0 0 0 3px rgba(67, 209, 141, 0.75); }
+      100% { box-shadow: 0 0 0 0 rgba(67, 209, 141, 0); }
+    }
+    @keyframes cmd-flash-err {
+      0% { box-shadow: 0 0 0 0 rgba(255, 93, 112, 0); }
+      30% { box-shadow: 0 0 0 3px rgba(255, 93, 112, 0.8); }
+      100% { box-shadow: 0 0 0 0 rgba(255, 93, 112, 0); }
+    }
+    .cmd-pending {
+      animation: cmd-pulse 0.7s ease-in-out infinite;
+      border-color: rgba(56, 163, 255, 0.6) !important;
+    }
+    .cmd-pending::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      border: 2px solid rgba(255, 255, 255, 0.35);
+      border-top-color: var(--accent);
+      animation: cmd-spin 0.6s linear infinite;
+      pointer-events: none;
+    }
+    .cmd-ok {
+      border-color: var(--success) !important;
+      color: #eafff5 !important;
+      animation: cmd-flash-ok 0.6s ease-out;
+    }
+    .cmd-err {
+      border-color: var(--danger) !important;
+      color: #ffe3e7 !important;
+      animation: cmd-flash-err 1s ease-out;
+    }
+
+    /* --- Acknowledgment toast --- */
+    #action-toast {
+      position: fixed;
+      top: calc(14px + var(--safe-top));
+      left: 50%;
+      transform: translate(-50%, -12px);
+      max-width: min(92vw, 360px);
+      padding: 9px 16px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: #06231a;
+      background: var(--success);
+      box-shadow: 0 10px 28px rgba(0, 0, 0, 0.34);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 0.16s ease, transform 0.16s ease, visibility 0.16s ease;
+      pointer-events: none;
+      z-index: 200;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #action-toast.visible {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(-50%, 0);
+    }
+    #action-toast.err {
+      background: var(--danger);
+      color: #2a0a0e;
+    }
+
+    /* --- Tap ripple on the remote screen --- */
+    #tap-layer {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      overflow: hidden;
+      z-index: 150;
+    }
+    .tap-marker {
+      position: absolute;
+      width: 34px;
+      height: 34px;
+      margin: -17px 0 0 -17px;
+      border-radius: 50%;
+      border: 2px solid rgba(56, 163, 255, 0.9);
+      background: rgba(56, 163, 255, 0.22);
+      box-shadow: 0 0 14px rgba(56, 163, 255, 0.5);
+      transform: scale(0.35);
+      opacity: 0.9;
+      transition: transform 0.34s ease-out, opacity 0.34s ease-out,
+        border-color 0.18s ease, background 0.18s ease;
+    }
+    .tap-marker.go {
+      transform: scale(1);
+      opacity: 0;
+    }
+    .tap-marker.double {
+      border-width: 4px;
+      border-style: double;
+    }
+    .tap-marker.right {
+      border-color: rgba(255, 189, 89, 0.95);
+      background: rgba(255, 189, 89, 0.22);
+      box-shadow: 0 0 14px rgba(255, 189, 89, 0.5);
+    }
+    .tap-marker.ok {
+      border-color: rgba(67, 209, 141, 0.95);
+      background: rgba(67, 209, 141, 0.28);
+    }
+    .tap-marker.err {
+      border-color: rgba(255, 93, 112, 0.95);
+      background: rgba(255, 93, 112, 0.28);
+    }
+
   </style>
 </head>
 <body>
@@ -753,6 +897,9 @@
     </div>
   </div>
 
+  <div id="tap-layer" aria-hidden="true"></div>
+  <div id="action-toast" role="status" aria-live="polite"></div>
+
   <script>
     (() => {
       'use strict';
@@ -764,9 +911,9 @@
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
       const POLL_LABELS = {
-        live: 'Live',
+        live: 'HD',
         balanced: 'Normal',
-        eco: 'Eco'
+        eco: 'Hizli'
       };
       const STORAGE_KEYS = {
         pollMode: 'ac_phone_poll_mode_v1',
@@ -778,7 +925,9 @@
       const API = {
         screenshot: apiPath('/api/screenshot'),
         session: apiPath('/api/session'),
-        action: apiPath('/api/action')
+        action: apiPath('/api/action'),
+        frame: apiPath('/api/frame'),
+        stream: apiPath('/api/stream')
       };
 
       const viewer = document.getElementById('viewer');
@@ -820,6 +969,8 @@
       const wanOpen = document.getElementById('wan-open');
       const wanRetry = document.getElementById('wan-retry');
       const wanClose = document.getElementById('wan-close');
+      const tapLayer = document.getElementById('tap-layer');
+      const actionToast = document.getElementById('action-toast');
 
       let connected = false;
       let busy = false;
@@ -849,6 +1000,32 @@
       let bannerHideTimer = null;
       let wanSheetDismissed = false;
       let appInstalled = isStandaloneMode();
+      let actionBusy = false;
+      const actionQueue = [];
+      let streamMode = 'frame';        // 'stream' = persistent push; 'frame' = long-poll; 'poll' = base64
+      let streamSig = '';
+      let streamFailures = 0;
+      let streamAbort = null;
+      let streamForceRefresh = false;
+      let streamGeneration = 0;
+      let streamSupported = true;
+      let currentObjectUrl = null;
+      let frameWidth = 0;
+      let frameTimes = [];
+      let requestSeq = 0;
+      let toastTimer = null;
+      const clientNonce = (() => {
+        try {
+          if (window.crypto && typeof crypto.getRandomValues === 'function') {
+            const slots = new Uint32Array(2);
+            crypto.getRandomValues(slots);
+            return slots[0].toString(36) + slots[1].toString(36);
+          }
+        } catch (_) {
+          // fall through to a time-based nonce on locked-down WebViews
+        }
+        return ((Date.now() % 1e9) + 1).toString(36);
+      })();
       let statusState = {
         title: 'Baglanti kuruluyor',
         extra: 'Ilk ekran bekleniyor',
@@ -1105,6 +1282,9 @@
         if (screenInfo.width && screenInfo.height) {
           parts.push(`${screenInfo.width}x${screenInfo.height}`);
         }
+        if (frameWidth) {
+          parts.push(`Kare: ${frameWidth}px`);
+        }
         parts.push(`Mod: ${POLL_LABELS[pollMode]}`);
         parts.push(isWanOrigin() ? 'Uzak' : 'Yerel');
         if (scrollMode) {
@@ -1124,7 +1304,10 @@
         if (lastFrameAt) {
           parts.push(`${Math.max(0, Math.round((Date.now() - lastFrameAt) / 1000))} sn once`);
         }
-        if (lastLatencyMs) {
+        const fps = currentFps();
+        if (streamMode !== 'poll' && fps > 0) {
+          parts.push(`~${fps} fps`);
+        } else if (lastLatencyMs) {
           parts.push(`~${lastLatencyMs} ms`);
         }
         return parts.filter(Boolean).join(' | ');
@@ -1279,15 +1462,37 @@
       }
 
       async function getJson(url, options = {}) {
+        const { timeoutMs, ...fetchOptions } = options;
         const startedAt = performance.now();
-        const response = await fetch(url, {
-          cache: 'no-store',
-          ...options,
-          headers: {
-            'Content-Type': 'application/json',
-            ...(options.headers || {})
+        let controller = null;
+        let timeoutHandle = null;
+        if (timeoutMs && typeof AbortController === 'function') {
+          controller = new AbortController();
+          timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
+        }
+        let response;
+        try {
+          response = await fetch(url, {
+            cache: 'no-store',
+            ...fetchOptions,
+            signal: controller ? controller.signal : undefined,
+            headers: {
+              'Content-Type': 'application/json',
+              ...(fetchOptions.headers || {})
+            }
+          });
+        } catch (error) {
+          // fetch only rejects on a transport failure (offline, reset, timeout).
+          // Tag it so callers know the request may safely be retried.
+          const aborted = controller && controller.signal.aborted;
+          const networkError = new Error(aborted ? 'Sunucu zaman asimina ugradi' : 'Sunucuya ulasilamadi');
+          networkError.network = true;
+          throw networkError;
+        } finally {
+          if (timeoutHandle) {
+            clearTimeout(timeoutHandle);
           }
-        });
+        }
         let data = null;
         try {
           data = await response.json();
@@ -1295,13 +1500,19 @@
           data = null;
         }
         if (!response.ok) {
+          // A real HTTP response means the server saw the request; this is a
+          // definitive answer, not a transient failure, so it is not retried.
           const message = (data && (data.message || data.status))
             ? (data.message || data.status)
             : `HTTP ${response.status}`;
-          throw new Error(message);
+          const httpError = new Error(message);
+          httpError.http = response.status;
+          throw httpError;
         }
         if (!data || typeof data !== 'object') {
-          throw new Error('Gecersiz sunucu yaniti');
+          const invalid = new Error('Gecersiz sunucu yaniti');
+          invalid.http = response.status;
+          throw invalid;
         }
         data.__elapsed = Math.round(performance.now() - startedAt);
         return data;
@@ -1318,7 +1529,15 @@
         lastFrameAt = Date.now();
         screenInfo.width = payload.screen_width || payload.width || 0;
         screenInfo.height = payload.screen_height || payload.height || 0;
-        screenEl.src = `data:image/jpeg;base64,${payload.image}`;
+        if (streamMode !== 'poll') {
+          // A live mode owns the <img>; just keep our change-signature in sync so
+          // a later long-poll waits for the *next* change.
+          if (payload.signature) {
+            streamSig = payload.signature;
+          }
+        } else {
+          screenEl.src = `data:image/jpeg;base64,${payload.image}`;
+        }
         setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir', true);
         if (wasDisconnected) {
           setStatusExpanded(false);
@@ -1334,7 +1553,10 @@
       }
 
       async function fetchScreenshot(reason = 'poll') {
-        if (busy) {
+        if (streamMode === 'stream') {
+          return;   // the persistent push stream drives the image instead
+        }
+        if (busy || actionBusy) {
           if (reason === 'manual') {
             scheduleNextPoll(260);
           }
@@ -1342,38 +1564,453 @@
         }
         busy = true;
         try {
-          const payload = await getJson(API.screenshot);
-          consecutiveErrors = 0;
-          renderScreenshot(payload);
+          if (streamMode === 'frame') {
+            await fetchBinaryFrame();
+          } else {
+            const payload = await getJson(withParams(API.screenshot, qualityQuery()));
+            consecutiveErrors = 0;
+            renderScreenshot(payload);
+          }
         } catch (error) {
           connected = false;
           consecutiveErrors += 1;
-          const reason = (error && error.message) ? error.message : 'Sunucuya yeniden ulasmaya calisiyorum';
-          const title = /Siyah ekran|Screen Recording|ekran kilitli|uykuda/i.test(reason)
+          if (streamMode === 'frame') {
+            streamFailures += 1;
+            if (error.http === 404 || streamFailures >= 3) {
+              // No stream endpoint (older server) or it keeps failing: drop to
+              // the proven base64 polling path for the rest of the session.
+              streamMode = 'poll';
+              streamFailures = 0;
+            }
+          }
+          const detail = (error && error.message) ? error.message : 'Sunucuya yeniden ulasmaya calisiyorum';
+          const title = /Siyah ekran|Screen Recording|ekran kilitli|uykuda/i.test(detail)
             ? 'Ekran yakalama sorunu'
             : 'Baglanti kesildi';
-          setStatus(title, reason, false);
+          setStatus(title, detail, false);
           setOfflineBanner(true, navigator.onLine
             ? 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.'
             : 'Su an offline gorunuyorsun. App shell acik kaldi, baglanti gelince toparlayacagim.');
           maybeShowWanSheet();
         } finally {
           busy = false;
-          scheduleNextPoll(reason === 'manual' ? 320 : undefined);
+          let nextDelay;
+          if (streamMode === 'frame') {
+            // Pipeline the long-poll: re-request immediately on success, back off on error.
+            nextDelay = document.hidden ? 2000 : (consecutiveErrors ? 500 : 0);
+          } else {
+            nextDelay = reason === 'manual' ? 320 : undefined;
+          }
+          scheduleNextPoll(nextDelay);
         }
       }
 
-      async function postAction(payload) {
-        if (busy) {
+      function qualityQuery() {
+        if (pollMode === 'eco') {
+          return ['q=40', 'w=960'];      // smallest/fastest for slow or mobile links
+        }
+        if (pollMode === 'live') {
+          return ['q=62', 'w=2560'];     // HD: keeps detail when zooming (heavier)
+        }
+        return [];                        // balanced -> server default (1600)
+      }
+
+      function withParams(base, parts) {
+        if (!parts.length) {
+          return base;
+        }
+        return base + (base.includes('?') ? '&' : '?') + parts.join('&');
+      }
+
+      function buildStreamUrl() {
+        return withParams(API.stream, qualityQuery());
+      }
+
+      function buildFrameUrl() {
+        return withParams(API.frame, [`since=${encodeURIComponent(streamSig)}`, ...qualityQuery()]);
+      }
+
+      function concatBytes(a, b) {
+        if (!a.length) {
+          return b;
+        }
+        const out = new Uint8Array(a.length + b.length);
+        out.set(a, 0);
+        out.set(b, a.length);
+        return out;
+      }
+
+      function noteFrameTiming() {
+        const now = Date.now();
+        frameTimes.push(now);
+        const cutoff = now - 1500;
+        while (frameTimes.length && frameTimes[0] < cutoff) {
+          frameTimes.shift();
+        }
+      }
+
+      function currentFps() {
+        return frameTimes.length > 1 ? Math.round((frameTimes.length - 1) / 1.5) : 0;
+      }
+
+      function renderStreamFrame(bytes) {
+        const objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
+        const previous = currentObjectUrl;
+        screenEl.src = objectUrl;
+        currentObjectUrl = objectUrl;
+        if (previous) {
+          setTimeout(() => URL.revokeObjectURL(previous), 1000);
+        }
+        lastFrameAt = Date.now();
+        noteFrameTiming();
+        consecutiveErrors = 0;
+        markFrameConnected();
+      }
+
+      function startPushStream() {
+        if (!streamSupported) {
+          streamMode = 'frame';   // device/server can't push; use the long-poll
+          scheduleNextPoll(0);
           return;
         }
-        busy = true;
+        streamMode = 'stream';
+        runPushStream();
+      }
+
+      function restartPushStream() {
+        // Supersede the current stream (quality change / manual Sync) and reconnect
+        // without tripping the failure fallback.
+        streamGeneration += 1;
+        if (streamAbort) {
+          streamAbort.abort();
+        }
+        startPushStream();
+      }
+
+      async function runPushStream() {
+        const generation = ++streamGeneration;
+        const controller = new AbortController();
+        streamAbort = controller;
+        let gotFrame = false;
+        const watchdog = setTimeout(() => {
+          if (!gotFrame) {
+            controller.abort();   // no frame within the window -> fall back
+          }
+        }, 6000);
+        try {
+          const response = await fetch(buildStreamUrl(), { cache: 'no-store', signal: controller.signal });
+          if (response.status === 404 || !response.body) {
+            streamSupported = false;   // older server, or no streaming fetch support
+            const failure = new Error('akis desteklenmiyor');
+            failure.http = response.status;
+            throw failure;
+          }
+          if (!response.ok) {
+            throw new Error(`stream HTTP ${response.status}`);
+          }
+          const reader = response.body.getReader();
+          let buffer = new Uint8Array(0);
+          while (streamMode === 'stream' && generation === streamGeneration) {
+            const { value, done } = await reader.read();
+            if (done) {
+              break;
+            }
+            if (value && value.length) {
+              buffer = concatBytes(buffer, value);
+            }
+            let newestFrame = null;
+            while (buffer.length >= 4) {
+              const length = (buffer[0] * 0x1000000) + (buffer[1] << 16) + (buffer[2] << 8) + buffer[3];
+              if (length < 0 || length > 16000000) {
+                throw new Error('stream desync');
+              }
+              if (buffer.length < 4 + length) {
+                break;
+              }
+              const payload = buffer.subarray(4, 4 + length);
+              buffer = buffer.subarray(4 + length);
+              if (length === 0) {
+                gotFrame = true;            // heartbeat: liveness only, nothing to draw
+                consecutiveErrors = 0;
+                markFrameConnected();
+              } else {
+                newestFrame = payload.slice();   // copy out; render only the newest
+              }
+            }
+            if (newestFrame) {
+              gotFrame = true;
+              clearTimeout(watchdog);
+              renderStreamFrame(newestFrame);
+            }
+          }
+        } catch (_) {
+          // fall through to the fallback below
+        } finally {
+          clearTimeout(watchdog);
+          if (generation === streamGeneration) {
+            streamAbort = null;
+          }
+        }
+        if (generation === streamGeneration && streamMode === 'stream') {
+          // Genuine end/failure (not a superseding restart): drop to the long-poll.
+          streamMode = 'frame';
+          connected = false;
+          consecutiveErrors += 1;
+          setStatus('Hizli akis yok', 'Push akisi tutmadi, hizli polle donuldu', false);
+          scheduleNextPoll(0);
+        }
+      }
+
+      function markFrameConnected() {
+        const wasDisconnected = !connected || consecutiveErrors > 0;
+        consecutiveErrors = 0;
+        connected = true;
+        setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Canli akis', true);
+        if (wasDisconnected) {
+          setStatusExpanded(false);
+          setOfflineBanner(true, 'Baglanti geri geldi. Kaldigimiz yerden devam ediyoruz.', false);
+        } else {
+          setOfflineBanner(false);
+        }
+        scheduleUsageHintAutoHide();
+        setWanSheetVisible(false);
+        wanSheetDismissed = false;
+      }
+
+      function renderBinaryFrame(blob, response, startedAt) {
+        const objectUrl = URL.createObjectURL(blob);
+        const previous = currentObjectUrl;
+        screenEl.src = objectUrl;
+        currentObjectUrl = objectUrl;
+        if (previous) {
+          // Revoke the prior frame's URL once the new one has had a tick to paint.
+          setTimeout(() => URL.revokeObjectURL(previous), 1000);
+        }
+        streamSig = response.headers.get('X-Frame-Sig') || streamSig;
+        const screenW = Number(response.headers.get('X-Screen-Width'));
+        const screenH = Number(response.headers.get('X-Screen-Height'));
+        if (screenW) {
+          screenInfo.width = screenW;
+        }
+        if (screenH) {
+          screenInfo.height = screenH;
+        }
+        lastFrameAt = Date.now();
+        lastLatencyMs = Math.round(performance.now() - startedAt);
+        noteFrameTiming();
+        streamFailures = 0;
+        markFrameConnected();
+      }
+
+      async function fetchBinaryFrame() {
+        const startedAt = performance.now();
+        const controller = new AbortController();
+        streamAbort = controller;
+        // Watchdog: the server resolves each long-poll within ~15s, so if 20s
+        // pass the connection has silently stalled — abort so the loop recovers.
+        const watchdog = setTimeout(() => controller.abort(), 20000);
+        let response;
+        try {
+          response = await fetch(buildFrameUrl(), { cache: 'no-store', signal: controller.signal });
+        } catch (error) {
+          if (streamForceRefresh) {
+            // Intentional abort from a manual Sync; the loop re-requests a fresh frame.
+            streamForceRefresh = false;
+            consecutiveErrors = 0;
+            return;
+          }
+          const networkError = new Error('Sunucuya ulasilamadi');
+          networkError.network = true;
+          throw networkError;
+        } finally {
+          clearTimeout(watchdog);
+          streamAbort = null;
+        }
+        if (response.status === 404) {
+          const missing = new Error('Akis ucu yok');
+          missing.http = 404;
+          throw missing;
+        }
+        if (response.status === 204) {
+          // Screen unchanged within the server window; keep the loop alive.
+          streamSig = response.headers.get('X-Frame-Sig') || streamSig;
+          consecutiveErrors = 0;
+          streamFailures = 0;
+          markFrameConnected();
+          return;
+        }
+        if (!response.ok) {
+          const httpError = new Error(`HTTP ${response.status}`);
+          httpError.http = response.status;
+          throw httpError;
+        }
+        const blob = await response.blob();
+        consecutiveErrors = 0;
+        renderBinaryFrame(blob, response, startedAt);
+      }
+
+      async function refreshSessionInfo() {
+        if (document.hidden || !connected) {
+          return;
+        }
+        try {
+          const info = await getJson(API.session);
+          syncWanLinks(info);
+          syncSessionInfo(info.session);
+        } catch (_) {
+          // The frame loop is the source of truth for connectivity; ignore here.
+        }
+      }
+
+      function nextRequestId() {
+        requestSeq += 1;
+        return `${clientNonce}-${requestSeq}`;
+      }
+
+      function delayMs(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
+
+      function showToast(text, kind = 'ok') {
+        if (!actionToast) {
+          return;
+        }
+        actionToast.textContent = text;
+        actionToast.classList.toggle('err', kind === 'err');
+        actionToast.classList.add('visible');
+        if (toastTimer) {
+          clearTimeout(toastTimer);
+        }
+        toastTimer = setTimeout(() => {
+          actionToast.classList.remove('visible');
+          toastTimer = null;
+        }, kind === 'err' ? 2400 : 1300);
+      }
+
+      function spawnTapMarker(clientX, clientY, kind = 'left') {
+        if (!tapLayer) {
+          return null;
+        }
+        const marker = document.createElement('div');
+        marker.className = 'tap-marker pending';
+        if (kind === 'double') {
+          marker.classList.add('double');
+        } else if (kind === 'right') {
+          marker.classList.add('right');
+        }
+        marker.style.left = `${clientX}px`;
+        marker.style.top = `${clientY}px`;
+        tapLayer.appendChild(marker);
+        requestAnimationFrame(() => marker.classList.add('go'));
+        setTimeout(() => marker.remove(), 520);
+        return marker;
+      }
+
+      function setMarkerState(marker, state) {
+        if (!marker || !marker.isConnected) {
+          return;
+        }
+        marker.classList.remove('pending');
+        if (state === 'ok' || state === 'err') {
+          marker.classList.add(state);
+        }
+      }
+
+      function setActionFeedback(feedback, state, message = '') {
+        if (!feedback) {
+          return;
+        }
+        const el = feedback.el;
+        if (el) {
+          el.classList.remove('cmd-pending', 'cmd-ok', 'cmd-err');
+          if (state === 'pending') {
+            el.classList.add('cmd-pending');
+          } else if (state === 'ok') {
+            el.classList.add('cmd-ok');
+            setTimeout(() => el.classList.remove('cmd-ok'), 650);
+          } else if (state === 'err') {
+            el.classList.add('cmd-err');
+            setTimeout(() => el.classList.remove('cmd-err'), 1100);
+          }
+        }
+        if (feedback.marker) {
+          setMarkerState(feedback.marker, state);
+        }
+        if (feedback.toast && state !== 'pending') {
+          if (state === 'ok') {
+            showToast(`✓ ${feedback.toast}`, 'ok');
+          } else {
+            const tail = message ? ` · ${message}` : '';
+            showToast(`✗ ${feedback.toast}${tail}`, 'err');
+          }
+        }
+      }
+
+      // Queue UI-initiated commands so nothing is silently dropped while another
+      // request is in flight, and so overlapping desktop input never races.
+      function enqueueAction(payload, feedback = {}) {
+        const job = {
+          payload: { ...payload, request_id: nextRequestId(), no_screenshot: streamMode !== 'poll' },
+          feedback
+        };
+        setActionFeedback(feedback, 'pending');
+        actionQueue.push(job);
+        pumpActionQueue();
+        return job;
+      }
+
+      async function pumpActionQueue() {
+        if (actionBusy) {
+          return;
+        }
+        const job = actionQueue.shift();
+        if (!job) {
+          return;
+        }
+        actionBusy = true;
+        try {
+          await runAction(job);
+        } finally {
+          actionBusy = false;
+          if (actionQueue.length) {
+            pumpActionQueue();
+          } else {
+            scheduleNextPoll(streamMode === 'poll' ? 240 : 0);
+          }
+        }
+      }
+
+      async function sendActionRequest(payload, { timeoutMs = 9000, retries = 2 } = {}) {
+        let attempt = 0;
+        for (;;) {
+          try {
+            return await getJson(API.action, {
+              method: 'POST',
+              body: JSON.stringify(payload),
+              timeoutMs
+            });
+          } catch (error) {
+            // Re-send the *same* request_id on transient failures only. The
+            // server de-duplicates it, so a command that already landed is never
+            // applied twice; one that never landed gets a second chance.
+            if (error && error.network && attempt < retries) {
+              attempt += 1;
+              setStatus('Komut dogrulaniyor', `Cevap bekleniyor, ${attempt}. deneme`, connected);
+              await delayMs(240 * attempt);
+              continue;
+            }
+            throw error;
+          }
+        }
+      }
+
+      async function runAction(job) {
+        const { payload, feedback } = job;
         boostLiveWindow();
         setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
         try {
-          const result = await getJson(API.action, {
-            method: 'POST',
-            body: JSON.stringify(payload)
+          const result = await sendActionRequest(payload, {
+            timeoutMs: payload.type === 'type' ? 13000 : 9000
           });
           consecutiveErrors = 0;
           lastLatencyMs = result.__elapsed || lastLatencyMs;
@@ -1383,16 +2020,45 @@
             session: result.session,
             __elapsed: result.__elapsed
           });
+          setActionFeedback(feedback, 'ok');
+          if (typeof feedback.onSuccess === 'function') {
+            feedback.onSuccess(result);
+          }
         } catch (error) {
-          connected = false;
-          consecutiveErrors += 1;
-          setStatus('Islem hatasi', error.message, false);
-          setOfflineBanner(true, 'Komut gitti ama cevap alinmadi. Yeniden deneyecegim.');
-          maybeShowWanSheet();
-        } finally {
-          busy = false;
-          scheduleNextPoll(240);
+          const message = (error && error.message) ? error.message : 'Bilinmeyen hata';
+          if (error && error.http) {
+            // Server replied with an error: it is reachable, the command was
+            // received but could not be applied. Do not flag a lost connection.
+            setStatus('Islem reddedildi', message, connected);
+            setActionFeedback(feedback, 'err', message);
+          } else {
+            connected = false;
+            consecutiveErrors += 1;
+            setStatus('Komut ulasmadi', message, false);
+            setOfflineBanner(true, 'Komut birkac kez denendi ama cevap alinamadi. Baglanti gelince tekrar dene.');
+            setActionFeedback(feedback, 'err', 'ulasmadi');
+            maybeShowWanSheet();
+          }
+          if (typeof feedback.onError === 'function') {
+            feedback.onError(error);
+          }
         }
+      }
+
+      function bindPressFeedback() {
+        const selector = '.tool-btn, .key-btn, .send-btn, .sheet-btn, .status-toggle, .keyboard-close, .sensitive-toggle, .banner-dismiss, .hint-dismiss';
+        const clearPressed = () => {
+          document.querySelectorAll('.is-pressed').forEach((el) => el.classList.remove('is-pressed'));
+        };
+        document.addEventListener('pointerdown', (event) => {
+          const target = event.target.closest(selector);
+          if (target) {
+            target.classList.add('is-pressed');
+          }
+        }, true);
+        document.addEventListener('pointerup', clearPressed, true);
+        document.addEventListener('pointercancel', clearPressed, true);
+        window.addEventListener('blur', clearPressed);
       }
 
       async function postScrollAction(payload) {
@@ -1413,10 +2079,13 @@
           while (pendingScrollPayload) {
             const nextPayload = pendingScrollPayload;
             pendingScrollPayload = null;
+            nextPayload.request_id = nextRequestId();
+            nextPayload.no_screenshot = (streamMode !== 'poll');
             boostLiveWindow(2200);
             const result = await getJson(API.action, {
               method: 'POST',
-              body: JSON.stringify(nextPayload)
+              body: JSON.stringify(nextPayload),
+              timeoutMs: 9000
             });
             consecutiveErrors = 0;
             if (result?.screenshot?.image) {
@@ -1569,7 +2238,11 @@
           }
           const coords = getRatios(gesture.x, gesture.y);
           if (coords.inBounds) {
-            postAction({ type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 });
+            const marker = spawnTapMarker(gesture.x, gesture.y, 'right');
+            enqueueAction(
+              { type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 },
+              { marker }
+            );
           }
           longPressTimer = null;
         }, 520);
@@ -1683,13 +2356,17 @@
         if (!gesture.moved && duration < 520) {
           const now = Date.now();
           const isDouble = now - lastTapTime < 320 && Math.abs(gesture.x - lastTapX) < 30;
-          postAction({
-            type: 'click',
-            x: coords.x,
-            y: coords.y,
-            button: isDouble ? 'double' : 'left',
-            delay: isDouble ? 0.24 : 0.18
-          });
+          const marker = spawnTapMarker(gesture.x, gesture.y, isDouble ? 'double' : 'left');
+          enqueueAction(
+            {
+              type: 'click',
+              x: coords.x,
+              y: coords.y,
+              button: isDouble ? 'double' : 'left',
+              delay: isDouble ? 0.24 : 0.18
+            },
+            { marker }
+          );
           lastTapTime = now;
           lastTapX = gesture.x;
         }
@@ -1707,7 +2384,20 @@
       btnRefresh.addEventListener('click', () => {
         setTopbarVisible(true);
         boostLiveWindow(7000);
-        fetchScreenshot('manual');
+        if (streamSupported) {
+          // Re-attempt / refresh the fast push stream.
+          restartPushStream();
+        } else if (streamMode === 'frame') {
+          // Force the next long-poll to return the current frame immediately.
+          streamSig = '';
+          streamForceRefresh = true;
+          if (streamAbort) {
+            streamAbort.abort();
+          }
+          scheduleNextPoll(0);
+        } else {
+          fetchScreenshot('manual');
+        }
       });
       btnTelegram.addEventListener('click', () => {
         if (hasWanPwa()) {
@@ -1726,7 +2416,19 @@
         localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
         updateSpeedButton();
         setStatus('Baglanti hizi guncellendi', `Yeni mod: ${POLL_LABELS[pollMode]}`, connected);
-        scheduleNextPoll(180);
+        if (streamMode === 'stream') {
+          restartPushStream();   // reconnect so the new quality/resolution applies
+        } else if (streamMode === 'frame') {
+          // Drop the in-flight long-poll so the new resolution applies right away.
+          streamSig = '';
+          streamForceRefresh = true;
+          if (streamAbort) {
+            streamAbort.abort();
+          }
+          scheduleNextPoll(0);
+        } else {
+          scheduleNextPoll(180);
+        }
       });
       btnScroll.addEventListener('click', () => {
         scrollMode = !scrollMode;
@@ -1779,8 +2481,21 @@
         if (!value.length) {
           return;
         }
-        postAction({ type: 'type', text: value, sensitive: sensitiveTyping, delay: 0.12 });
+        const wasSensitive = sensitiveTyping;
         typeInput.value = '';
+        enqueueAction(
+          { type: 'type', text: value, sensitive: wasSensitive, delay: 0.12 },
+          {
+            el: sendText,
+            toast: wasSensitive ? 'Sifre gonderildi' : 'Metin gonderildi',
+            onError: () => {
+              // Restore the text so a failed send is never silently lost.
+              if (!typeInput.value) {
+                typeInput.value = value;
+              }
+            }
+          }
+        );
       });
 
       typeInput.addEventListener('keydown', (event) => {
@@ -1790,21 +2505,43 @@
         }
       });
 
-      document.querySelectorAll('.key-btn').forEach((button) => {
+      document.querySelectorAll('.key-btn[data-key]').forEach((button) => {
         button.addEventListener('click', () => {
           const key = button.getAttribute('data-key');
-          if (key) {
-            postAction({ type: 'key', keys: key, delay: 0.1 });
+          if (!key) {
+            return;
           }
+          enqueueAction(
+            { type: 'key', keys: key, delay: 0.1 },
+            { el: button, toast: (button.textContent || 'Tus').trim() }
+          );
         });
       });
 
+      screenEl.addEventListener('load', () => {
+        if (screenEl.naturalWidth) {
+          frameWidth = screenEl.naturalWidth;
+        }
+      });
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
       screenEl.addEventListener('touchcancel', onTouchCancel, { passive: false });
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());
-      document.addEventListener('visibilitychange', () => scheduleNextPoll(document.hidden ? 2600 : 220));
+      document.addEventListener('visibilitychange', () => {
+        if (document.hidden) {
+          if (streamMode === 'stream' && streamAbort) {
+            // Stop streaming while backgrounded to save battery/data.
+            streamGeneration += 1;
+            streamAbort.abort();
+          }
+        } else if (streamMode === 'stream') {
+          startPushStream();   // resume the stream on return
+        } else if (streamMode === 'frame') {
+          streamSig = '';      // show the current screen immediately on resume
+        }
+        scheduleNextPoll(document.hidden ? 2600 : 220);
+      });
       window.addEventListener('resize', () => {
         updateRotateHint();
         updateViewerInsets();
@@ -1869,7 +2606,9 @@
       setUsageHintVisible(localStorage.getItem(STORAGE_KEYS.usageHintDismissed) !== '1');
       setStatusExpanded(false);
       updateViewerInsets();
+      bindPressFeedback();
       registerServiceWorker();
+      setInterval(refreshSessionInfo, 8000);
 
       (async () => {
         try {
@@ -1880,7 +2619,7 @@
           screenInfo.height = Number(session.screen_height) || 0;
           syncSessionInfo(session.session);
           setStatus('Baglaniyor', 'Ilk ekran aliniyor', false);
-          await fetchScreenshot('bootstrap');
+          startPushStream();   // try the fast persistent stream; falls back on its own
           if (!appInstalled) {
             setTimeout(() => showInstallSheet(), 1200);
           }

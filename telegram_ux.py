@@ -373,45 +373,95 @@ async def _send_phone_repair_link(bot, chat_id, old_url=None):
     return public_url
 
 
+def _notification_decision(current_url, notified_url, file_url, startup_done, checks, grace_checks=8):
+    """Pure decision for the phone-link watcher (no I/O, so it is unit-testable).
+
+    Returns (should_send, is_startup, mark_startup_done):
+      - should_send: broadcast the link now.
+      - is_startup: this is the first-launch announcement (old_url is None).
+      - mark_startup_done: the startup phase is over after this tick.
+    """
+    current_url = (current_url or "").strip()
+    if not startup_done:
+        tunnel_ready = bool(current_url)
+        grace_over = checks >= grace_checks
+        if not (tunnel_ready or grace_over):
+            return (False, False, False)  # keep waiting for the tunnel to come up
+        already_announced = bool(current_url) and current_url == file_url
+        # Announce on first launch unless this exact link was already announced
+        # in a previous run (i.e. only the bot restarted, not the tunnel).
+        return ((not already_announced), True, True)
+    if current_url and current_url != notified_url:
+        return (True, False, False)  # tunnel address changed mid-session
+    return (False, False, False)
+
+
+async def _broadcast_phone_link(application, current_url, *, old_url=None):
+    """Send the current phone link to every notification target. Logs loudly so a
+    silent failure (e.g. the user never opened the bot chat) is actually visible."""
+    targets = _notification_target_chat_ids()
+    if not targets:
+        legacy.logger.warning(
+            "Telefon link bildirimi atlandi: hedef chat yok. ALLOWED_USER_ID tanimli mi?"
+        )
+        return False
+    sent_any = False
+    for chat_id in targets:
+        try:
+            await _send_phone_repair_link(application.bot, chat_id, old_url=old_url)
+            sent_any = True
+            legacy.logger.info(
+                f"Telefon link bildirimi gonderildi -> chat {chat_id} ({current_url or 'LAN'})"
+            )
+        except Exception as exc:
+            legacy.logger.warning(
+                f"Telefon link bildirimi GONDERILEMEDI -> chat {chat_id}: {exc}"
+            )
+    if sent_any and current_url:
+        _remember_notified_public_url(current_url)
+    return sent_any
+
+
 async def _watch_public_phone_link(application):
     if os.getenv("PHONE_NOTIFY_TUNNEL_CHANGES", "1").strip().lower() in {"0", "false", "no", "off"}:
+        legacy.logger.info("Telefon link bildirimi devre disi (PHONE_NOTIFY_TUNNEL_CHANGES).")
         return
 
     interval = _phone_notification_interval_seconds()
-    last_seen = _load_phone_notification_state().get("last_public_url", "")
-    await asyncio.sleep(3)
+    # The watcher keeps its own in-memory "last announced" URL; we only read the
+    # state file once (to avoid re-announcing the same link after a bot-only
+    # restart). Other code paths also write that file, so we never let it suppress
+    # a genuine first-launch announcement.
+    file_url = _load_phone_notification_state().get("last_public_url", "")
+    notified_url = None
+    startup_done = False
+    checks = 0
+    legacy.logger.info(f"Telefon link bildirim watcher basladi (hedefler: {_notification_target_chat_ids() or 'yok'}).")
+    await asyncio.sleep(2)
 
     while True:
         try:
+            checks += 1
             health = await asyncio.to_thread(get_bridge_health)
             current_url = (health.get("public_url") or "").strip()
-            if current_url and current_url != last_seen:
-                targets = _notification_target_chat_ids()
-                if targets:
-                    sent_any = False
-                    for chat_id in targets:
-                        try:
-                            await _send_phone_repair_link(
-                                application.bot,
-                                chat_id,
-                                old_url=last_seen or None,
-                            )
-                            sent_any = True
-                        except Exception as exc:
-                            legacy.logger.warning(
-                                f"Telefon uzak link bildirimi gonderilemedi ({chat_id}): {exc}"
-                            )
-                    if sent_any:
-                        _remember_notified_public_url(current_url)
-                        last_seen = current_url
-                else:
-                    legacy.logger.debug("Telefon uzak link degisti ama bildirim hedefi yok.")
+            should_send, is_startup, mark_done = _notification_decision(
+                current_url, notified_url, file_url, startup_done, checks
+            )
+            if should_send:
+                old = None if is_startup else notified_url
+                if await _broadcast_phone_link(application, current_url, old_url=old):
+                    notified_url = current_url
+            if mark_done:
+                startup_done = True
+                if not should_send and current_url:
+                    notified_url = current_url
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            legacy.logger.debug(f"Telefon uzak link watcher beklemede: {exc}")
+            legacy.logger.warning(f"Telefon link watcher hatasi: {exc}")
 
-        await asyncio.sleep(interval)
+        # Poll quickly until the first announcement, then settle to the interval.
+        await asyncio.sleep(interval if startup_done else min(interval, 5))
 
 
 async def _send_phone_panel(update_or_chat, context, *, minutes=0, label="telegram", chat_id=None):
