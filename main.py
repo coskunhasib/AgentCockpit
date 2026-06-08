@@ -13,6 +13,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
+try:
+    from core.dns_fallback import install as install_dns_fallback
+    from core.dns_fallback import install_tls_fallback
+
+    install_dns_fallback()
+    install_tls_fallback()
+except Exception:
+    pass
+
 
 __version__ = "2.0.0 (AgentCockpit unified)"
 
@@ -139,7 +148,22 @@ def _bootstrap_without_launcher(script_path):
     except Exception as exc:
         print(f"[UYARI] Bagimlilik kurulumunda sorun: {exc}. Devam ediyorum.")
 
-    subprocess.call([str(venv_python), script_path] + sys.argv[1:], cwd=PROJECT_ROOT)
+    restart_env = os.environ.copy()
+    protected_pids = [
+        pid
+        for pid in (
+            restart_env.get("AGENTCOCKPIT_PARENT_PIDS", ""),
+            str(os.getpid()),
+            str(os.getppid()),
+        )
+        if pid
+    ]
+    restart_env["AGENTCOCKPIT_PARENT_PIDS"] = ",".join(protected_pids)
+    subprocess.call(
+        [str(venv_python), script_path] + sys.argv[1:],
+        cwd=PROJECT_ROOT,
+        env=restart_env,
+    )
     sys.exit()
 
 

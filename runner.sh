@@ -5,15 +5,50 @@ export PYTHONIOENCODING=utf-8
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 stop_stack() {
-  local patterns=(
-    "$PROJECT_ROOT/main.py"
-    "$PROJECT_ROOT/phone_bridge_server.py"
-    "$PROJECT_ROOT/.agentcockpit/runtime/bin/cloudflared tunnel --url http://127.0.0.1:8765"
-  )
+  PROJECT_ROOT_ENV="$PROJECT_ROOT" python3 - <<'PY'
+import os
+import signal
+import subprocess
+import time
 
-  for pattern in "${patterns[@]}"; do
-    pkill -f "$pattern" >/dev/null 2>&1 || true
-  done
+root = os.environ["PROJECT_ROOT_ENV"]
+patterns = [
+    f"{root}/main.py",
+    f"{root}/phone_bridge_server.py",
+    f"{root}/.agentcockpit/runtime/bin/cloudflared",
+]
+
+
+def matching_pids():
+    output = subprocess.check_output(["ps", "-ax", "-o", "pid=,command="], text=True)
+    pids = []
+    current_pid = os.getpid()
+    for line in output.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        pid_text, _, command = text.partition(" ")
+        if not pid_text.isdigit():
+            continue
+        pid = int(pid_text)
+        if pid == current_pid:
+            continue
+        if any(pattern in command for pattern in patterns):
+            pids.append(pid)
+    return pids
+
+
+for sig in (signal.SIGTERM, signal.SIGKILL):
+    pids = matching_pids()
+    if not pids:
+        break
+    for pid in sorted(pids, reverse=True):
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            pass
+    time.sleep(1)
+PY
 }
 
 if [[ "${1:-}" == "stop" ]]; then

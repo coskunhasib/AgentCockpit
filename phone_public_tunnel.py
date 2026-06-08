@@ -176,7 +176,7 @@ class QuickTunnel:
             self.restart_delay,
             get_float("PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC", "60"),
         )
-        self.max_restarts = max(0, get_int("PHONE_PUBLIC_TUNNEL_MAX_RESTARTS", "0"))
+        self.max_restarts = max(0, get_int("PHONE_PUBLIC_TUNNEL_MAX_RESTARTS"))
         self._binary = None
         self._stop_event = threading.Event()
         self._lock = threading.Lock()
@@ -358,7 +358,7 @@ class QuickTunnel:
             return url
 
         now = time.monotonic()
-        cache_ttl = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC", "8"))
+        cache_ttl = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC"))
         if validation_ok and (now - checked_at) < cache_ttl:
             return url
         if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
@@ -387,13 +387,10 @@ class QuickTunnel:
                 if ok:
                     self._validation_failures = 0
                 else:
-                    grace_sec = max(
-                        0.0,
-                        get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC", "20"),
-                    )
+                    grace_sec = max(0.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC"))
                     max_failures = max(
                         1,
-                        get_int("PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART", "2"),
+                        get_int("PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART"),
                     )
                     url_age = now - self._url_seen_at if self._url_seen_at else 0.0
                     if url_age >= grace_sec:

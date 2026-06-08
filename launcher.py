@@ -92,7 +92,22 @@ def create_venv_and_restart(script_path=None):
         print(f"[UYARI] Bagimlilik kurulumunda sorun: {exc}. Devam ediyorum.")
 
     restart_script = script_path or os.path.abspath(__file__)
-    subprocess.call([venv_python, restart_script] + sys.argv[1:], cwd=PROJECT_ROOT)
+    restart_env = os.environ.copy()
+    protected_pids = [
+        pid
+        for pid in (
+            restart_env.get("AGENTCOCKPIT_PARENT_PIDS", ""),
+            str(os.getpid()),
+            str(os.getppid()),
+        )
+        if pid
+    ]
+    restart_env["AGENTCOCKPIT_PARENT_PIDS"] = ",".join(protected_pids)
+    subprocess.call(
+        [venv_python, restart_script] + sys.argv[1:],
+        cwd=PROJECT_ROOT,
+        env=restart_env,
+    )
     sys.exit()
 
 
@@ -147,6 +162,15 @@ def open_pairing_dashboard(base_url, *, browser_available=True):
         print(f"[PHONE] Tarayici otomatik acilamadi: {exc}")
 
 
+def cleanup_existing_bot_instances():
+    try:
+        from core.bot_engine import _kill_old_instances
+
+        _kill_old_instances()
+    except Exception as exc:
+        print(f"[UYARI] Eski bot surecleri temizlenemedi: {exc}")
+
+
 def _host_resolves(host, port=443):
     try:
         socket.getaddrinfo(host, port)
@@ -198,6 +222,8 @@ def run_stack():
     from utils.installer import install_and_check
 
     install_and_check()
+
+    cleanup_existing_bot_instances()
 
     bridge_process, bridge_ready, bridge_base_url = ensure_bridge_running()
     if bridge_ready:

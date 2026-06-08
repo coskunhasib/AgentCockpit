@@ -1499,6 +1499,14 @@ def _kill_old_instances():
 
     is_autostart = "--autostart" in sys.argv or os.environ.get("AGENTCOCKPIT_AUTOSTART") == "true"
     my_pid = os.getpid()
+    protected_pids = set()
+    for raw_pid in os.environ.get("AGENTCOCKPIT_PARENT_PIDS", "").replace(";", ",").split(","):
+        try:
+            pid = int(raw_pid.strip())
+        except ValueError:
+            continue
+        if pid > 0:
+            protected_pids.add(pid)
 
     # 1. Sistem genelinde diger cakisabilecek AgentCockpit sureclerini ara ve temizle
     other_pids = []
@@ -1523,7 +1531,7 @@ def _kill_old_instances():
                 rows.append((pid, ppid, cmd))
                 parent_by_pid[pid] = ppid
 
-            ancestor_pids = set()
+            ancestor_pids = set(protected_pids)
             parent_pid = parent_by_pid.get(my_pid, os.getppid())
             while parent_pid and parent_pid not in ancestor_pids:
                 ancestor_pids.add(parent_pid)

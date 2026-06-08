@@ -26,6 +26,15 @@ PROJECT_ROOT = ROOT_DIR
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from core.dns_fallback import install as install_dns_fallback
+    from core.dns_fallback import install_tls_fallback
+
+    install_dns_fallback()
+    install_tls_fallback()
+except Exception:
+    pass
+
 from PIL import Image, ImageDraw
 from core.app_config import get_int, get_str
 from dotenv import load_dotenv
