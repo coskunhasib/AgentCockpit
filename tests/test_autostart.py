@@ -73,6 +73,19 @@ class AutostartTests(unittest.TestCase):
             '"/tmp/New project/main.py"',
         )
 
+    def test_register_mac_rejects_privacy_protected_launch_dir(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bot_dir = root / "Documents" / "AgentCockpit"
+
+            with patch.object(autostart.Path, "home", return_value=root):
+                with self.assertRaisesRegex(RuntimeError, "Desktop/Documents/Downloads"):
+                    autostart.register_mac(
+                        start_now=False,
+                        bot_dir=bot_dir,
+                        launch_agents_dir=root / "LaunchAgents",
+                    )
+
 
 if __name__ == "__main__":
     unittest.main()

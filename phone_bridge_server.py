@@ -1033,7 +1033,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
         local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
-        public_url = self.server.get_public_url(validate=False)
+        public_url = self.server.get_public_url(validate=True)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
             **self._build_session_payload(session),
@@ -1097,10 +1097,13 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path
 
+        if route == "/_agentcockpit/tunnel-check":
+            self._json_response({"status": "ok", "client": "phone-bridge"})
+            return
+
         if route == "/health":
             lan_ips = _get_local_ipv4_candidates()
-            # /health icinde kendi uzerinden tekrar /health dogrulamasi yapma.
-            tunnel_snapshot = self.server.public_tunnel_snapshot(validate=False)
+            tunnel_snapshot = self.server.public_tunnel_snapshot(validate=True)
             screen = _get_screen_metrics()
             compatibility = detect_runtime_compatibility()
             self._json_response(
@@ -1172,7 +1175,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
             html = html_path.read_text(encoding="utf-8")
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             handoff_token = (
                 session.get("token", "")
                 if auth_kind == "link"
@@ -1261,7 +1264,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
             payload["session"] = self._build_session_payload(session)
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             payload["public_url"] = public_url
             payload["wan_url"] = _build_app_url_from_base(
                 public_url,
@@ -1430,7 +1433,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 else self.server.startup_session.get("token", "")
             )
             screen = _get_screen_metrics()
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             self._json_response(
                 {
                     "status": "ok",
@@ -1570,7 +1573,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             wan_url = _build_app_url_from_base(public_url, handoff_token)
             # When the client drives a live frame stream it already shows the
             # result, so it asks us to skip the (heavier) action screenshot.
@@ -1731,7 +1734,7 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         f"http://{LOCAL_HOST}:{port}",
         mode=public_tunnel,
     )
-    public_url = server.get_public_url(validate=False)
+    public_url = server.get_public_url(validate=True)
     wan_url = _build_app_url_from_base(public_url, startup_session["token"])
 
     logger.info("AgentCockpit phone bridge basladi")

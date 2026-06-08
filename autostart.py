@@ -15,6 +15,7 @@ APP_LABEL = "com.agentcockpit.bot"
 MAC_SCREEN_SESSION = "agentcockpit"
 WINDOWS_TASK_NAME = "AgentCockpitBot"
 LINUX_SERVICE_NAME = "agentcockpit-bot"
+MAC_PROTECTED_DIR_NAMES = {"Desktop", "Documents", "Downloads"}
 
 LEGACY_MAC_LABELS = ("com.antigravity.bot",)
 LEGACY_WINDOWS_TASKS = ("AntigravityBot",)
@@ -174,6 +175,31 @@ def _mac_plist_payload(bot_dir: Path, python_exe: Path, main_py: Path, logs_dir:
     }
 
 
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def _is_mac_privacy_protected_path(path: Path) -> bool:
+    home = Path.home()
+    return any(
+        _is_relative_to(path, home / dirname)
+        for dirname in MAC_PROTECTED_DIR_NAMES
+    )
+
+
+def _validate_mac_launch_dir(bot_dir: Path):
+    if _is_mac_privacy_protected_path(bot_dir):
+        raise RuntimeError(
+            "macOS LaunchAgent, Desktop/Documents/Downloads altindaki venv dosyalarini "
+            "izin yuzunden okuyamayabilir. Projeyi korumali olmayan bir dizine tasiyin "
+            "veya autostart.py register --bot-dir /guvenli/AgentCockpit ile kaydedin."
+        )
+
+
 def register_mac(
     *,
     start_now: bool = True,
@@ -182,6 +208,7 @@ def register_mac(
 ):
     """Register via launchd LaunchAgent."""
     bot_dir = Path(bot_dir or get_bot_dir())
+    _validate_mac_launch_dir(bot_dir)
     python_exe = _python_executable(bot_dir)
     main_py = bot_dir / "main.py"
     logs_dir = _ensure_log_dir(bot_dir)
@@ -352,6 +379,11 @@ def _parse_args(argv=None):
         action="store_true",
         help="Kayittan sonra mevcut oturumda hemen baslat.",
     )
+    parser.add_argument(
+        "--bot-dir",
+        default="",
+        help="Auto-start icin kullanilacak AgentCockpit dizini. Bos birakilirsa bu dosyanin dizini kullanilir.",
+    )
     args = parser.parse_args(argv)
     if args.no_start and args.start_now:
         parser.error("--no-start ve --start-now birlikte kullanilamaz")
@@ -360,6 +392,7 @@ def _parse_args(argv=None):
 
 def main(argv=None):
     args = _parse_args(argv)
+    bot_dir = Path(args.bot_dir).expanduser().resolve() if args.bot_dir else None
 
     if sys.platform == "win32":
         if args.action == "unregister":
@@ -367,7 +400,7 @@ def main(argv=None):
         elif args.action == "status":
             status_windows()
         else:
-            register_windows(start_now=args.start_now)
+            register_windows(start_now=args.start_now, bot_dir=bot_dir)
         return
 
     if sys.platform == "darwin":
@@ -376,7 +409,7 @@ def main(argv=None):
         elif args.action == "status":
             status_mac()
         else:
-            register_mac(start_now=not args.no_start)
+            register_mac(start_now=not args.no_start, bot_dir=bot_dir)
         return
 
     if args.action == "unregister":
@@ -384,7 +417,7 @@ def main(argv=None):
     elif args.action == "status":
         status_linux()
     else:
-        register_linux(start_now=not args.no_start)
+        register_linux(start_now=not args.no_start, bot_dir=bot_dir)
 
 
 if __name__ == "__main__":

@@ -73,6 +73,14 @@ kaydetmek istiyorsan:
 python autostart.py register --no-start
 ```
 
+macOS'ta LaunchAgent, `Desktop`, `Documents` veya `Downloads` altindaki venv
+dosyalarini izin/TCC nedeniyle okuyamayabilir. Repo bu klasorlerdeyse uygulama
+kopyasini korumali olmayan bir dizine koyup kaydi o dizinden verin:
+
+```bash
+python autostart.py register --bot-dir "$HOME/AgentCockpit" --no-start
+```
+
 Durumu kontrol etmek veya kaydi kaldirmak icin:
 
 ```bash

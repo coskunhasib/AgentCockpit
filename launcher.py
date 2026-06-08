@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -146,6 +147,29 @@ def open_pairing_dashboard(base_url, *, browser_available=True):
         print(f"[PHONE] Tarayici otomatik acilamadi: {exc}")
 
 
+def _host_resolves(host, port=443):
+    try:
+        socket.getaddrinfo(host, port)
+        return True
+    except OSError:
+        return False
+
+
+def _wait_for_telegram_dns_while_bridge_runs(bridge_process):
+    print(
+        "[NETWORK] DNS su an api.telegram.org adresini cozemiyor. "
+        "Phone bridge acik kalacak; DNS duzelince Telegram bot baslatilacak."
+    )
+    while True:
+        if bridge_process and bridge_process.poll() is not None:
+            print("[NETWORK] Phone bridge kapandi; Telegram DNS beklemesi durduruluyor.")
+            return False
+        time.sleep(30)
+        if _host_resolves("api.telegram.org"):
+            print("[NETWORK] Telegram DNS geri geldi. Bot baslatiliyor.")
+            return True
+
+
 def run_stack():
     try:
         import pip_system_certs  # noqa: F401
@@ -189,6 +213,9 @@ def run_stack():
         from telegram_ux import run_bot
 
         print("[START] AgentCockpit stack aciliyor: phone bridge + Telegram UX")
+        if not _host_resolves("api.telegram.org"):
+            if not _wait_for_telegram_dns_while_bridge_runs(bridge_process):
+                return
         run_bot()
     finally:
         if bridge_process and bridge_process.poll() is None:

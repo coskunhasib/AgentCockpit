@@ -1,4 +1,5 @@
 import unittest
+import time
 from unittest.mock import patch
 
 import phone_public_tunnel
@@ -72,6 +73,27 @@ class PhonePublicTunnelTests(unittest.TestCase):
             snapshot = tunnel.snapshot(validate=False)
 
         self.assertEqual(snapshot["public_url"], "https://live.trycloudflare.com")
+
+    def test_unreachable_tunnel_restarts_after_grace_and_failures(self):
+        class Process:
+            def poll(self):
+                return None
+
+        tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
+        tunnel.public_url = "https://dead.trycloudflare.com"
+        tunnel.process = Process()
+        tunnel._url_seen_at = time.monotonic() - 60
+        tunnel._validation_failures = 1
+
+        with patch("phone_public_tunnel.urllib.request.urlopen", side_effect=OSError("boom")), patch.object(
+            tunnel,
+            "_terminate_unreachable_process",
+        ) as restart:
+            self.assertEqual(tunnel.get_public_url(validate=True), "")
+
+        restart.assert_called_once_with(tunnel.process)
+        self.assertEqual(tunnel.public_url, "")
+        self.assertEqual(tunnel.status, "yeniden_baslatiliyor")
 
 
 if __name__ == "__main__":

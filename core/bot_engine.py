@@ -1504,27 +1504,40 @@ def _kill_old_instances():
     other_pids = []
     if sys.platform != "win32":
         try:
-            output = subprocess.check_output(["ps", "-ax", "-o", "pid,command"], encoding="utf-8", errors="ignore")
+            output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid,command"], encoding="utf-8", errors="ignore")
+            rows = []
+            parent_by_pid = {}
             for line in output.splitlines():
                 line = line.strip()
                 if not line:
                     continue
-                parts = line.split(None, 1)
-                if len(parts) < 2:
+                parts = line.split(None, 2)
+                if len(parts) < 3:
                     continue
-                pid_str, cmd = parts
+                pid_str, ppid_str, cmd = parts
                 try:
                     pid = int(pid_str)
+                    ppid = int(ppid_str)
                 except ValueError:
                     continue
-                if pid == my_pid:
+                rows.append((pid, ppid, cmd))
+                parent_by_pid[pid] = ppid
+
+            ancestor_pids = set()
+            parent_pid = parent_by_pid.get(my_pid, os.getppid())
+            while parent_pid and parent_pid not in ancestor_pids:
+                ancestor_pids.add(parent_pid)
+                parent_pid = parent_by_pid.get(parent_pid, 0)
+
+            for pid, _ppid, cmd in rows:
+                if pid == my_pid or pid in ancestor_pids:
                     continue
-                
+
                 cmd_lower = cmd.lower()
                 is_agent = "agentcockpit" in cmd_lower
                 is_py = "python" in cmd_lower
                 is_main = "main.py" in cmd_lower or "telegram_ux.py" in cmd_lower
-                
+
                 if is_agent and is_py and is_main:
                     other_pids.append((pid, cmd))
         except Exception as e:

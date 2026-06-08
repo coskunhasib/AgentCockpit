@@ -172,6 +172,10 @@ class QuickTunnel:
         self.restart_count = 0
         self.last_exit_code = None
         self.restart_delay = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC", "3"))
+        self.restart_delay_max = max(
+            self.restart_delay,
+            get_float("PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC", "60"),
+        )
         self.max_restarts = max(0, get_int("PHONE_PUBLIC_TUNNEL_MAX_RESTARTS", "0"))
         self._binary = None
         self._stop_event = threading.Event()
@@ -181,6 +185,8 @@ class QuickTunnel:
         self._watchdog_thread = None
         self._validation_checked_at = 0.0
         self._validation_ok = False
+        self._validation_failures = 0
+        self._url_seen_at = 0.0
 
     def start(self):
         if not tunnel_enabled(self.mode):
@@ -243,6 +249,8 @@ class QuickTunnel:
             self.last_exit_code = None
             self._validation_checked_at = 0.0
             self._validation_ok = False
+            self._validation_failures = 0
+            self._url_seen_at = 0.0
             self._url_event.clear()
             clear_public_url()
 
@@ -272,6 +280,8 @@ class QuickTunnel:
                     self.error = ""
                     self._validation_checked_at = 0.0
                     self._validation_ok = False
+                    self._validation_failures = 0
+                    self._url_seen_at = time.monotonic()
                 write_public_url(self.public_url)
                 self._url_event.set()
 
@@ -288,6 +298,8 @@ class QuickTunnel:
             self.public_url = ""
             self._validation_checked_at = 0.0
             self._validation_ok = False
+            self._validation_failures = 0
+            self._url_seen_at = 0.0
             self._url_event.clear()
             clear_public_url()
             if self._stop_event.is_set():
@@ -297,11 +309,13 @@ class QuickTunnel:
             self.error = f"cloudflared cikti: {exit_code}"
 
     def _watchdog(self):
-        while not self._stop_event.wait(self.restart_delay):
+        delay = self.restart_delay
+        while not self._stop_event.wait(delay):
             if not tunnel_enabled(self.mode):
                 return
             process = self.process
             if process and process.poll() is None:
+                delay = self.restart_delay
                 continue
             if self.max_restarts and self.restart_count >= self.max_restarts:
                 with self._lock:
@@ -314,11 +328,13 @@ class QuickTunnel:
                     f"Public tunnel yeniden baslatiliyor (deneme {self.restart_count})"
                 )
                 self._launch_process()
+                delay = min(self.restart_delay_max, max(self.restart_delay, delay * 2))
             except Exception as exc:
                 with self._lock:
                     self.status = "hata"
                     self.error = str(exc)
                 logger.warning(f"Public tunnel yeniden baslatilamadi: {exc}")
+                delay = min(self.restart_delay_max, max(self.restart_delay, delay * 2))
 
     def wait_for_url(self, timeout=0):
         if timeout and not self.public_url:
@@ -348,7 +364,7 @@ class QuickTunnel:
         if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
             return ""
 
-        health_url = f"{url}/health"
+        health_url = f"{url}/_agentcockpit/tunnel-check"
         request = urllib.request.Request(
             health_url,
             headers={"User-Agent": "AgentCockpit/2.0"},
@@ -363,12 +379,65 @@ class QuickTunnel:
         except Exception:
             ok = False
 
+        restart_process = None
         with self._lock:
             if url == self.public_url:
                 self._validation_checked_at = now
                 self._validation_ok = ok
+                if ok:
+                    self._validation_failures = 0
+                else:
+                    grace_sec = max(
+                        0.0,
+                        get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC", "20"),
+                    )
+                    max_failures = max(
+                        1,
+                        get_int("PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART", "2"),
+                    )
+                    url_age = now - self._url_seen_at if self._url_seen_at else 0.0
+                    if url_age >= grace_sec:
+                        self._validation_failures += 1
+                        if self._validation_failures >= max_failures:
+                            restart_process = self.process
+                            self.public_url = ""
+                            self.status = "yeniden_baslatiliyor"
+                            self.error = f"public tunnel erisilemiyor: {url}"
+                            self._validation_checked_at = 0.0
+                            self._validation_failures = 0
+                            self._url_event.clear()
+
+        if restart_process:
+            clear_public_url()
+            logger.warning(
+                f"Public tunnel URL dogrulanamadi; cloudflared yeniden baslatiliyor: {url}"
+            )
+            self._terminate_unreachable_process(restart_process)
 
         return url if ok else ""
+
+    def _terminate_unreachable_process(self, process):
+        if not process or process.poll() is not None:
+            return
+
+        def terminate():
+            try:
+                process.terminate()
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=2)
+                except Exception:
+                    logger.debug("Public tunnel kill islemi tamamlanamadi.", exc_info=True)
+            except Exception:
+                logger.debug("Public tunnel terminate islemi tamamlanamadi.", exc_info=True)
+
+        threading.Thread(
+            target=terminate,
+            name="agentcockpit-public-tunnel-restart",
+            daemon=True,
+        ).start()
 
     def snapshot(self, *, validate=True):
         public_url = self.get_public_url(validate=validate)
