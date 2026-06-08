@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -50,6 +51,16 @@ class WanSnapshotSession:
 _sessions: dict[int, WanSnapshotSession] = {}
 
 
+def _safe_error_text(error):
+    text = str(error or "").strip()
+    text = re.sub(r"(/private)?/var/folders/\S+", "<temp-file>", text)
+    text = re.sub(r"(/tmp|/var/tmp)/\S+", "<temp-file>", text)
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot<redacted>", text)
+    text = re.sub(r"token=[A-Za-z0-9:_-]+", "token=<redacted>", text)
+    text = " ".join(text.split())
+    return text[:300]
+
+
 def _get_pyautogui():
     global _PYAUTOGUI
     if _PYAUTOGUI is not None:
@@ -93,7 +104,7 @@ def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
         except Exception as exc:
             capture_error = exc
             raise RuntimeError(
-                f"Ekran goruntusu olusturulamadi. Asil hata: {exc}"
+                f"Ekran goruntusu olusturulamadi. Asil hata: {_safe_error_text(exc)}"
             ) from exc
 
     try:
@@ -238,11 +249,12 @@ async def _run_loop(bot, session):
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.exception("WAN snapshot loop failed: %s", exc)
+        safe_error = _safe_error_text(exc)
+        logger.warning(f"WAN snapshot loop failed: {safe_error}")
         try:
             await bot.send_message(
                 chat_id=session.chat_id,
-                text=f"WAN snapshot oturumu durdu: {exc}",
+                text=f"WAN snapshot oturumu durdu: {safe_error}",
             )
         except Exception:
             pass

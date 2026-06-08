@@ -2484,7 +2484,7 @@
         const wasSensitive = sensitiveTyping;
         typeInput.value = '';
         enqueueAction(
-          { type: 'type', text: value, sensitive: wasSensitive, delay: 0.12 },
+          { type: 'type', text: value, sensitive: sensitiveTyping, delay: 0.12 },
           {
             el: sendText,
             toast: wasSensitive ? 'Sifre gonderildi' : 'Metin gonderildi',

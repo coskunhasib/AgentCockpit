@@ -138,16 +138,6 @@ def _mac_screen_executable() -> Path | None:
 
 
 def _mac_program_arguments(python_exe: Path, main_py: Path):
-    screen_exe = _mac_screen_executable()
-    if screen_exe:
-        return [
-            str(screen_exe),
-            "-DmS",
-            MAC_SCREEN_SESSION,
-            str(python_exe),
-            str(main_py),
-            "--autostart",
-        ]
     return [str(python_exe), str(main_py), "--autostart"]
 
 
@@ -168,6 +158,9 @@ def _mac_plist_payload(bot_dir: Path, python_exe: Path, main_py: Path, logs_dir:
             "PYTHONIOENCODING": "utf-8",
             "PATH": "/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
             "AGENTCOCKPIT_AUTOSTART": "true",
+            "HOME": str(Path.home()),
+            "USER": os.getenv("USER", Path.home().name),
+            "LOGNAME": os.getenv("LOGNAME", os.getenv("USER", Path.home().name)),
         },
         "StandardOutPath": str(logs_dir / "launchd.log"),
         "StandardErrorPath": str(logs_dir / "launchd_err.log"),

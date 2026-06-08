@@ -42,6 +42,22 @@ class PhonePublicTunnelTests(unittest.TestCase):
 
         self.assertEqual(tunnel.max_restarts, 3)
 
+    def test_cloudflared_process_env_keeps_system_dns_by_default_on_macos(self):
+        with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
+            "os.environ", {"GODEBUG": "x=y"}, clear=True
+        ):
+            env = phone_public_tunnel.cloudflared_process_env()
+
+        self.assertEqual(env["GODEBUG"], "x=y")
+
+    def test_cloudflared_process_env_can_force_go_dns_on_macos(self):
+        with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
+            "os.environ", {"CLOUDFLARED_FORCE_GO_DNS": "1"}, clear=True
+        ):
+            env = phone_public_tunnel.cloudflared_process_env()
+
+        self.assertEqual(env["GODEBUG"], "netdns=go")
+
     def test_get_public_url_returns_empty_when_health_validation_fails(self):
         tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
         tunnel.public_url = "https://dead.trycloudflare.com"

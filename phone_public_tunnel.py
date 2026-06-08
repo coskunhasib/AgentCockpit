@@ -4,6 +4,7 @@ import re
 import shutil
 import stat
 import subprocess
+import sys
 import tarfile
 import tempfile
 import threading
@@ -146,6 +147,23 @@ def ensure_cloudflared(*, allow_download=True):
     return _download_cloudflared()
 
 
+def cloudflared_process_env():
+    env = os.environ.copy()
+    if sys.platform == "darwin":
+        # cloudflared is a Go binary. In some non-interactive macOS sessions the
+        # default SystemConfiguration DNS lookup can be empty; forcing Go DNS is
+        # available as an opt-in escape hatch, but it is not safe as a default on
+        # every macOS trust-store setup.
+        force_go_dns = get_str("CLOUDFLARED_FORCE_GO_DNS", "0").lower()
+        if force_go_dns in {"1", "true", "yes", "on"}:
+            godebug = env.get("GODEBUG", "")
+            parts = [part for part in godebug.split(",") if part]
+            if not any(part.startswith("netdns=") for part in parts):
+                parts.append("netdns=go")
+            env["GODEBUG"] = ",".join(parts)
+    return env
+
+
 def write_public_url(url):
     CLOUDFLARED_URL_FILE.parent.mkdir(parents=True, exist_ok=True)
     CLOUDFLARED_URL_FILE.write_text((url or "").strip(), encoding="utf-8")
@@ -240,6 +258,7 @@ class QuickTunnel:
             encoding="utf-8",
             errors="replace",
             creationflags=creationflags,
+            env=cloudflared_process_env(),
         )
         with self._lock:
             self.process = process

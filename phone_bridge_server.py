@@ -5,6 +5,7 @@ import ipaddress
 import io
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -58,6 +59,16 @@ from phone_public_tunnel import start_public_tunnel
 load_dotenv(PROJECT_ROOT / ".env")
 logger = get_logger("phone_bridge")
 _PYAUTOGUI = None
+_CAPTURE_STATE = {
+    "last_error": "",
+    "last_error_at": 0.0,
+    "last_success_at": 0.0,
+    "last_width": 0,
+    "last_height": 0,
+}
+_CAPTURE_STATE_LOCK = threading.Lock()
+_KEEP_AWAKE_PROCESS = None
+_KEEP_AWAKE_ERROR = ""
 
 PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 
@@ -72,6 +83,8 @@ DEFAULT_SESSION_MINUTES = get_int("PHONE_SESSION_MINUTES")
 DEFAULT_TELEGRAM_URL = get_str("PHONE_TELEGRAM_URL")
 DEFAULT_TELEGRAM_USERNAME = get_str("TELEGRAM_BOT_USERNAME").lstrip("@")
 DEFAULT_PUBLIC_TUNNEL = get_str("PHONE_PUBLIC_TUNNEL")
+DEFAULT_KEEP_AWAKE = get_str("PHONE_KEEP_AWAKE")
+DEFAULT_KEEP_AWAKE_FLAGS = get_str("PHONE_KEEP_AWAKE_FLAGS")
 
 
 def _get_pyautogui():
@@ -110,6 +123,105 @@ def _get_screen_metrics():
     except Exception as exc:
         logger.error(f"Ekran boyutu okunamadi: {exc}")
         return {"width": 0, "height": 0, "available": False}
+
+
+def _redact_capture_error(error):
+    text = str(error or "").strip()
+    text = re.sub(r"(/private)?/var/folders/\S+", "<temp-file>", text)
+    text = re.sub(r"(/tmp|/var/tmp)/\S+", "<temp-file>", text)
+    text = re.sub(r"([?&]token=)[^&\s]+", r"\1<redacted>", text)
+    text = re.sub(r"\bacp_[A-Za-z0-9_-]+", "acp_<redacted>", text)
+    text = " ".join(text.split())
+    return text[:300]
+
+
+def _redact_url_for_log(url):
+    return _redact_capture_error(url)
+
+
+def _record_capture_success(width, height):
+    with _CAPTURE_STATE_LOCK:
+        _CAPTURE_STATE["last_error"] = ""
+        _CAPTURE_STATE["last_success_at"] = time.time()
+        _CAPTURE_STATE["last_width"] = int(width)
+        _CAPTURE_STATE["last_height"] = int(height)
+
+
+def _record_capture_error(error):
+    with _CAPTURE_STATE_LOCK:
+        _CAPTURE_STATE["last_error"] = _redact_capture_error(error)
+        _CAPTURE_STATE["last_error_at"] = time.time()
+
+
+def _capture_health(screen):
+    with _CAPTURE_STATE_LOCK:
+        state = dict(_CAPTURE_STATE)
+    metrics_ok = bool(screen.get("available")) and screen.get("width", 0) > 0 and screen.get("height", 0) > 0
+    capture_error = state["last_error"]
+    if not metrics_ok:
+        capture_error = "screen metrics unavailable"
+    return {
+        "capture_available": bool(metrics_ok and not capture_error),
+        "capture_error": capture_error,
+        "capture_last_error": state["last_error"],
+        "capture_last_error_at": int(state["last_error_at"]) if state["last_error_at"] else 0,
+        "capture_last_success_at": int(state["last_success_at"]) if state["last_success_at"] else 0,
+        "capture_last_width": state["last_width"],
+        "capture_last_height": state["last_height"],
+    }
+
+
+def _keep_awake_enabled():
+    return DEFAULT_KEEP_AWAKE.strip().lower() not in {"", "0", "false", "no", "off", "disabled"}
+
+
+def _start_keep_awake():
+    global _KEEP_AWAKE_PROCESS, _KEEP_AWAKE_ERROR
+    if sys.platform != "darwin" or not _keep_awake_enabled():
+        return
+    if _KEEP_AWAKE_PROCESS and _KEEP_AWAKE_PROCESS.poll() is None:
+        return
+
+    caffeinate = "/usr/bin/caffeinate"
+    if not Path(caffeinate).exists():
+        _KEEP_AWAKE_ERROR = "caffeinate bulunamadi"
+        logger.warning(_KEEP_AWAKE_ERROR)
+        return
+
+    flags = [flag for flag in DEFAULT_KEEP_AWAKE_FLAGS.split() if flag.startswith("-")]
+    if not flags:
+        flags = ["-dims"]
+    command = [caffeinate, *flags, "-w", str(os.getpid())]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.15)
+        if process.poll() is not None:
+            stderr = (process.stderr.read() if process.stderr else "").strip()
+            _KEEP_AWAKE_ERROR = _redact_capture_error(stderr or f"caffeinate cikti: {process.returncode}")
+            logger.warning(f"Keep-awake baslatilamadi: {_KEEP_AWAKE_ERROR}")
+            return
+        _KEEP_AWAKE_PROCESS = process
+        _KEEP_AWAKE_ERROR = ""
+        logger.info(f"Keep-awake aktif: caffeinate {' '.join(flags)}")
+    except Exception as exc:
+        _KEEP_AWAKE_ERROR = _redact_capture_error(exc)
+        logger.warning(f"Keep-awake baslatilamadi: {_KEEP_AWAKE_ERROR}")
+
+
+def _keep_awake_snapshot():
+    if sys.platform != "darwin" or not _keep_awake_enabled():
+        return {"enabled": False, "active": False, "error": ""}
+    active = bool(_KEEP_AWAKE_PROCESS and _KEEP_AWAKE_PROCESS.poll() is None)
+    return {
+        "enabled": True,
+        "active": active,
+        "error": "" if active else _KEEP_AWAKE_ERROR,
+    }
 
 
 def _telegram_bot_url():
@@ -351,7 +463,7 @@ def _validate_quartz_once():
             round(best) if best is not None else "?",
         )
     except Exception as exc:
-        logger.warning("Quartz dogrulamasi basarisiz, screencapture kullanilacak: %s", exc)
+        logger.warning(f"Quartz dogrulamasi basarisiz, screencapture kullanilacak: {exc}")
         _QUARTZ_STATE["ok"] = False
     return _QUARTZ_STATE["ok"]
 
@@ -428,8 +540,13 @@ def _grab_frame(quality, max_width):
 
     Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
     """
-    raw = _raw_capture()
+    try:
+        raw = _raw_capture()
+    except Exception as exc:
+        _record_capture_error(exc)
+        raise
     screen_width, screen_height = raw.size
+    _record_capture_success(screen_width, screen_height)
     signature = _frame_signature(raw)
     image = _scale_to_width(_draw_cursor(raw), max_width)
     jpeg = _encode_jpeg(image, quality)
@@ -1042,7 +1159,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
         local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
-        public_url = self.server.get_public_url(validate=True)
+        public_url = self.server.get_public_url(validate=False)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
             **self._build_session_payload(session),
@@ -1114,6 +1231,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             lan_ips = _get_local_ipv4_candidates()
             tunnel_snapshot = self.server.public_tunnel_snapshot(validate=True)
             screen = _get_screen_metrics()
+            capture = _capture_health(screen)
+            keep_awake = _keep_awake_snapshot()
             compatibility = detect_runtime_compatibility()
             self._json_response(
                 {
@@ -1124,6 +1243,16 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
                     "screen_available": screen["available"],
+                    "capture_available": capture["capture_available"],
+                    "capture_error": capture["capture_error"],
+                    "capture_last_error": capture["capture_last_error"],
+                    "capture_last_error_at": capture["capture_last_error_at"],
+                    "capture_last_success_at": capture["capture_last_success_at"],
+                    "capture_last_width": capture["capture_last_width"],
+                    "capture_last_height": capture["capture_last_height"],
+                    "keep_awake_enabled": keep_awake["enabled"],
+                    "keep_awake_active": keep_awake["active"],
+                    "keep_awake_error": keep_awake["error"],
                     "runtime_platform": compatibility["platform"],
                     "gui_session": compatibility["gui_session"],
                     "browser_available": compatibility["browser_available"],
@@ -1266,7 +1395,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             try:
                 payload = _capture_payload(quality, max_width)
             except Exception as exc:
-                logger.exception("Phone bridge screenshot failed: %s", exc)
+                logger.exception(f"Phone bridge screenshot failed: {exc}")
                 self._json_response(
                     {"status": "error", "message": str(exc)},
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
@@ -1300,10 +1429,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             tick = 0.12
             try:
                 while True:
-                    raw = _raw_capture()
+                    try:
+                        raw = _raw_capture()
+                    except Exception as exc:
+                        _record_capture_error(exc)
+                        raise
                     signature = _frame_signature(raw)
                     if signature != since:
                         screen_width, screen_height = raw.size
+                        _record_capture_success(screen_width, screen_height)
                         image = _scale_to_width(_draw_cursor(raw), max_width)
                         jpeg = _encode_jpeg(image, quality)
                         self.send_response(HTTPStatus.OK)
@@ -1333,7 +1467,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         # an active change still returns on the next capture.
                         tick += 0.04
             except Exception as exc:
-                logger.exception("Phone bridge frame failed: %s", exc)
+                logger.exception(f"Phone bridge frame failed: {exc}")
                 self._json_response(
                     {"status": "error", "message": str(exc)},
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
@@ -1374,8 +1508,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     loop_start = time.time()
                     try:
                         raw = _raw_capture()
+                        _record_capture_success(*raw.size)
                         capture_errors = 0
                     except Exception as exc:
+                        _record_capture_error(exc)
                         capture_errors += 1
                         if capture_errors > 10:
                             break  # let the client fall back to the long-poll
@@ -1429,7 +1565,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     if elapsed < interval:
                         time.sleep(interval - elapsed)
             except Exception as exc:
-                logger.debug("Phone bridge stream ended: %s", exc)
+                logger.debug(f"Phone bridge stream ended: {exc}")
             return
 
         if route == "/api/session":
@@ -1442,6 +1578,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 else self.server.startup_session.get("token", "")
             )
             screen = _get_screen_metrics()
+            capture = _capture_health(screen)
             public_url = self.server.get_public_url(validate=True)
             self._json_response(
                 {
@@ -1449,6 +1586,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
                     "screen_available": screen["available"],
+                    "capture_available": capture["capture_available"],
+                    "capture_error": capture["capture_error"],
                     "poll_ms": self.server.poll_ms,
                     "quality": self.server.screenshot_quality,
                     "max_width": self.server.max_width,
@@ -1605,7 +1744,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 "screenshot": screenshot_payload,
             }
         except Exception as exc:
-            logger.exception("Phone bridge action failed: %s", exc)
+            logger.exception(f"Phone bridge action failed: {exc}")
             if is_owner:
                 self.server.action_dedup.abort(request_id)
             self._json_response(
@@ -1743,16 +1882,17 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         f"http://{LOCAL_HOST}:{port}",
         mode=public_tunnel,
     )
+    _start_keep_awake()
     public_url = server.get_public_url(validate=True)
     wan_url = _build_app_url_from_base(public_url, startup_session["token"])
 
     logger.info("AgentCockpit phone bridge basladi")
-    logger.info(f"Phone app (LAN): {lan_url}")
+    logger.info(f"Phone app (LAN): {_redact_url_for_log(lan_url)}")
     if wan_url:
-        logger.info(f"Phone app (WAN): {wan_url}")
-    logger.info(f"Phone app (Localhost): {localhost_url}")
+        logger.info(f"Phone app (WAN): {_redact_url_for_log(wan_url)}")
+    logger.info(f"Phone app (Localhost): {_redact_url_for_log(localhost_url)}")
     logger.info(f"Phone installation id: {get_installation_id()}")
-    logger.info(f"Phone admin token: {admin_token}")
+    logger.info("Phone admin token: <redacted>")
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
     print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")

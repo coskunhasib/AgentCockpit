@@ -148,8 +148,10 @@ except Exception:
     pass
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.WARNING
 )
+for noisy_logger_name in ("httpx", "httpcore"):
+    logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
 
 for warning in CLAUDE_UI_CONFIG_WARNINGS:
     logger.warning(f"Claude UI config uyarisi: {warning}")

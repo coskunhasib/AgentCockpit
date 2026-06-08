@@ -19,7 +19,26 @@ class _BrokenPyAutoGui:
         raise OSError("could not create image from display")
 
 
+class _CursorOnlyPyAutoGui:
+    def position(self):
+        return (10, 10)
+
+
 class PhoneBridgeCaptureTests(unittest.TestCase):
+    def setUp(self):
+        bridge._PYAUTOGUI = _CursorOnlyPyAutoGui()
+        with bridge._CAPTURE_STATE_LOCK:
+            bridge._CAPTURE_STATE.update(
+                {
+                    "last_error": "",
+                    "last_error_at": 0.0,
+                    "last_success_at": 0.0,
+                    "last_width": 0,
+                    "last_height": 0,
+                }
+            )
+        bridge._QUARTZ_STATE.update({"checked": True, "ok": False})
+
     def test_is_nearly_black_frame_detects_black(self):
         image = Image.new("RGB", (16, 16), (0, 0, 0))
         self.assertTrue(bridge._is_nearly_black_frame(image))
@@ -75,6 +94,20 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
                 bridge._capture_payload(quality=60, max_width=1280)
 
         self.assertIn("Screen Recording", str(ctx.exception))
+
+    def test_capture_health_reports_zero_screen_as_unavailable(self):
+        health = bridge._capture_health({"available": True, "width": 0, "height": 0})
+
+        self.assertFalse(health["capture_available"])
+        self.assertEqual(health["capture_error"], "screen metrics unavailable")
+
+    def test_capture_health_reports_last_capture_error(self):
+        bridge._record_capture_error(RuntimeError("could not create image from display"))
+
+        health = bridge._capture_health({"available": True, "width": 1728, "height": 1117})
+
+        self.assertFalse(health["capture_available"])
+        self.assertIn("could not create image", health["capture_error"])
 
 
 if __name__ == "__main__":

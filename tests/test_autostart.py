@@ -48,9 +48,6 @@ class AutostartTests(unittest.TestCase):
             self.assertEqual(
                 payload["ProgramArguments"],
                 [
-                    "/usr/bin/screen",
-                    "-DmS",
-                    autostart.MAC_SCREEN_SESSION,
                     str(python_exe),
                     str(main_py),
                     "--autostart",

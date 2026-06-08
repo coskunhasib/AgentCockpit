@@ -66,8 +66,9 @@ python autostart.py register
 ```
 
 Bu komut macOS'ta LaunchAgent, Windows'ta Task Scheduler, Linux'ta systemd user
-service kaydi olusturur. Uygulama zaten aciksa ve sadece sonraki oturum icin
-kaydetmek istiyorsan:
+service kaydi olusturur. macOS LaunchAgent dogrudan venv Python'u calistirir;
+`screen` veya aktif terminal oturumu gerekmez. Uygulama zaten aciksa ve sadece
+sonraki oturum icin kaydetmek istiyorsan:
 
 ```bash
 python autostart.py register --no-start
@@ -93,6 +94,13 @@ Sistem Sesi Kaydi altinda AgentCockpit'i baslatan uygulamaya izin verilmis
 olmasi gerekir. Elle baslatmada bu uygulama genelde terminal/Codex, otomatik
 baslatmada ise Python olabilir.
 
+Telefon bridge'i baslatilirken macOS'ta `caffeinate` keep-awake islemi de
+devreye girer. `/health` ciktisinda `keep_awake_active`, `capture_available` ve
+`capture_error` alanlarini kontrol ederek link ayakta oldugu halde goruntu
+gelmeyen durumlari ayirt edebilirsin. `screen=0x0` veya `capture_error` varsa
+macOS ekran oturumu kilitli/uykuda olabilir ya da Screen Recording izni eksik
+olabilir.
+
 ## Telefon ve PWA
 
 Telefon/PWA kurulum notlari:
@@ -105,6 +113,9 @@ Kisa notlar:
 - Pairing dashboard: `http://127.0.0.1:8765/pair`
 - QR, uzak tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
+- WAN tunnelini terminal/Codex gibi eksik GUI/DNS baglamindan yeniden baslatmak
+  Cloudflare quick tunnel olusturmayi bozabilir; kalici calisma icin auto-start
+  LaunchAgent kaydi tercih edilir.
 
 ## Dokumanlar
 

@@ -98,6 +98,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC=120`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
+- `PHONE_KEEP_AWAKE=1`
+- `PHONE_KEEP_AWAKE_FLAGS=-dims`
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
@@ -105,6 +107,9 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
+- `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
+- `screen=0x0` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
+- `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
 
 ## Guvenlik Notu
 
