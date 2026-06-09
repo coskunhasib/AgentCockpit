@@ -37,15 +37,24 @@ class PhonePublicTunnelTests(unittest.TestCase):
             )
         )
 
-    def test_tunnel_restart_limit_defaults_to_finite_value(self):
+    def test_tunnel_restart_limit_defaults_to_unlimited(self):
         with patch.dict("os.environ", {}, clear=True):
             tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
 
-        self.assertEqual(tunnel.max_restarts, 3)
+        self.assertEqual(tunnel.max_restarts, 0)
 
     def test_cloudflared_process_env_keeps_system_dns_by_default_on_macos(self):
         with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
             "os.environ", {"GODEBUG": "x=y"}, clear=True
+        ):
+            env = phone_public_tunnel.cloudflared_process_env()
+
+        self.assertEqual(env["GODEBUG"], "x=y")
+        self.assertNotIn("SSL_CERT_FILE", env)
+
+    def test_cloudflared_process_env_can_keep_system_dns_on_macos(self):
+        with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
+            "os.environ", {"GODEBUG": "x=y", "CLOUDFLARED_FORCE_GO_DNS": "0"}, clear=True
         ):
             env = phone_public_tunnel.cloudflared_process_env()
 
@@ -58,6 +67,28 @@ class PhonePublicTunnelTests(unittest.TestCase):
             env = phone_public_tunnel.cloudflared_process_env()
 
         self.assertEqual(env["GODEBUG"], "netdns=go")
+        self.assertTrue(env["SSL_CERT_FILE"].endswith("cacert.pem"))
+
+    def test_cloudflared_process_env_can_use_adaptive_go_dns_on_macos(self):
+        with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
+            "os.environ", {"GODEBUG": "x=y"}, clear=True
+        ):
+            env = phone_public_tunnel.cloudflared_process_env(force_go_dns=True)
+
+        self.assertEqual(env["GODEBUG"], "x=y,netdns=go")
+        self.assertTrue(env["SSL_CERT_FILE"].endswith("cacert.pem"))
+
+    def test_auto_dns_strategy_toggles_from_cloudflared_errors(self):
+        with patch.dict("os.environ", {}, clear=True):
+            tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
+
+        self.assertFalse(tunnel._force_go_dns)
+
+        tunnel._update_dns_strategy_from_output("lookup api.trycloudflare.com: no such host")
+        self.assertTrue(tunnel._force_go_dns)
+
+        tunnel._update_dns_strategy_from_output("tls: failed to verify certificate: x509: OSStatus -26276")
+        self.assertFalse(tunnel._force_go_dns)
 
     def test_get_public_url_returns_empty_when_health_validation_fails(self):
         tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")

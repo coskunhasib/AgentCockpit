@@ -92,7 +92,7 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_SCREENSHOT_MAX_WIDTH=1600`
 - `PHONE_PUBLIC_TUNNEL=auto`
 - `PHONE_PUBLIC_TUNNEL_DOWNLOAD=1`
-- `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=3`
+- `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=0`
 - `PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC=3`
 - `PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC=60`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
@@ -100,6 +100,11 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
 - `PHONE_KEEP_AWAKE=1`
 - `PHONE_KEEP_AWAKE_FLAGS=-dims`
+- `PHONE_CAPTURE_LOCK_TIMEOUT_SEC=3.0`
+- `PHONE_STREAM_MAX_CONNECTIONS=2`
+- `PHONE_STREAM_MAX_SECONDS=600`
+- `PHONE_STREAM_GC_EVERY_FRAMES=120`
+- `CLOUDFLARED_FORCE_GO_DNS=auto`
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
@@ -107,9 +112,11 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
-- `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
-- `screen=0x0` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
+- `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at`, `active_streams`, `max_streams` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
+- `screen=unavailable` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
+- `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
+- `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
 - `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
 - `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 

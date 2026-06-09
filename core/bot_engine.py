@@ -1698,7 +1698,10 @@ def run_bot():
     except Exception as exc:
         logger.warning(f"Cache temizleme atlandi: {exc}")
 
-    while restart_counter < max_restart:
+    while True:
+        _fresh_loop = None
+        sleep_after_iteration = 0
+        reset_restart_counter = False
         try:
             # Force a fresh event loop on every start/retry iteration to prevent "Event loop is closed" errors
             _fresh_loop = asyncio.new_event_loop()
@@ -1725,6 +1728,25 @@ def run_bot():
             print("AgentCockpit baslatildi...")
             _get_or_create_event_loop()
             app.run_polling()
+            restart_counter += 1
+            record_runtime_event(
+                "bot_engine_polling_returned",
+                restart_counter=restart_counter,
+                max_restart=max_restart,
+            )
+            logger.warning(
+                "Telegram polling beklenmeden durdu. Stack kapatilmadan yeniden baslatilacak."
+            )
+            if restart_counter >= max_restart:
+                record_runtime_event(
+                    "bot_engine_polling_returned_backoff",
+                    restart_counter=restart_counter,
+                    max_restart=max_restart,
+                )
+                reset_restart_counter = True
+                sleep_after_iteration = 60
+            else:
+                sleep_after_iteration = 5
 
         except Exception as exc:
             from telegram.error import Conflict
@@ -1738,40 +1760,59 @@ def run_bot():
                 print(
                     f"[UYARI] Conflict ({restart_counter}/{max_restart}). 30s bekleniyor..."
                 )
-                time.sleep(30)
                 if restart_counter >= max_restart:
-                    logger.critical("Conflict cozulemedi. Durduruluyor.")
-                    break
-                continue
+                    record_runtime_event(
+                        "bot_engine_conflict_backoff",
+                        restart_counter=restart_counter,
+                        max_restart=max_restart,
+                    )
+                    logger.critical("Conflict cozulemedi. Durdurmak yerine backoff ile tekrar denenecek.")
+                    reset_restart_counter = True
+                    sleep_after_iteration = 60
+                else:
+                    sleep_after_iteration = 30
 
-            restart_counter += 1
-            crash_file = log_crash("bot_engine", str(exc), traceback.format_exc())
-            record_runtime_event("bot_engine_crash_retry", restart_counter=restart_counter, max_restart=max_restart, crash_file=crash_file)
-            logger.error(f"Bot coktu ({restart_counter}/{max_restart}): {exc}")
-
-            try:
-                first_id = next(iter(ALLOWED_IDS), None)
-                if first_id:
-                    try:
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(
-                            notify_crash(TOKEN, first_id, crash_file, str(exc))
-                        )
-                        loop.close()
-                    except Exception:
-                        pass
-            except Exception as notify_err:
-                logger.error(f"Bildirim hatasi: {notify_err}")
-
-            if restart_counter < max_restart:
-                logger.warning(
-                    f"Yeniden baslatiliyor... ({restart_counter}/{max_restart})"
-                )
-                print(f"[HATA] Bot coktu: {exc}")
-                print("5 saniye icinde yeniden baslatiliyor...")
-                time.sleep(5)
             else:
-                record_runtime_event("bot_engine_stop_after_crashes", restart_counter=restart_counter)
-                logger.critical("Bot 3 kez ust uste coktu. Durduruluyor.")
-                print("Bot 3 kez coktu. Durduruluyor.")
-                break
+                restart_counter += 1
+                crash_file = log_crash("bot_engine", str(exc), traceback.format_exc())
+                record_runtime_event("bot_engine_crash_retry", restart_counter=restart_counter, max_restart=max_restart, crash_file=crash_file)
+                logger.error(f"Bot coktu ({restart_counter}/{max_restart}): {exc}")
+
+                try:
+                    first_id = next(iter(ALLOWED_IDS), None)
+                    if first_id:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            loop.run_until_complete(
+                                notify_crash(TOKEN, first_id, crash_file, str(exc))
+                            )
+                            loop.close()
+                        except Exception:
+                            pass
+                except Exception as notify_err:
+                    logger.error(f"Bildirim hatasi: {notify_err}")
+
+                if restart_counter < max_restart:
+                    logger.warning(
+                        f"Yeniden baslatiliyor... ({restart_counter}/{max_restart})"
+                    )
+                    print(f"[HATA] Bot coktu: {exc}")
+                    print("5 saniye icinde yeniden baslatiliyor...")
+                    sleep_after_iteration = 5
+                else:
+                    record_runtime_event("bot_engine_backoff_after_crashes", restart_counter=restart_counter)
+                    logger.critical("Bot 3 kez ust uste coktu. Durdurmak yerine backoff ile tekrar denenecek.")
+                    print("Bot 3 kez coktu. 60 saniye sonra tekrar denenecek.")
+                    reset_restart_counter = True
+                    sleep_after_iteration = 60
+        finally:
+            try:
+                if _fresh_loop is not None and not _fresh_loop.is_closed():
+                    _fresh_loop.close()
+            except Exception:
+                pass
+
+        if sleep_after_iteration:
+            time.sleep(sleep_after_iteration)
+        if reset_restart_counter:
+            restart_counter = 0

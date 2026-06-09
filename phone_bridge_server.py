@@ -1,5 +1,6 @@
 import argparse
 import base64
+import gc
 import importlib
 import ipaddress
 import io
@@ -37,7 +38,7 @@ except Exception:
     pass
 
 from PIL import Image, ImageDraw
-from core.app_config import get_int, get_str
+from core.app_config import get_float, get_int, get_str
 from dotenv import load_dotenv
 try:
     import qrcode
@@ -72,6 +73,7 @@ _CAPTURE_STATE = {
     "last_height": 0,
 }
 _CAPTURE_STATE_LOCK = threading.Lock()
+_CAPTURE_LOCK = threading.Lock()
 _KEEP_AWAKE_PROCESS = None
 _KEEP_AWAKE_ERROR = ""
 
@@ -90,6 +92,10 @@ DEFAULT_TELEGRAM_USERNAME = get_str("TELEGRAM_BOT_USERNAME").lstrip("@")
 DEFAULT_PUBLIC_TUNNEL = get_str("PHONE_PUBLIC_TUNNEL")
 DEFAULT_KEEP_AWAKE = get_str("PHONE_KEEP_AWAKE")
 DEFAULT_KEEP_AWAKE_FLAGS = get_str("PHONE_KEEP_AWAKE_FLAGS")
+DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC = max(0.5, get_float("PHONE_CAPTURE_LOCK_TIMEOUT_SEC", "3.0"))
+DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", "2"))
+DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
+DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
 
 
 def _get_pyautogui():
@@ -120,10 +126,12 @@ def _get_screen_metrics():
 
     try:
         size = pyautogui.size()
+        width = int(size.width)
+        height = int(size.height)
         return {
-            "width": int(size.width),
-            "height": int(size.height),
-            "available": True,
+            "width": width,
+            "height": height,
+            "available": bool(width > 0 and height > 0),
         }
     except Exception as exc:
         logger.error(f"Ekran boyutu okunamadi: {exc}")
@@ -221,6 +229,14 @@ def _diagnostic_snapshot(server=None):
             snapshot["session_links"] = server.session_links.count()
         except Exception:
             snapshot["session_links"] = None
+        try:
+            snapshot["stream"] = {
+                "active": server.active_stream_count(),
+                "max": server.max_stream_connections,
+                "max_seconds": int(server.stream_max_seconds),
+            }
+        except Exception:
+            snapshot["stream"] = None
     return snapshot
 
 
@@ -530,6 +546,26 @@ def _raw_capture():
     return _capture_legacy()
 
 
+def _close_image(image):
+    try:
+        image.close()
+    except Exception:
+        pass
+
+
+def _raw_capture_serialized():
+    """Serialize full-screen capture so concurrent WAN streams cannot fan out memory use."""
+    acquired = _CAPTURE_LOCK.acquire(timeout=DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC)
+    if not acquired:
+        raise RuntimeError(
+            "Ekran yakalama mesgul. Aktif goruntu akis sayisini azaltin veya sayfayi yenileyin."
+        )
+    try:
+        return _raw_capture()
+    finally:
+        _CAPTURE_LOCK.release()
+
+
 def _draw_cursor(image):
     try:
         mouse_x, mouse_y = _mouse_overlay_point(image.size)
@@ -593,17 +629,24 @@ def _grab_frame(quality, max_width):
 
     Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
     """
+    raw = None
+    image = None
     try:
-        raw = _raw_capture()
+        raw = _raw_capture_serialized()
+        screen_width, screen_height = raw.size
+        _record_capture_success(screen_width, screen_height)
+        signature = _frame_signature(raw)
+        image = _scale_to_width(_draw_cursor(raw), max_width)
+        jpeg = _encode_jpeg(image, quality)
+        return jpeg, signature, image.width, image.height, screen_width, screen_height
     except Exception as exc:
         _record_capture_error(exc)
         raise
-    screen_width, screen_height = raw.size
-    _record_capture_success(screen_width, screen_height)
-    signature = _frame_signature(raw)
-    image = _scale_to_width(_draw_cursor(raw), max_width)
-    jpeg = _encode_jpeg(image, quality)
-    return jpeg, signature, image.width, image.height, screen_width, screen_height
+    finally:
+        if image is not None and image is not raw:
+            _close_image(image)
+        if raw is not None:
+            _close_image(raw)
 
 
 def _capture_payload(quality, max_width):
@@ -1325,6 +1368,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "public_tunnel_last_exit_code": tunnel_snapshot.get("last_exit_code"),
                     "wan_pwa_available": bool(tunnel_snapshot.get("public_url")),
                     "telegram_wan_available": bool(_telegram_bot_url()),
+                    "active_streams": self.server.active_stream_count(),
+                    "max_streams": self.server.max_stream_connections,
                 }
             )
             return
@@ -1482,38 +1527,46 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             tick = 0.12
             try:
                 while True:
+                    raw = None
+                    image = None
                     try:
-                        raw = _raw_capture()
+                        raw = _raw_capture_serialized()
                     except Exception as exc:
                         _record_capture_error(exc)
                         raise
-                    signature = _frame_signature(raw)
-                    if signature != since:
-                        screen_width, screen_height = raw.size
-                        _record_capture_success(screen_width, screen_height)
-                        image = _scale_to_width(_draw_cursor(raw), max_width)
-                        jpeg = _encode_jpeg(image, quality)
-                        self.send_response(HTTPStatus.OK)
-                        self.send_header("Content-Type", "image/jpeg")
-                        self.send_header("Content-Length", str(len(jpeg)))
-                        self.send_header("Cache-Control", "no-store")
-                        self.send_header("X-Frame-Sig", signature)
-                        self.send_header("X-Frame-Width", str(image.width))
-                        self.send_header("X-Frame-Height", str(image.height))
-                        self.send_header("X-Screen-Width", str(screen_width))
-                        self.send_header("X-Screen-Height", str(screen_height))
-                        self.end_headers()
-                        try:
-                            self.wfile.write(jpeg)
-                        except (BrokenPipeError, ConnectionResetError):
-                            pass
-                        return
-                    if time.time() >= deadline:
-                        self.send_response(HTTPStatus.NO_CONTENT)
-                        self.send_header("X-Frame-Sig", since)
-                        self.send_header("Cache-Control", "no-store")
-                        self.end_headers()
-                        return
+                    try:
+                        signature = _frame_signature(raw)
+                        if signature != since:
+                            screen_width, screen_height = raw.size
+                            _record_capture_success(screen_width, screen_height)
+                            image = _scale_to_width(_draw_cursor(raw), max_width)
+                            jpeg = _encode_jpeg(image, quality)
+                            self.send_response(HTTPStatus.OK)
+                            self.send_header("Content-Type", "image/jpeg")
+                            self.send_header("Content-Length", str(len(jpeg)))
+                            self.send_header("Cache-Control", "no-store")
+                            self.send_header("X-Frame-Sig", signature)
+                            self.send_header("X-Frame-Width", str(image.width))
+                            self.send_header("X-Frame-Height", str(image.height))
+                            self.send_header("X-Screen-Width", str(screen_width))
+                            self.send_header("X-Screen-Height", str(screen_height))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(jpeg)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+                        if time.time() >= deadline:
+                            self.send_response(HTTPStatus.NO_CONTENT)
+                            self.send_header("X-Frame-Sig", since)
+                            self.send_header("Cache-Control", "no-store")
+                            self.end_headers()
+                            return
+                    finally:
+                        if image is not None and image is not raw:
+                            _close_image(image)
+                        if raw is not None:
+                            _close_image(raw)
                     time.sleep(tick)
                     if tick < 0.4:
                         # Back off while the screen is static to keep idle CPU low;
@@ -1535,6 +1588,21 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             session, auth_kind = self._require_viewer_session()
             if not session:
                 return
+            if not self.server.acquire_stream_slot():
+                record_runtime_event(
+                    "phone_bridge_stream_rejected",
+                    active_streams=self.server.active_stream_count(),
+                    max_streams=self.server.max_stream_connections,
+                )
+                self._json_response(
+                    {
+                        "status": "busy",
+                        "message": "Cok fazla aktif goruntu akisi var. Sayfayi yenileyin.",
+                    },
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
             query = self._query()
             quality, max_width = _parse_stream_params(
                 query, self.server.screenshot_quality, self.server.max_width
@@ -1547,7 +1615,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 self.send_header("Connection", "close")
                 self.end_headers()
             except (BrokenPipeError, ConnectionResetError, OSError):
+                self.server.release_stream_slot()
                 return
+            record_runtime_event(
+                "phone_bridge_stream_started",
+                active_streams=self.server.active_stream_count(),
+                max_streams=self.server.max_stream_connections,
+                quality=quality,
+                max_width=max_width,
+            )
             last_sig = None
             last_jpeg = None
             last_send = 0.0
@@ -1556,11 +1632,16 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             was_high_motion = False
             capture_errors = 0
             active_interval = 1.0 / 15.0
+            started_at = time.time()
+            frame_count = 0
+            last_gc_frame = 0
             try:
-                while True:
+                while time.time() - started_at < self.server.stream_max_seconds:
                     loop_start = time.time()
+                    raw = None
+                    image = None
                     try:
-                        raw = _raw_capture()
+                        raw = _raw_capture_serialized()
                         _record_capture_success(*raw.size)
                         capture_errors = 0
                     except Exception as exc:
@@ -1570,48 +1651,62 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                             break  # let the client fall back to the long-poll
                         time.sleep(0.3)
                         continue
-                    signature = _frame_signature(raw)
-                    changed = signature != last_sig
-                    if changed:
-                        motion = min(motion + 2, 12)
-                        idle = 0
-                    else:
-                        motion = max(motion - 1, 0)
-                        idle += 1
-                    high_motion = motion >= 5
-                    just_settled = was_high_motion and not high_motion
-                    was_high_motion = high_motion
-                    now = time.time()
-                    if changed or just_settled:
-                        # While the screen is actively moving (scrolling, video), send
-                        # smaller, lower-quality frames so they don't saturate the
-                        # uplink/tunnel and stutter; restore full detail the instant it
-                        # settles. Pixels dominate bandwidth, so trim width too.
-                        if high_motion:
-                            encode_quality = max(28, quality - 24)
-                            encode_width = max(720, (max_width * 7) // 10)
+                    try:
+                        signature = _frame_signature(raw)
+                        changed = signature != last_sig
+                        if changed:
+                            motion = min(motion + 2, 12)
+                            idle = 0
                         else:
-                            encode_quality = quality
-                            encode_width = max_width
-                        image = _scale_to_width(_draw_cursor(raw), encode_width)
-                        last_jpeg = _encode_jpeg(image, encode_quality)
-                        last_sig = signature
-                        try:
-                            self.wfile.write(len(last_jpeg).to_bytes(4, "big"))
-                            self.wfile.write(last_jpeg)
-                            self.wfile.flush()
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            break
-                        last_send = now
-                    elif now - last_send >= 1.0:
-                        # Tiny zero-length heartbeat keeps the connection warm and
-                        # lets the client confirm liveness without resending a frame.
-                        try:
-                            self.wfile.write((0).to_bytes(4, "big"))
-                            self.wfile.flush()
-                        except (BrokenPipeError, ConnectionResetError, OSError):
-                            break
-                        last_send = now
+                            motion = max(motion - 1, 0)
+                            idle += 1
+                        high_motion = motion >= 5
+                        just_settled = was_high_motion and not high_motion
+                        was_high_motion = high_motion
+                        now = time.time()
+                        if changed or just_settled:
+                            # While the screen is actively moving (scrolling, video), send
+                            # smaller, lower-quality frames so they don't saturate the
+                            # uplink/tunnel and stutter; restore full detail the instant it
+                            # settles. Pixels dominate bandwidth, so trim width too.
+                            if high_motion:
+                                encode_quality = max(28, quality - 24)
+                                encode_width = max(720, (max_width * 7) // 10)
+                            else:
+                                encode_quality = quality
+                                encode_width = max_width
+                            image = _scale_to_width(_draw_cursor(raw), encode_width)
+                            last_jpeg = _encode_jpeg(image, encode_quality)
+                            last_sig = signature
+                            frame_count += 1
+                            try:
+                                self.wfile.write(len(last_jpeg).to_bytes(4, "big"))
+                                self.wfile.write(last_jpeg)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                break
+                            last_send = now
+                        elif now - last_send >= 1.0:
+                            # Tiny zero-length heartbeat keeps the connection warm and
+                            # lets the client confirm liveness without resending a frame.
+                            try:
+                                self.wfile.write((0).to_bytes(4, "big"))
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                break
+                            last_send = now
+                    finally:
+                        if image is not None and image is not raw:
+                            _close_image(image)
+                        if raw is not None:
+                            _close_image(raw)
+                    if (
+                        frame_count
+                        and frame_count != last_gc_frame
+                        and frame_count % self.server.stream_gc_every_frames == 0
+                    ):
+                        gc.collect()
+                        last_gc_frame = frame_count
                     # Pace fast while the screen is moving; back off when static.
                     interval = active_interval if idle < 12 else 0.25
                     elapsed = time.time() - loop_start
@@ -1619,6 +1714,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         time.sleep(interval - elapsed)
             except Exception as exc:
                 logger.debug(f"Phone bridge stream ended: {exc}")
+            finally:
+                self.server.release_stream_slot()
+                record_runtime_event(
+                    "phone_bridge_stream_ended",
+                    active_streams=self.server.active_stream_count(),
+                    frames=frame_count,
+                    duration_seconds=round(time.time() - started_at, 2),
+                )
             return
 
         if route == "/api/session":
@@ -1843,6 +1946,12 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.session_links = SessionLinkStore()
         self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
         self.action_dedup = ActionDedup()
+        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
+        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
+        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
+        self._stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
+        self._stream_count_lock = threading.Lock()
+        self._active_streams = 0
         self.startup_session = self.session_links.create(
             None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
             label="startup-phone",
@@ -1853,6 +1962,28 @@ class PhoneBridgeServer(ThreadingHTTPServer):
             self.server_port,
             self.startup_session["token"],
         )
+
+    def acquire_stream_slot(self):
+        acquired = self._stream_slots.acquire(blocking=False)
+        if not acquired:
+            return False
+        with self._stream_count_lock:
+            self._active_streams += 1
+        return True
+
+    def release_stream_slot(self):
+        with self._stream_count_lock:
+            if self._active_streams <= 0:
+                return
+            self._active_streams -= 1
+        try:
+            self._stream_slots.release()
+        except ValueError:
+            pass
+
+    def active_stream_count(self):
+        with self._stream_count_lock:
+            return self._active_streams
 
     def get_public_url(self, *, validate=True):
         if not self.public_tunnel:

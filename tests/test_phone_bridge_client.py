@@ -96,6 +96,38 @@ class PhoneBridgeClientTests(unittest.TestCase):
         finally:
             server.server_close()
 
+    def test_phone_bridge_server_limits_active_stream_slots(self):
+        def fake_server_bind(server):
+            server.server_address = ("127.0.0.1", 54322)
+
+        with patch.object(phone_bridge_server.TCPServer, "server_bind", fake_server_bind), patch.object(
+            phone_bridge_server.TCPServer, "server_activate", lambda server: None
+        ), patch.object(
+            phone_bridge_server, "_get_local_ipv4_candidates", return_value=[]
+        ), patch.object(
+            phone_bridge_server, "_get_local_ip", return_value="127.0.0.1"
+        ):
+            server = phone_bridge_server.PhoneBridgeServer(
+                ("127.0.0.1", 0),
+                phone_bridge_server.PhoneBridgeHandler,
+                admin_token="admin",
+                screenshot_quality=60,
+                max_width=1280,
+                poll_ms=1000,
+                default_session_minutes=0,
+            )
+
+        try:
+            for _ in range(server.max_stream_connections):
+                self.assertTrue(server.acquire_stream_slot())
+            self.assertFalse(server.acquire_stream_slot())
+            self.assertEqual(server.active_stream_count(), server.max_stream_connections)
+            for _ in range(server.max_stream_connections):
+                server.release_stream_slot()
+            self.assertEqual(server.active_stream_count(), 0)
+        finally:
+            server.server_close()
+
     def test_sensitive_phone_typing_uses_direct_keystrokes_without_clipboard(self):
         fake = _FakePyAutoGui()
 

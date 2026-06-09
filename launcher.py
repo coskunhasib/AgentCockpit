@@ -203,6 +203,15 @@ def _wait_for_telegram_dns_while_bridge_runs(bridge_process):
             return True
 
 
+def _keep_bridge_after_launcher_exit():
+    raw = os.environ.get("AGENTCOCKPIT_KEEP_BRIDGE_ON_EXIT", "").strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    return "--autostart" in sys.argv or os.environ.get("AGENTCOCKPIT_AUTOSTART") == "true"
+
+
 def run_stack():
     try:
         import pip_system_certs  # noqa: F401
@@ -267,6 +276,10 @@ def run_stack():
         run_bot()
     finally:
         if bridge_process and bridge_process.poll() is None:
+            if _keep_bridge_after_launcher_exit():
+                print("[STOP] Autostart modunda phone bridge acik birakiliyor.")
+                record_runtime_event("phone_bridge_cleanup_skipped", pid=bridge_process.pid, reason="autostart")
+                return
             print("[STOP] Launcher tarafindan acilan phone bridge kapatiliyor...")
             record_runtime_event("phone_bridge_cleanup_terminate", pid=bridge_process.pid)
             bridge_process.terminate()

@@ -268,20 +268,39 @@ def ensure_cloudflared(*, allow_download=True):
     return _download_cloudflared()
 
 
-def cloudflared_process_env():
+def _truthy(value):
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _falsey(value):
+    return str(value or "").strip().lower() in {"0", "false", "no", "off"}
+
+
+def cloudflared_process_env(*, force_go_dns=None):
     env = os.environ.copy()
     if sys.platform == "darwin":
-        # cloudflared is a Go binary. In some non-interactive macOS sessions the
-        # default SystemConfiguration DNS lookup can be empty; forcing Go DNS is
-        # available as an opt-in escape hatch, but it is not safe as a default on
-        # every macOS trust-store setup.
-        force_go_dns = get_str("CLOUDFLARED_FORCE_GO_DNS", "0").lower()
-        if force_go_dns in {"1", "true", "yes", "on"}:
+        # cloudflared is a Go binary. In non-interactive macOS sessions the
+        # default SystemConfiguration DNS lookup can be empty even when dig works.
+        raw_dns_mode = get_str("CLOUDFLARED_FORCE_GO_DNS", "auto").lower()
+        if _truthy(raw_dns_mode):
+            use_go_dns = True
+        elif _falsey(raw_dns_mode):
+            use_go_dns = False
+        else:
+            use_go_dns = bool(force_go_dns)
+        if use_go_dns:
             godebug = env.get("GODEBUG", "")
             parts = [part for part in godebug.split(",") if part]
             if not any(part.startswith("netdns=") for part in parts):
                 parts.append("netdns=go")
             env["GODEBUG"] = ",".join(parts)
+            if not env.get("SSL_CERT_FILE"):
+                try:
+                    import certifi
+
+                    env["SSL_CERT_FILE"] = certifi.where()
+                except Exception:
+                    pass
     return env
 
 
@@ -326,6 +345,8 @@ class QuickTunnel:
         self._validation_ok = False
         self._validation_failures = 0
         self._url_seen_at = 0.0
+        self._dns_strategy = get_str("CLOUDFLARED_FORCE_GO_DNS", "auto").lower()
+        self._force_go_dns = _truthy(self._dns_strategy)
 
     def start(self):
         if not tunnel_enabled(self.mode):
@@ -379,7 +400,7 @@ class QuickTunnel:
             encoding="utf-8",
             errors="replace",
             creationflags=creationflags,
-            env=cloudflared_process_env(),
+            env=cloudflared_process_env(force_go_dns=self._force_go_dns),
         )
         with self._lock:
             self.process = process
@@ -410,6 +431,7 @@ class QuickTunnel:
             line = raw_line.strip()
             if line:
                 logger.info(f"cloudflared: {line}")
+                self._update_dns_strategy_from_output(line)
             url = extract_tunnel_url(line)
             if url:
                 with self._lock:
@@ -447,6 +469,18 @@ class QuickTunnel:
                 return
             self.status = "yeniden_baslatiliyor"
             self.error = f"cloudflared cikti: {exit_code}"
+
+    def _update_dns_strategy_from_output(self, line):
+        if self._dns_strategy not in {"", "auto"}:
+            return
+        text = (line or "").lower()
+        with self._lock:
+            if "no such host" in text and not self._force_go_dns:
+                self._force_go_dns = True
+                logger.warning("cloudflared DNS hatasi aldi; sonraki denemede Go DNS kullanilacak.")
+            elif ("osstatus -26276" in text or "failed to verify certificate" in text) and self._force_go_dns:
+                self._force_go_dns = False
+                logger.warning("cloudflared Go DNS/TLS hatasi aldi; sonraki denemede sistem DNS kullanilacak.")
 
     def _watchdog(self):
         delay = self.restart_delay

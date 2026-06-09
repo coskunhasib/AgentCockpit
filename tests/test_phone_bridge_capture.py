@@ -24,6 +24,15 @@ class _CursorOnlyPyAutoGui:
         return (10, 10)
 
 
+class _ZeroSizePyAutoGui:
+    class Size:
+        width = 0
+        height = 0
+
+    def size(self):
+        return self.Size()
+
+
 class PhoneBridgeCaptureTests(unittest.TestCase):
     def setUp(self):
         bridge._PYAUTOGUI = _CursorOnlyPyAutoGui()
@@ -101,6 +110,14 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
         self.assertFalse(health["capture_available"])
         self.assertEqual(health["capture_error"], "screen metrics unavailable")
 
+    def test_screen_metrics_treat_zero_size_as_unavailable(self):
+        with patch.object(bridge, "_get_pyautogui", return_value=_ZeroSizePyAutoGui()):
+            metrics = bridge._get_screen_metrics()
+
+        self.assertEqual(metrics["width"], 0)
+        self.assertEqual(metrics["height"], 0)
+        self.assertFalse(metrics["available"])
+
     def test_capture_health_reports_last_capture_error(self):
         bridge._record_capture_error(RuntimeError("could not create image from display"))
 
@@ -108,6 +125,14 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
 
         self.assertFalse(health["capture_available"])
         self.assertIn("could not create image", health["capture_error"])
+
+    def test_raw_capture_serialized_releases_lock_after_failure(self):
+        with patch.object(bridge, "_raw_capture", side_effect=RuntimeError("boom")):
+            with self.assertRaises(RuntimeError):
+                bridge._raw_capture_serialized()
+
+        self.assertTrue(bridge._CAPTURE_LOCK.acquire(blocking=False))
+        bridge._CAPTURE_LOCK.release()
 
 
 if __name__ == "__main__":
