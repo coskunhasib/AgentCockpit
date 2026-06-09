@@ -993,6 +993,7 @@
       let sensitiveTyping = false;
       let boostUntil = 0;
       let consecutiveErrors = 0;
+      let captureRetryUntil = 0;
       let lastFrameAt = 0;
       let lastLatencyMs = 0;
       let deferredInstallPrompt = null;
@@ -1507,6 +1508,13 @@
             : `HTTP ${response.status}`;
           const httpError = new Error(message);
           httpError.http = response.status;
+          const retryAfter = Number(response.headers.get('Retry-After') || (data && data.retry_after) || 0);
+          if (Number.isFinite(retryAfter) && retryAfter > 0) {
+            httpError.retryAfter = retryAfter;
+          }
+          if ((data && data.status === 'capture_unavailable') || response.headers.get('X-AgentCockpit-Capture') === 'unavailable') {
+            httpError.captureUnavailable = true;
+          }
           throw httpError;
         }
         if (!data || typeof data !== 'object') {
@@ -1516,6 +1524,46 @@
         }
         data.__elapsed = Math.round(performance.now() - startedAt);
         return data;
+      }
+
+      function noteRetryAfter(error) {
+        const retryAfter = Number(error && error.retryAfter);
+        if (Number.isFinite(retryAfter) && retryAfter > 0) {
+          captureRetryUntil = Math.max(captureRetryUntil, Date.now() + (retryAfter * 1000));
+          return retryAfter * 1000;
+        }
+        return 0;
+      }
+
+      function captureRetryDelay() {
+        return Math.max(0, captureRetryUntil - Date.now());
+      }
+
+      function captureWaitText(delayMs) {
+        const seconds = Math.max(1, Math.ceil(delayMs / 1000));
+        return `macOS ekran yakalama hazir degil; ${seconds} sn sonra tekrar denenecek`;
+      }
+
+      async function errorFromResponse(response, fallbackMessage) {
+        let data = null;
+        try {
+          data = await response.clone().json();
+        } catch (_) {
+          data = null;
+        }
+        const message = (data && (data.message || data.status))
+          ? (data.message || data.status)
+          : (fallbackMessage || `HTTP ${response.status}`);
+        const error = new Error(message);
+        error.http = response.status;
+        const retryAfter = Number(response.headers.get('Retry-After') || (data && data.retry_after) || 0);
+        if (Number.isFinite(retryAfter) && retryAfter > 0) {
+          error.retryAfter = retryAfter;
+        }
+        if ((data && data.status === 'capture_unavailable') || response.headers.get('X-AgentCockpit-Capture') === 'unavailable') {
+          error.captureUnavailable = true;
+        }
+        return error;
       }
 
       function renderScreenshot(payload) {
@@ -1556,6 +1604,13 @@
         if (streamMode === 'stream') {
           return;   // the persistent push stream drives the image instead
         }
+        const deferredFor = captureRetryDelay();
+        if (deferredFor > 0) {
+          connected = false;
+          setStatus('Ekran yakalama beklemede', captureWaitText(deferredFor), false);
+          scheduleNextPoll(deferredFor + 250);
+          return;
+        }
         if (busy || actionBusy) {
           if (reason === 'manual') {
             scheduleNextPoll(260);
@@ -1563,6 +1618,7 @@
           return;
         }
         busy = true;
+        let retryDelay = 0;
         try {
           if (streamMode === 'frame') {
             await fetchBinaryFrame();
@@ -1574,6 +1630,7 @@
         } catch (error) {
           connected = false;
           consecutiveErrors += 1;
+          retryDelay = noteRetryAfter(error);
           if (streamMode === 'frame') {
             streamFailures += 1;
             if (error.http === 404 || streamFailures >= 3) {
@@ -1584,18 +1641,20 @@
             }
           }
           const detail = (error && error.message) ? error.message : 'Sunucuya yeniden ulasmaya calisiyorum';
-          const title = /Siyah ekran|Screen Recording|ekran kilitli|uykuda/i.test(detail)
+          const title = (error && error.captureUnavailable) || /Siyah ekran|Screen Recording|ekran kilitli|uykuda|screen metrics unavailable/i.test(detail)
             ? 'Ekran yakalama sorunu'
             : 'Baglanti kesildi';
-          setStatus(title, detail, false);
+          setStatus(title, retryDelay ? captureWaitText(retryDelay) : detail, false);
           setOfflineBanner(true, navigator.onLine
-            ? 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.'
+            ? (retryDelay ? 'Mac ekran yakalama hazir degil. App shell acik kaldi, bekleyip tekrar deniyorum.' : 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.')
             : 'Su an offline gorunuyorsun. App shell acik kaldi, baglanti gelince toparlayacagim.');
           maybeShowWanSheet();
         } finally {
           busy = false;
           let nextDelay;
-          if (streamMode === 'frame') {
+          if (retryDelay) {
+            nextDelay = retryDelay + 250;
+          } else if (streamMode === 'frame') {
             // Pipeline the long-poll: re-request immediately on success, back off on error.
             nextDelay = document.hidden ? 2000 : (consecutiveErrors ? 500 : 0);
           } else {
@@ -1706,7 +1765,7 @@
             throw failure;
           }
           if (!response.ok) {
-            throw new Error(`stream HTTP ${response.status}`);
+            throw await errorFromResponse(response, `stream HTTP ${response.status}`);
           }
           const reader = response.body.getReader();
           let buffer = new Uint8Array(0);
@@ -1743,8 +1802,8 @@
               renderStreamFrame(newestFrame);
             }
           }
-        } catch (_) {
-          // fall through to the fallback below
+        } catch (error) {
+          noteRetryAfter(error);
         } finally {
           clearTimeout(watchdog);
           if (generation === streamGeneration) {
@@ -1752,6 +1811,15 @@
           }
         }
         if (generation === streamGeneration && streamMode === 'stream') {
+          const deferredFor = captureRetryDelay();
+          if (deferredFor > 0) {
+            streamMode = 'frame';
+            connected = false;
+            setStatus('Ekran yakalama beklemede', captureWaitText(deferredFor), false);
+            setOfflineBanner(true, 'Mac ekran yakalama hazir degil. App shell acik kaldi, bekleyip tekrar deniyorum.');
+            scheduleNextPoll(deferredFor + 250);
+            return;
+          }
           // Genuine end/failure (not a superseding restart): drop to the long-poll.
           streamMode = 'frame';
           connected = false;
@@ -1840,9 +1908,7 @@
           return;
         }
         if (!response.ok) {
-          const httpError = new Error(`HTTP ${response.status}`);
-          httpError.http = response.status;
-          throw httpError;
+          throw await errorFromResponse(response, `HTTP ${response.status}`);
         }
         const blob = await response.blob();
         consecutiveErrors = 0;

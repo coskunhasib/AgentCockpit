@@ -71,6 +71,8 @@ _CAPTURE_STATE = {
     "last_success_at": 0.0,
     "last_width": 0,
     "last_height": 0,
+    "failure_count": 0,
+    "backoff_until": 0.0,
 }
 _CAPTURE_STATE_LOCK = threading.Lock()
 _CAPTURE_LOCK = threading.Lock()
@@ -93,9 +95,18 @@ DEFAULT_PUBLIC_TUNNEL = get_str("PHONE_PUBLIC_TUNNEL")
 DEFAULT_KEEP_AWAKE = get_str("PHONE_KEEP_AWAKE")
 DEFAULT_KEEP_AWAKE_FLAGS = get_str("PHONE_KEEP_AWAKE_FLAGS")
 DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC = max(0.5, get_float("PHONE_CAPTURE_LOCK_TIMEOUT_SEC", "3.0"))
+DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC = max(
+    3.0, get_float("PHONE_CAPTURE_UNAVAILABLE_RETRY_SEC", "12.0")
+)
 DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", "2"))
 DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
 DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
+
+
+class CaptureUnavailable(RuntimeError):
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = int(max(1, retry_after or DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC))
 
 
 def _get_pyautogui():
@@ -170,12 +181,75 @@ def _record_capture_success(width, height):
         _CAPTURE_STATE["last_success_at"] = time.time()
         _CAPTURE_STATE["last_width"] = int(width)
         _CAPTURE_STATE["last_height"] = int(height)
+        _CAPTURE_STATE["failure_count"] = 0
+        _CAPTURE_STATE["backoff_until"] = 0.0
+
+
+def _is_capture_unavailable_error(text):
+    return bool(
+        re.search(
+            r"screen metrics unavailable|could not create image|cannot identify image|"
+            r"Screen Recording|Siyah ekran|kilitli|uykuda|screencapture",
+            str(text or ""),
+            re.IGNORECASE,
+        )
+    )
 
 
 def _record_capture_error(error):
+    now = time.time()
+    redacted = _redact_capture_error(error)
     with _CAPTURE_STATE_LOCK:
-        _CAPTURE_STATE["last_error"] = _redact_capture_error(error)
-        _CAPTURE_STATE["last_error_at"] = time.time()
+        _CAPTURE_STATE["last_error"] = redacted
+        _CAPTURE_STATE["last_error_at"] = now
+        _CAPTURE_STATE["failure_count"] = int(_CAPTURE_STATE.get("failure_count", 0)) + 1
+        if isinstance(error, CaptureUnavailable) or _is_capture_unavailable_error(redacted):
+            retry_after = getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)
+            _CAPTURE_STATE["backoff_until"] = max(
+                float(_CAPTURE_STATE.get("backoff_until", 0.0)),
+                now + float(retry_after),
+            )
+
+
+def _capture_retry_after_seconds():
+    with _CAPTURE_STATE_LOCK:
+        backoff_until = float(_CAPTURE_STATE.get("backoff_until", 0.0) or 0.0)
+    remaining = backoff_until - time.time()
+    return int(remaining) + 1 if remaining > 0 else 0
+
+
+def _raise_if_capture_deferred():
+    retry_after = _capture_retry_after_seconds()
+    if retry_after > 0:
+        raise CaptureUnavailable(
+            "Ekran yakalama gecici olarak durduruldu; macOS ekran oturumu hazir degil.",
+            retry_after=retry_after,
+        )
+
+    screen = _get_screen_metrics()
+    if not screen.get("available"):
+        raise CaptureUnavailable(
+            "Ekran yakalama hazir degil: screen metrics unavailable. "
+            "Mac kilitli/uykuda olabilir veya aktif GUI ekran oturumu yok.",
+            retry_after=DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC,
+        )
+
+
+def _capture_retry_headers(error):
+    retry_after = int(max(1, getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)))
+    return {
+        "Retry-After": str(retry_after),
+        "X-AgentCockpit-Capture": "unavailable",
+    }
+
+
+def _capture_error_payload(error):
+    retry_after = int(max(1, getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)))
+    return {
+        "status": "capture_unavailable",
+        "message": _redact_capture_error(error),
+        "retry_after": retry_after,
+    }
 
 
 def _capture_health(screen):
@@ -193,6 +267,7 @@ def _capture_health(screen):
         "capture_last_success_at": int(state["last_success_at"]) if state["last_success_at"] else 0,
         "capture_last_width": state["last_width"],
         "capture_last_height": state["last_height"],
+        "capture_retry_after": _capture_retry_after_seconds(),
     }
 
 
@@ -561,6 +636,7 @@ def _close_image(image):
 
 def _raw_capture_serialized():
     """Serialize full-screen capture so concurrent WAN streams cannot fan out memory use."""
+    _raise_if_capture_deferred()
     acquired = _CAPTURE_LOCK.acquire(timeout=DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC)
     if not acquired:
         raise RuntimeError(
@@ -1352,6 +1428,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "capture_last_success_at": capture["capture_last_success_at"],
                     "capture_last_width": capture["capture_last_width"],
                     "capture_last_height": capture["capture_last_height"],
+                    "capture_retry_after": capture["capture_retry_after"],
                     "keep_awake_enabled": keep_awake["enabled"],
                     "keep_awake_active": keep_awake["active"],
                     "keep_awake_error": keep_awake["error"],
@@ -1504,6 +1581,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             )
             try:
                 payload = _capture_payload(quality, max_width)
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge screenshot unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
+                )
+                return
             except Exception as exc:
                 logger.exception(f"Phone bridge screenshot failed: {exc}")
                 self._json_response(
@@ -1584,6 +1670,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         # Back off while the screen is static to keep idle CPU low;
                         # an active change still returns on the next capture.
                         tick += 0.04
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge frame unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
+                )
+                return
             except Exception as exc:
                 logger.exception(f"Phone bridge frame failed: {exc}")
                 self._json_response(
@@ -1599,6 +1694,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             # client sees smooth motion limited only by capture/encode + bandwidth.
             session, auth_kind = self._require_viewer_session()
             if not session:
+                return
+            try:
+                _raise_if_capture_deferred()
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge stream unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
+                )
                 return
             if not self.server.acquire_stream_slot():
                 record_runtime_event(
@@ -1656,6 +1762,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         raw = _raw_capture_serialized()
                         _record_capture_success(*raw.size)
                         capture_errors = 0
+                    except CaptureUnavailable as exc:
+                        _record_capture_error(exc)
+                        logger.warning("Phone bridge stream stopped: %s", _redact_capture_error(exc))
+                        break
                     except Exception as exc:
                         _record_capture_error(exc)
                         capture_errors += 1
@@ -1756,6 +1866,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "screen_available": screen["available"],
                     "capture_available": capture["capture_available"],
                     "capture_error": capture["capture_error"],
+                    "capture_retry_after": capture["capture_retry_after"],
                     "poll_ms": self.server.poll_ms,
                     "quality": self.server.screenshot_quality,
                     "max_width": self.server.max_width,

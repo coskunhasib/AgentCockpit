@@ -23,6 +23,13 @@ class _CursorOnlyPyAutoGui:
     def position(self):
         return (10, 10)
 
+    class Size:
+        width = 1728
+        height = 1117
+
+    def size(self):
+        return self.Size()
+
 
 class _ZeroSizePyAutoGui:
     class Size:
@@ -44,6 +51,8 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
                     "last_success_at": 0.0,
                     "last_width": 0,
                     "last_height": 0,
+                    "failure_count": 0,
+                    "backoff_until": 0.0,
                 }
             )
         bridge._QUARTZ_STATE.update({"checked": True, "ok": False})
@@ -133,6 +142,33 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
 
         self.assertTrue(bridge._CAPTURE_LOCK.acquire(blocking=False))
         bridge._CAPTURE_LOCK.release()
+
+    def test_raw_capture_serialized_defers_when_screen_metrics_unavailable(self):
+        with patch.object(
+            bridge,
+            "_get_screen_metrics",
+            return_value={"width": 0, "height": 0, "available": False},
+        ), patch.object(bridge, "_raw_capture", side_effect=AssertionError("raw capture should not run")):
+            with self.assertRaises(bridge.CaptureUnavailable) as ctx:
+                bridge._raw_capture_serialized()
+
+        self.assertIn("screen metrics unavailable", str(ctx.exception))
+        self.assertGreaterEqual(ctx.exception.retry_after, 1)
+
+    def test_capture_error_sets_retry_backoff_for_unavailable_screen(self):
+        bridge._record_capture_error(
+            bridge.CaptureUnavailable("screen metrics unavailable", retry_after=5)
+        )
+
+        self.assertGreaterEqual(bridge._capture_retry_after_seconds(), 1)
+
+    def test_capture_success_clears_retry_backoff(self):
+        bridge._record_capture_error(
+            bridge.CaptureUnavailable("screen metrics unavailable", retry_after=5)
+        )
+        bridge._record_capture_success(1280, 720)
+
+        self.assertEqual(bridge._capture_retry_after_seconds(), 0)
 
 
 if __name__ == "__main__":
