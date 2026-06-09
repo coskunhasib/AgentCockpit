@@ -122,6 +122,8 @@ Kisa notlar:
 
 - Pairing dashboard: `http://127.0.0.1:8765/pair`
 - QR, uzak tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
+- Cloudflare Quick Tunnel URL uretemezse `PHONE_PUBLIC_TUNNEL_FALLBACK=bore`
+  ile IP tabanli WAN fallback otomatik devreye girer.
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
 - WAN tunnelini terminal/Codex gibi eksik GUI/DNS baglamindan yeniden baslatmak
   Cloudflare quick tunnel olusturmayi bozabilir; kalici calisma icin auto-start

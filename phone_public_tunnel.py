@@ -1,6 +1,7 @@
 import os
 import ipaddress
 import platform
+import random
 import re
 import shutil
 import socket
@@ -15,6 +16,7 @@ import time
 import urllib.parse
 import urllib.request
 import urllib.error
+import zipfile
 from pathlib import Path
 
 from core.app_config import get_float, get_int, get_str
@@ -25,6 +27,8 @@ from phone_runtime_config import CLOUDFLARED_BIN_DIR, CLOUDFLARED_URL_FILE
 logger = get_logger("phone_public_tunnel")
 
 TUNNEL_URL_RE = re.compile(r"https://[-a-zA-Z0-9.]+\.trycloudflare\.com")
+BORE_LISTEN_RE = re.compile(r"\blistening at ([^:\s]+):(\d{2,5})\b")
+BORE_REMOTE_PORT_RE = re.compile(r"\bremote_port=(\d{2,5})\b")
 IP_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9:])(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]{3,})(?![A-Za-z0-9:])")
 
 
@@ -34,6 +38,10 @@ def default_tunnel_mode():
 
 def default_download_enabled():
     return get_str("PHONE_PUBLIC_TUNNEL_DOWNLOAD").lower()
+
+
+def default_tunnel_fallback():
+    return get_str("PHONE_PUBLIC_TUNNEL_FALLBACK").lower()
 
 
 def tunnel_enabled(value=None):
@@ -49,6 +57,29 @@ def auto_download_enabled(value=None):
 def extract_tunnel_url(text):
     match = TUNNEL_URL_RE.search(text or "")
     return match.group(0) if match else ""
+
+
+def _format_http_host(host):
+    value = (host or "").strip().strip("[]")
+    if ":" in value and not value.startswith("["):
+        return f"[{value}]"
+    return value
+
+
+def extract_bore_public_url(text, *, public_host=None):
+    line = text or ""
+    match = BORE_LISTEN_RE.search(line)
+    if match:
+        host = public_host or match.group(1)
+        port = match.group(2)
+        return f"http://{_format_http_host(host)}:{port}"
+
+    match = BORE_REMOTE_PORT_RE.search(line)
+    if match:
+        host = public_host or get_str("PHONE_BORE_PUBLIC_HOST", get_str("PHONE_BORE_SERVER"))
+        return f"http://{_format_http_host(host)}:{match.group(1)}"
+
+    return ""
 
 
 def _public_ip_tokens(text):
@@ -192,9 +223,39 @@ def cloudflared_download_url(system=None, machine=None):
     return ""
 
 
+def bore_download_url(system=None, machine=None):
+    system_name = (system or platform.system()).strip().lower()
+    arch = _machine_arch(machine)
+    base = "https://github.com/ekzhang/bore/releases/download/v0.6.0"
+
+    if system_name == "windows":
+        if arch == "amd64":
+            return f"{base}/bore-v0.6.0-x86_64-pc-windows-msvc.zip"
+        if arch == "386":
+            return f"{base}/bore-v0.6.0-i686-pc-windows-msvc.zip"
+    if system_name == "linux":
+        if arch == "amd64":
+            return f"{base}/bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz"
+        if arch == "arm64":
+            return f"{base}/bore-v0.6.0-aarch64-unknown-linux-musl.tar.gz"
+        if arch == "386":
+            return f"{base}/bore-v0.6.0-i686-unknown-linux-musl.tar.gz"
+    if system_name == "darwin":
+        if arch == "amd64":
+            return f"{base}/bore-v0.6.0-x86_64-apple-darwin.tar.gz"
+        if arch == "arm64":
+            return f"{base}/bore-v0.6.0-aarch64-apple-darwin.tar.gz"
+    return ""
+
+
 def _local_cloudflared_path():
     suffix = ".exe" if os.name == "nt" else ""
     return CLOUDFLARED_BIN_DIR / f"cloudflared{suffix}"
+
+
+def _local_bore_path():
+    suffix = ".exe" if os.name == "nt" else ""
+    return CLOUDFLARED_BIN_DIR / f"bore{suffix}"
 
 
 def find_cloudflared():
@@ -207,6 +268,21 @@ def find_cloudflared():
         return Path(path_value)
 
     local_path = _local_cloudflared_path()
+    if local_path.exists():
+        return local_path
+    return None
+
+
+def find_bore():
+    env_path = get_str("BORE_EXE")
+    if env_path and Path(env_path).exists():
+        return Path(env_path)
+
+    path_value = shutil.which("bore")
+    if path_value:
+        return Path(path_value)
+
+    local_path = _local_bore_path()
     if local_path.exists():
         return local_path
     return None
@@ -257,6 +333,77 @@ def _download_cloudflared():
 
     _make_executable(target)
     return target
+
+
+def _copy_binary_from_archive(archive_path, target, binary_name):
+    target_name = f"{binary_name}.exe" if os.name == "nt" else binary_name
+    if archive_path.suffix == ".zip":
+        with zipfile.ZipFile(archive_path) as archive:
+            member_name = next(
+                (
+                    item
+                    for item in archive.namelist()
+                    if Path(item).name in {binary_name, f"{binary_name}.exe"}
+                ),
+                None,
+            )
+            if member_name is None:
+                raise RuntimeError(f"{binary_name} arşivi icinde binary bulunamadi.")
+            target.write_bytes(archive.read(member_name))
+        return
+
+    if archive_path.name.endswith((".tar.gz", ".tgz")):
+        with tarfile.open(archive_path, "r:gz") as archive:
+            member = next(
+                (
+                    item
+                    for item in archive.getmembers()
+                    if Path(item.name).name in {binary_name, f"{binary_name}.exe"} and item.isfile()
+                ),
+                None,
+            )
+            if member is None:
+                raise RuntimeError(f"{binary_name} arşivi icinde binary bulunamadi.")
+            extracted = archive.extractfile(member)
+            if extracted is None:
+                raise RuntimeError(f"{binary_name} arşivi okunamadi.")
+            target.write_bytes(extracted.read())
+        return
+
+    if target.name != target_name:
+        target = target.with_name(target_name)
+    shutil.copyfile(archive_path, target)
+
+
+def _download_bore():
+    download_url = bore_download_url()
+    if not download_url:
+        raise RuntimeError(
+            f"Bu platform icin bore otomatik indirme desteklenmiyor: "
+            f"{platform.system()} {platform.machine()}"
+        )
+
+    CLOUDFLARED_BIN_DIR.mkdir(parents=True, exist_ok=True)
+    target = _local_bore_path()
+    logger.info(f"bore indiriliyor: {download_url}")
+
+    with tempfile.TemporaryDirectory(prefix="agentcockpit-bore-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        archive_path = tmp_path / Path(urllib.parse.urlsplit(download_url).path).name
+        urllib.request.urlretrieve(download_url, archive_path)
+        _copy_binary_from_archive(archive_path, target, "bore")
+
+    _make_executable(target)
+    return target
+
+
+def ensure_bore(*, allow_download=True):
+    existing = find_bore()
+    if existing:
+        return existing
+    if not allow_download:
+        return None
+    return _download_bore()
 
 
 def ensure_cloudflared(*, allow_download=True):
@@ -611,6 +758,7 @@ class QuickTunnel:
             status = self.status
         return {
             "enabled": tunnel_enabled(self.mode),
+            "provider": "cloudflared",
             "status": status,
             "public_url": public_url,
             "error": self.error,
@@ -621,6 +769,11 @@ class QuickTunnel:
     def stop(self):
         self._stop_event.set()
         clear_public_url()
+        with self._lock:
+            self.public_url = ""
+            self.status = "kapali"
+            self.error = ""
+            self._url_event.clear()
         if not self.process or self.process.poll() is not None:
             return
         self.process.terminate()
@@ -631,8 +784,383 @@ class QuickTunnel:
             self.process.wait(timeout=3)
 
 
+class BoreTunnel:
+    provider = "bore"
+
+    def __init__(self, target_url, *, mode="auto", allow_download=True):
+        self.target_url = target_url.rstrip("/")
+        self.mode = mode
+        self.allow_download = allow_download
+        self.process = None
+        self.public_url = ""
+        self.status = "kapali"
+        self.error = ""
+        self.restart_count = 0
+        self.last_exit_code = None
+        self.server = get_str("PHONE_BORE_SERVER", "159.223.110.159")
+        self.public_host = get_str("PHONE_BORE_PUBLIC_HOST", self.server)
+        self.configured_remote_port = get_str("PHONE_BORE_REMOTE_PORT")
+        self.remote_port = ""
+        self.restart_delay = max(1.0, get_float("PHONE_BORE_RESTART_DELAY_SEC", "3"))
+        self.restart_delay_max = max(
+            self.restart_delay,
+            get_float("PHONE_BORE_RESTART_MAX_DELAY_SEC", "60"),
+        )
+        self._binary = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._url_event = threading.Event()
+        self._reader_thread = None
+        self._watchdog_thread = None
+
+        parsed = urllib.parse.urlsplit(self.target_url)
+        self.local_host = parsed.hostname or "127.0.0.1"
+        if self.local_host in {"0.0.0.0", "::"}:
+            self.local_host = "127.0.0.1"
+        self.local_port = parsed.port
+        if not self.local_port:
+            raise ValueError(f"Bore local port bulunamadi: {target_url}")
+
+    def start(self):
+        if not tunnel_enabled(self.mode):
+            self.status = "kapali"
+            return self
+
+        try:
+            self._binary = ensure_bore(allow_download=self.allow_download)
+            if not self._binary:
+                self.status = "kapali"
+                self.error = "bore bulunamadi"
+                logger.warning(self.error)
+                return self
+
+            self._launch_process()
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog,
+                name="agentcockpit-bore-tunnel-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+        except Exception as exc:
+            self.status = "hata"
+            self.error = str(exc)
+            logger.warning(f"Bore public tunnel baslatilamadi: {exc}")
+        return self
+
+    def _launch_process(self):
+        if not self._binary:
+            raise RuntimeError("bore binary hazir degil")
+
+        remote_port = self.configured_remote_port or str(random.randint(20000, 60999))
+        self.remote_port = remote_port
+        command = [
+            str(self._binary),
+            "local",
+            "--local-host",
+            self.local_host,
+            "--to",
+            self.server,
+            "--port",
+            remote_port,
+        ]
+        command.append(str(self.local_port))
+
+        env = os.environ.copy()
+        if not env.get("RUST_LOG"):
+            env["RUST_LOG"] = "info"
+        creationflags = 0
+        if os.name == "nt":
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+            env=env,
+        )
+        expected_url = f"http://{_format_http_host(self.public_host)}:{remote_port}"
+        with self._lock:
+            self.process = process
+            self.public_url = expected_url
+            self.status = "dogrulaniyor"
+            self.error = ""
+            self.last_exit_code = None
+            self._url_event.set()
+        write_public_url(expected_url)
+        logger.info(f"bore beklenen public URL: {expected_url}")
+
+        self._reader_thread = threading.Thread(
+            target=self._read_output,
+            args=(process,),
+            name="agentcockpit-bore-tunnel-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def _read_output(self, process):
+        if not process or not process.stdout:
+            return
+
+        for raw_line in process.stdout:
+            line = raw_line.strip()
+            if line:
+                logger.info(f"bore: {line}")
+            url = extract_bore_public_url(line, public_host=self.public_host)
+            if url:
+                with self._lock:
+                    if process is not self.process or self._stop_event.is_set():
+                        continue
+                    self.public_url = url.rstrip("/")
+                    self.status = "hazir"
+                    self.error = ""
+                write_public_url(self.public_url)
+                self._url_event.set()
+
+        exit_code = process.poll()
+        if exit_code is None:
+            try:
+                exit_code = process.wait(timeout=0.1)
+            except subprocess.TimeoutExpired:
+                exit_code = None
+        with self._lock:
+            if process is not self.process:
+                return
+            self.last_exit_code = exit_code
+            self.public_url = ""
+            self._url_event.clear()
+            if self._stop_event.is_set():
+                self.status = "kapali"
+                return
+            self.status = "yeniden_baslatiliyor"
+            self.error = f"bore cikti: {exit_code}"
+
+    def _watchdog(self):
+        delay = self.restart_delay
+        while not self._stop_event.wait(delay):
+            process = self.process
+            if process and process.poll() is None:
+                delay = self.restart_delay
+                continue
+            try:
+                self.restart_count += 1
+                logger.warning(f"Bore tunnel yeniden baslatiliyor (deneme {self.restart_count})")
+                self._launch_process()
+                delay = min(self.restart_delay_max, max(self.restart_delay, delay * 2))
+            except Exception as exc:
+                with self._lock:
+                    self.status = "hata"
+                    self.error = str(exc)
+                logger.warning(f"Bore tunnel yeniden baslatilamadi: {exc}")
+                delay = min(self.restart_delay_max, max(self.restart_delay, delay * 2))
+
+    def wait_for_url(self, timeout=0):
+        if timeout and not self.public_url:
+            self._url_event.wait(timeout)
+        return self.public_url
+
+    def get_public_url(self, *, validate=True):
+        with self._lock:
+            url = self.public_url
+            process = self.process
+
+        if not url:
+            return ""
+        if process and process.poll() is not None:
+            return ""
+        if not validate:
+            return url
+
+        ok, validation_error = validate_public_tunnel_url(url, timeout=2.5)
+        with self._lock:
+            if url == self.public_url:
+                if ok:
+                    self.status = "hazir"
+                    self.error = ""
+                else:
+                    self.status = "dogrulaniyor"
+                    self.error = f"bore tunnel dogrulanamadi: {validation_error}"
+        return url if ok else ""
+
+    def snapshot(self, *, validate=True):
+        public_url = self.get_public_url(validate=validate)
+        if public_url and self.process and self.process.poll() is None:
+            status = "hazir"
+        elif self.status == "baslatiliyor" and self.process and self.process.poll() is not None:
+            status = "yeniden_baslatiliyor"
+        else:
+            status = self.status
+        return {
+            "enabled": tunnel_enabled(self.mode),
+            "provider": self.provider,
+            "status": status,
+            "public_url": public_url,
+            "error": self.error,
+            "restart_count": self.restart_count,
+            "last_exit_code": self.last_exit_code,
+        }
+
+    def stop(self):
+        self._stop_event.set()
+        if not self.process or self.process.poll() is not None:
+            return
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=3)
+
+
+class PublicTunnelManager:
+    primary_cls = QuickTunnel
+    fallback_cls = BoreTunnel
+
+    def __init__(self, target_url, *, mode="auto", allow_download=True, fallback=None):
+        self.target_url = target_url
+        self.mode = mode
+        self.allow_download = allow_download
+        self.fallback_mode = default_tunnel_fallback() if fallback is None else str(fallback).strip().lower()
+        self.primary = self.primary_cls(
+            target_url,
+            mode=mode,
+            allow_download=allow_download,
+        )
+        self.fallback = None
+        self.active_provider = ""
+        self.error = ""
+        self._primary_stopped_for_fallback = False
+        self._lock = threading.Lock()
+
+    def start(self):
+        if not tunnel_enabled(self.mode):
+            clear_public_url()
+            return self
+        self.primary.start()
+        return self
+
+    def _fallback_enabled(self):
+        return tunnel_enabled(self.mode) and self.fallback_mode in {"auto", "bore", "1", "true", "yes", "on"}
+
+    def _ensure_fallback(self):
+        if not self._fallback_enabled():
+            return None
+        with self._lock:
+            if not self.fallback:
+                logger.warning(
+                    "Cloudflare Quick Tunnel hazir degil; Bore WAN fallback baslatiliyor."
+                )
+                self.fallback = self.fallback_cls(
+                    self.target_url,
+                    mode=self.mode,
+                    allow_download=self.allow_download,
+                )
+                self.fallback.start()
+            return self.fallback
+
+    def _stop_primary_for_fallback(self, url):
+        if self._primary_stopped_for_fallback:
+            write_public_url(url)
+            return
+        try:
+            self.primary.stop()
+            self._primary_stopped_for_fallback = True
+            logger.info("Bore WAN fallback dogrulandi; Cloudflare denemeleri durduruldu.")
+        except Exception:
+            logger.debug("Cloudflare tunnel fallback sonrasi durdurulamadi.", exc_info=True)
+        write_public_url(url)
+
+    def wait_for_url(self, timeout=0):
+        url = self.primary.wait_for_url(timeout=timeout)
+        if url:
+            self.active_provider = "cloudflared"
+            write_public_url(url)
+            return url
+
+        fallback = self._ensure_fallback()
+        if not fallback:
+            return ""
+        url = fallback.wait_for_url(timeout=timeout)
+        if url:
+            self.active_provider = "bore"
+            write_public_url(url)
+        return url
+
+    def get_public_url(self, *, validate=True):
+        url = self.primary.get_public_url(validate=validate)
+        if url:
+            self.active_provider = "cloudflared"
+            write_public_url(url)
+            return url
+
+        fallback = self._ensure_fallback()
+        if not fallback:
+            return ""
+        url = fallback.get_public_url(validate=validate)
+        if url:
+            self.active_provider = "bore"
+            if validate:
+                self._stop_primary_for_fallback(url)
+            else:
+                write_public_url(url)
+        return url
+
+    def snapshot(self, *, validate=True):
+        primary_snapshot = self.primary.snapshot(validate=validate)
+        fallback_snapshot = self.fallback.snapshot(validate=validate) if self.fallback else None
+        public_url = primary_snapshot.get("public_url") or (
+            fallback_snapshot.get("public_url") if fallback_snapshot else ""
+        )
+        provider = "cloudflared" if primary_snapshot.get("public_url") else (
+            "bore" if fallback_snapshot and fallback_snapshot.get("public_url") else self.active_provider
+        )
+        if public_url:
+            status = "hazir"
+            error = ""
+            write_public_url(public_url)
+        else:
+            status = primary_snapshot.get("status", "kapali")
+            error_parts = [
+                item.get("error", "")
+                for item in (primary_snapshot, fallback_snapshot or {})
+                if item and item.get("error")
+            ]
+            error = "; ".join(dict.fromkeys(error_parts))
+
+        return {
+            "enabled": tunnel_enabled(self.mode),
+            "provider": provider,
+            "status": status,
+            "public_url": public_url,
+            "error": error,
+            "restart_count": primary_snapshot.get("restart_count", 0)
+            + ((fallback_snapshot or {}).get("restart_count", 0)),
+            "last_exit_code": (fallback_snapshot or {}).get("last_exit_code")
+            if provider == "bore"
+            else primary_snapshot.get("last_exit_code"),
+            "primary_provider": "cloudflared",
+            "primary_status": primary_snapshot.get("status", ""),
+            "primary_error": primary_snapshot.get("error", ""),
+            "fallback_provider": "bore" if self._fallback_enabled() else "",
+            "fallback_status": (fallback_snapshot or {}).get("status", ""),
+            "fallback_error": (fallback_snapshot or {}).get("error", ""),
+            "fallback_last_exit_code": (fallback_snapshot or {}).get("last_exit_code"),
+        }
+
+    def stop(self):
+        try:
+            self.primary.stop()
+        finally:
+            if self.fallback:
+                self.fallback.stop()
+            clear_public_url()
+
+
 def start_public_tunnel(target_url, *, mode=None, allow_download=None):
-    tunnel = QuickTunnel(
+    tunnel = PublicTunnelManager(
         target_url,
         mode=default_tunnel_mode() if mode is None else mode,
         allow_download=auto_download_enabled() if allow_download is None else bool(allow_download),

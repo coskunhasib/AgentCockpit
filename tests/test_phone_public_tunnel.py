@@ -36,6 +36,36 @@ class PhonePublicTunnelTests(unittest.TestCase):
                 "cloudflared-darwin-arm64.tgz"
             )
         )
+        self.assertTrue(
+            phone_public_tunnel.bore_download_url("Windows", "AMD64").endswith(
+                "bore-v0.6.0-x86_64-pc-windows-msvc.zip"
+            )
+        )
+        self.assertTrue(
+            phone_public_tunnel.bore_download_url("Linux", "x86_64").endswith(
+                "bore-v0.6.0-x86_64-unknown-linux-musl.tar.gz"
+            )
+        )
+        self.assertTrue(
+            phone_public_tunnel.bore_download_url("Darwin", "arm64").endswith(
+                "bore-v0.6.0-aarch64-apple-darwin.tar.gz"
+            )
+        )
+
+    def test_extract_bore_public_url_from_output(self):
+        self.assertEqual(
+            phone_public_tunnel.extract_bore_public_url(
+                "INFO connected to server remote_port=8518",
+                public_host="159.223.110.159",
+            ),
+            "http://159.223.110.159:8518",
+        )
+        self.assertEqual(
+            phone_public_tunnel.extract_bore_public_url(
+                "INFO listening at 159.223.110.159:8518",
+            ),
+            "http://159.223.110.159:8518",
+        )
 
     def test_tunnel_restart_limit_defaults_to_unlimited(self):
         with patch.dict("os.environ", {}, clear=True):
@@ -186,6 +216,77 @@ class PhonePublicTunnelTests(unittest.TestCase):
         restart.assert_not_called()
         self.assertEqual(tunnel.public_url, "https://propagating.trycloudflare.com")
         self.assertEqual(tunnel.status, "dogrulaniyor")
+
+    def test_public_tunnel_manager_uses_bore_fallback_when_primary_has_no_url(self):
+        class Primary:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return self
+
+            def wait_for_url(self, timeout=0):
+                return ""
+
+            def get_public_url(self, *, validate=True):
+                return ""
+
+            def snapshot(self, *, validate=True):
+                return {
+                    "enabled": True,
+                    "status": "baslatiliyor",
+                    "public_url": "",
+                    "error": "no url",
+                    "restart_count": 0,
+                    "last_exit_code": None,
+                }
+
+            def stop(self):
+                pass
+
+        class Fallback:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                return self
+
+            def wait_for_url(self, timeout=0):
+                return "http://159.223.110.159:8518"
+
+            def get_public_url(self, *, validate=True):
+                return "http://159.223.110.159:8518"
+
+            def snapshot(self, *, validate=True):
+                return {
+                    "enabled": True,
+                    "status": "hazir",
+                    "public_url": "http://159.223.110.159:8518",
+                    "error": "",
+                    "restart_count": 0,
+                    "last_exit_code": None,
+                }
+
+            def stop(self):
+                pass
+
+        with patch.object(phone_public_tunnel.PublicTunnelManager, "primary_cls", Primary), patch.object(
+            phone_public_tunnel.PublicTunnelManager,
+            "fallback_cls",
+            Fallback,
+        ), patch("phone_public_tunnel.write_public_url") as write_url:
+            tunnel = phone_public_tunnel.PublicTunnelManager(
+                "http://127.0.0.1:8765",
+                fallback="bore",
+            ).start()
+
+            self.assertEqual(
+                tunnel.wait_for_url(timeout=0.01),
+                "http://159.223.110.159:8518",
+            )
+
+        self.assertEqual(tunnel.active_provider, "bore")
+        write_url.assert_called_with("http://159.223.110.159:8518")
 
 
 if __name__ == "__main__":

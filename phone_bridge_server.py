@@ -215,11 +215,17 @@ def _diagnostic_snapshot(server=None):
             tunnel = {"enabled": True, "status": "snapshot_error", "error": _redact_capture_error(exc)}
         snapshot["public_tunnel"] = {
             "enabled": tunnel.get("enabled", False),
+            "provider": tunnel.get("provider", ""),
             "status": tunnel.get("status", ""),
             "has_public_url": bool(tunnel.get("public_url")),
             "error": tunnel.get("error", ""),
             "restart_count": tunnel.get("restart_count", 0),
             "last_exit_code": tunnel.get("last_exit_code", None),
+            "primary_status": tunnel.get("primary_status", ""),
+            "primary_error": tunnel.get("primary_error", ""),
+            "fallback_status": tunnel.get("fallback_status", ""),
+            "fallback_error": tunnel.get("fallback_error", ""),
+            "fallback_last_exit_code": tunnel.get("fallback_last_exit_code", None),
         }
         try:
             snapshot["trusted_devices"] = server.trusted_devices.count()
@@ -1362,10 +1368,16 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "pairing_local_only": True,
                     "public_url": tunnel_snapshot.get("public_url", ""),
                     "public_tunnel_enabled": tunnel_snapshot.get("enabled", False),
+                    "public_tunnel_provider": tunnel_snapshot.get("provider", ""),
                     "public_tunnel_status": tunnel_snapshot.get("status", "kapali"),
                     "public_tunnel_error": tunnel_snapshot.get("error", ""),
                     "public_tunnel_restart_count": tunnel_snapshot.get("restart_count", 0),
                     "public_tunnel_last_exit_code": tunnel_snapshot.get("last_exit_code"),
+                    "public_tunnel_primary_status": tunnel_snapshot.get("primary_status", ""),
+                    "public_tunnel_primary_error": tunnel_snapshot.get("primary_error", ""),
+                    "public_tunnel_fallback_status": tunnel_snapshot.get("fallback_status", ""),
+                    "public_tunnel_fallback_error": tunnel_snapshot.get("fallback_error", ""),
+                    "public_tunnel_fallback_last_exit_code": tunnel_snapshot.get("fallback_last_exit_code"),
                     "wan_pwa_available": bool(tunnel_snapshot.get("public_url")),
                     "telegram_wan_available": bool(_telegram_bot_url()),
                     "active_streams": self.server.active_stream_count(),
