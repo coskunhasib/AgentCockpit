@@ -1876,43 +1876,62 @@
         streamAbort = controller;
         // Watchdog: the server resolves each long-poll within ~15s, so if 20s
         // pass the connection has silently stalled — abort so the loop recovers.
+        // It must span the *body* read too: fetch() resolves as soon as headers
+        // arrive, so a server that returns 200 then stalls mid-body (common over
+        // a flaky tunnel) would otherwise hang `response.blob()` forever with the
+        // watchdog already cleared and streamAbort nulled (so even a manual Sync
+        // couldn't abort it). Keep both alive until the frame is fully read.
         const watchdog = setTimeout(() => controller.abort(), 20000);
-        let response;
         try {
-          response = await fetch(buildFrameUrl(), { cache: 'no-store', signal: controller.signal });
-        } catch (error) {
-          if (streamForceRefresh) {
-            // Intentional abort from a manual Sync; the loop re-requests a fresh frame.
-            streamForceRefresh = false;
+          let response;
+          try {
+            response = await fetch(buildFrameUrl(), { cache: 'no-store', signal: controller.signal });
+          } catch (error) {
+            if (streamForceRefresh) {
+              // Intentional abort from a manual Sync; the loop re-requests a fresh frame.
+              streamForceRefresh = false;
+              consecutiveErrors = 0;
+              return;
+            }
+            const networkError = new Error('Sunucuya ulasilamadi');
+            networkError.network = true;
+            throw networkError;
+          }
+          if (response.status === 404) {
+            const missing = new Error('Akis ucu yok');
+            missing.http = 404;
+            throw missing;
+          }
+          if (response.status === 204) {
+            // Screen unchanged within the server window; keep the loop alive.
+            streamSig = response.headers.get('X-Frame-Sig') || streamSig;
             consecutiveErrors = 0;
+            streamFailures = 0;
+            markFrameConnected();
             return;
           }
-          const networkError = new Error('Sunucuya ulasilamadi');
-          networkError.network = true;
-          throw networkError;
+          if (!response.ok) {
+            throw await errorFromResponse(response, `HTTP ${response.status}`);
+          }
+          let blob;
+          try {
+            blob = await response.blob();
+          } catch (error) {
+            if (streamForceRefresh) {
+              streamForceRefresh = false;
+              consecutiveErrors = 0;
+              return;
+            }
+            const networkError = new Error('Goruntu akisi yarida kesildi');
+            networkError.network = true;
+            throw networkError;
+          }
+          consecutiveErrors = 0;
+          renderBinaryFrame(blob, response, startedAt);
         } finally {
           clearTimeout(watchdog);
           streamAbort = null;
         }
-        if (response.status === 404) {
-          const missing = new Error('Akis ucu yok');
-          missing.http = 404;
-          throw missing;
-        }
-        if (response.status === 204) {
-          // Screen unchanged within the server window; keep the loop alive.
-          streamSig = response.headers.get('X-Frame-Sig') || streamSig;
-          consecutiveErrors = 0;
-          streamFailures = 0;
-          markFrameConnected();
-          return;
-        }
-        if (!response.ok) {
-          throw await errorFromResponse(response, `HTTP ${response.status}`);
-        }
-        const blob = await response.blob();
-        consecutiveErrors = 0;
-        renderBinaryFrame(blob, response, startedAt);
       }
 
       async function refreshSessionInfo() {

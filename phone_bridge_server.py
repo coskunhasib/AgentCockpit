@@ -8,6 +8,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import subprocess
 import sys
@@ -1061,16 +1062,26 @@ class ActionDedup:
     of triggering the desktop action a second time.
     """
 
-    def __init__(self, ttl_seconds=30.0, max_entries=256, wait_timeout=15.0):
+    def __init__(self, ttl_seconds=30.0, max_entries=256, wait_timeout=15.0, inflight_ttl=60.0):
         self._cond = threading.Condition()
         self._done = {}          # request_id -> (timestamp, response)
-        self._inflight = set()   # request_ids currently being applied
+        self._inflight = {}      # request_id -> acquired timestamp
         self._order = deque()    # insertion order of completed ids for eviction
         self._ttl = ttl_seconds
         self._max = max_entries
         self._wait_timeout = wait_timeout
+        # Safety net: if an owner ever fails to call complete()/abort() (e.g. an
+        # unexpected error escapes the action handler), its reservation would
+        # otherwise live forever and later block retries of the same request_id.
+        # No real action takes anywhere near this long, so evicting stale
+        # in-flight ids cannot drop a still-running one.
+        self._inflight_ttl = inflight_ttl
 
     def _evict_locked(self, now):
+        if self._inflight:
+            stale = [rid for rid, ts in self._inflight.items() if now - ts > self._inflight_ttl]
+            for rid in stale:
+                self._inflight.pop(rid, None)
         while self._order:
             rid = self._order[0]
             entry = self._done.get(rid)
@@ -1107,7 +1118,7 @@ class ActionDedup:
                 if entry is not None:
                     return (entry[1], False)
                 if request_id not in self._inflight:
-                    self._inflight.add(request_id)
+                    self._inflight[request_id] = now
                     return (None, True)
                 remaining = deadline - now
                 if remaining <= 0:
@@ -1122,7 +1133,7 @@ class ActionDedup:
             if request_id not in self._done:
                 self._order.append(request_id)
             self._done[request_id] = (now, response)
-            self._inflight.discard(request_id)
+            self._inflight.pop(request_id, None)
             self._evict_locked(now)
             self._cond.notify_all()
 
@@ -1130,7 +1141,7 @@ class ActionDedup:
         if not request_id:
             return
         with self._cond:
-            self._inflight.discard(request_id)
+            self._inflight.pop(request_id, None)
             self._cond.notify_all()
 
 
@@ -1175,6 +1186,15 @@ def _expired_page():
 
 class PhoneBridgeHandler(BaseHTTPRequestHandler):
     server_version = "AgentCockpitPhone/2.0"
+    # Bound the per-connection socket timeout so a slow/stalled client (e.g. a
+    # slowloris sending headers or a body byte-by-byte, or one that stops
+    # reading mid-stream) cannot pin a handler thread forever. Active screen
+    # streams write a frame or keepalive at least once per second, so this never
+    # trips a healthy stream; a stalled write raises OSError, which the stream
+    # loop already treats as a clean disconnect.
+    timeout = max(15, get_int("PHONE_BRIDGE_SOCKET_TIMEOUT_SEC"))
+    # Cap request bodies so a huge/forged Content-Length cannot exhaust memory.
+    MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
 
     def log_message(self, format, *args):
         logger.info(f"{self.address_string()} - {format % args}")
@@ -1387,12 +1407,45 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             raw_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raw_length = 0
+        if raw_length < 0:
+            raw_length = 0
+        if raw_length > self.MAX_REQUEST_BODY_BYTES:
+            self._json_response(
+                {"status": "payload_too_large", "message": "Request body too large."},
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return None
 
         try:
-            return json.loads(self.rfile.read(raw_length).decode("utf-8") or "{}")
-        except json.JSONDecodeError:
+            raw_body = self.rfile.read(raw_length)
+        except (OSError, ValueError):
+            # Socket timeout / reset while reading the (possibly stalled) body.
+            return None
+
+        try:
+            return json.loads(raw_body.decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(
                 {"status": "bad_request", "message": "Invalid JSON body."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return None
+
+    def _coerce_minutes(self, payload):
+        """Parse the client-supplied ``minutes`` field, replying 400 on garbage.
+
+        Returns the int on success, or ``None`` after sending a bad-request
+        response (so the caller just returns). A bare int() on attacker JSON
+        would otherwise raise and tear down the connection with no response.
+        """
+        raw_minutes = payload.get("minutes", self.server.default_session_minutes)
+        if raw_minutes in (None, ""):
+            return self.server.default_session_minutes
+        try:
+            return int(raw_minutes)
+        except (TypeError, ValueError):
+            self._json_response(
+                {"status": "bad_request", "message": "minutes must be an integer."},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return None
@@ -1893,8 +1946,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if payload is None:
                 return
-            raw_minutes = payload.get("minutes", self.server.default_session_minutes)
-            minutes = int(raw_minutes) if raw_minutes not in (None, "") else self.server.default_session_minutes
+            minutes = self._coerce_minutes(payload)
+            if minutes is None:
+                return
             label = str(payload.get("label", "pair-qr")).strip()[:80] or "pair-qr"
             ttl_seconds = None if minutes <= 0 else minutes * 60
             session = self.server.session_links.create(ttl_seconds, label=label)
@@ -1919,8 +1973,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if payload is None:
                 return
-            raw_minutes = payload.get("minutes", self.server.default_session_minutes)
-            minutes = int(raw_minutes) if raw_minutes not in (None, "") else self.server.default_session_minutes
+            minutes = self._coerce_minutes(payload)
+            if minutes is None:
+                return
             label = str(payload.get("label", "phone-client")).strip()[:80] or "phone-client"
             ttl_seconds = None if minutes <= 0 else minutes * 60
             session = self.server.session_links.create(ttl_seconds, label=label)
@@ -1964,9 +2019,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             self._json_response(cached_response)
             return
 
-        delay = max(0.0, min(2.0, float(payload.get("delay", 0.15))))
-
         try:
+            # Parse delay inside the try so the except path below releases the
+            # in-flight reservation (action_dedup.abort) on bad input; a
+            # malformed value just falls back to the default instead of leaking.
+            try:
+                delay = max(0.0, min(2.0, float(payload.get("delay", 0.15))))
+            except (TypeError, ValueError):
+                delay = 0.15
+
             if action_type == "click":
                 _perform_click(
                     payload.get("x", 0.0),
@@ -2234,6 +2295,17 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     print(
         "Not: Varsayilan telefon linki sinirsizdir. Yeni link uretmek icin /api/session-links endpoint'ini admin token ile cagirabilirsin."
     )
+
+    # Translate SIGTERM (how launcher.py / runner.sh / kill stop us) into the
+    # same clean shutdown as Ctrl-C, so the public tunnel child is always
+    # stopped instead of being orphaned as a live internet-facing tunnel.
+    def _handle_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        # Not running in the main thread / signal unsupported on this platform.
+        pass
 
     try:
         server.serve_forever()

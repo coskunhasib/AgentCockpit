@@ -4,7 +4,7 @@ import contextvars
 import functools
 import logging
 import os
-import shlex
+import re
 import sys
 from pathlib import Path
 
@@ -884,9 +884,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=get_claude_keyboard(),
                 )
                 return
-            handle = find_claude_window()
-            if handle and focus_window(handle):
-                if click_new_session():
+            # These resolve to blocking osascript subprocess calls + sleeps on
+            # macOS; run them off the event loop so the bot stays responsive.
+            handle = await _run_in_thread_with_context(find_claude_window)
+            if handle and await _run_in_thread_with_context(focus_window, handle):
+                if await _run_in_thread_with_context(click_new_session):
                     await _run_in_thread_with_context(sync_claude_settings)
                     await update.message.reply_text(
                         "Yeni session acildi.", reply_markup=get_claude_keyboard()
@@ -1161,17 +1163,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg in BUTTON_SCREENSHOT or msg == "📸 Ekran Al":
         status = await update.message.reply_text("Screenshot aliniyor...")
         path = SystemOps.take_screenshot()
-        if path:
-            try:
+        try:
+            if path:
                 with open(path, "rb") as photo_file:
                     await context.bot.send_photo(
                         chat_id=update.effective_chat.id, photo=photo_file
                     )
-            finally:
+            else:
+                await update.message.reply_text("Screenshot alinamadi.")
+        finally:
+            if path:
                 SystemOps.clean_up(path)
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id, message_id=status.message_id
-                )
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id, message_id=status.message_id
+            )
 
     elif msg in {"PC Restart", "🔄 PC Restart"}:
         await update.message.reply_text("PC yeniden baslatiliyor...")
@@ -1293,9 +1298,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Yeni session secildi. Sonraki prompt Claude CLI tarafinda yeni bir oturum baslatacak."
             )
             return
-        handle = find_claude_window()
-        if handle and focus_window(handle):
-            if click_new_session():
+        # Offload the blocking osascript window calls off the event loop.
+        handle = await _run_in_thread_with_context(find_claude_window)
+        if handle and await _run_in_thread_with_context(focus_window, handle):
+            if await _run_in_thread_with_context(click_new_session):
                 await _run_in_thread_with_context(sync_claude_settings)
                 await query.edit_message_text("Yeni session acildi.")
             else:
@@ -1476,6 +1482,93 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot.lock")
 
+# fd of the held single-instance flock (POSIX). Kept open for the process
+# lifetime so the exclusive lock persists; released on exit.
+_LOCK_FD = None
+
+
+def _release_lock_fd():
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        try:
+            os.close(_LOCK_FD)
+        except OSError:
+            pass
+        _LOCK_FD = None
+
+
+def _acquire_singleton_lock(my_pid, *, retries=8, retry_delay=1.0):
+    """Atomically claim the single-instance lock.
+
+    Holds an exclusive ``flock`` for the process lifetime. This closes the
+    check-then-write TOCTOU (two near-simultaneous launches could both "win" the
+    old plain write) and removes stale-lock hazards entirely: if the holder dies
+    the OS releases the lock automatically. Returns True if acquired.
+
+    On Windows (no ``fcntl``) it falls back to a best-effort write; there the
+    system-wide process scan is the primary guard.
+    """
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        return True
+
+    if sys.platform == "win32":
+        with open(LOCK_FILE, "w", encoding="utf-8") as f:
+            f.write(str(my_pid))
+        return True
+
+    import fcntl
+
+    for attempt in range(max(1, retries)):
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as exc:
+            logger.warning(f"Lock dosyasi acilamadi: {exc}")
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+                continue
+            return False
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(my_pid).encode("utf-8"))
+            os.fsync(fd)
+        except OSError:
+            pass
+        _LOCK_FD = fd
+        return True
+    return False
+
+
+def _pid_command(pid):
+    """Best-effort command line of `pid`, or '' if it cannot be determined."""
+    if not pid or pid <= 0:
+        return ""
+    import subprocess
+
+    try:
+        if sys.platform != "win32":
+            out = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(int(pid))],
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return out.strip()
+        cmd_args = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
+        ]
+        out = subprocess.check_output(cmd_args, encoding="utf-8", errors="ignore")
+        return out.strip()
+    except Exception:
+        return ""
+
 
 def _cleanup_lock():
     try:
@@ -1486,6 +1579,8 @@ def _cleanup_lock():
                 os.remove(LOCK_FILE)
     except Exception:
         pass
+    finally:
+        _release_lock_fd()
 
 
 def _is_pid_alive(pid):
@@ -1504,24 +1599,28 @@ def _is_pid_alive(pid):
 
 
 def _is_agentcockpit_bot_command(cmdline):
-    try:
-        parts = shlex.split(cmdline, posix=sys.platform != "win32")
-    except ValueError:
-        parts = cmdline.split()
-    if len(parts) < 2:
+    if not cmdline:
         return False
-
-    executable = Path(parts[0].strip("\"'")).name.lower()
-    if "python" not in executable:
+    lowered = cmdline.lower()
+    # A python interpreter actually being launched (executable immediately
+    # followed by an argument), not merely the word "python" appearing inside a
+    # grep/ps probe string.
+    if not re.search(r"python[\w.]*(?:\.exe)?[\"']?\s", lowered):
         return False
-
-    for arg in parts[1:]:
-        cleaned = arg.strip("\"'")
-        if Path(cleaned).name.lower() not in {"main.py", "telegram_ux.py"}:
-            continue
-        if "agentcockpit" in cleaned.lower() or str(Path(__file__).resolve().parents[1]) in cleaned:
-            return True
-    return False
+    # ...running one of our entry scripts as a real file path (a path separator
+    # precedes the name). A shell probe that only mentions "main.py" inside a
+    # quoted pattern has no separator and is correctly rejected.
+    if not any(
+        marker in lowered
+        for marker in ("/main.py", "\\main.py", "/telegram_ux.py", "\\telegram_ux.py")
+    ):
+        return False
+    # ...from an AgentCockpit install. Substring tests (not shlex.split) so an
+    # install path that contains spaces — e.g. ".../New project/..." — is matched
+    # correctly; shlex would split the path on the space and drop the python
+    # executable, making a real running instance look unrelated.
+    project_root = str(Path(__file__).resolve().parents[1]).lower()
+    return "agentcockpit" in lowered or project_root in lowered
 
 
 def _kill_old_instances():
@@ -1622,7 +1721,18 @@ def _kill_old_instances():
             with open(LOCK_FILE, "r", encoding="utf-8") as f:
                 old_pid = int(f.read().strip())
             if old_pid != my_pid and _is_pid_alive(old_pid):
-                if is_autostart:
+                # Verify the PID actually belongs to an AgentCockpit process
+                # before killing it. A stale lock (crash/power-loss skips
+                # _cleanup_lock) can point at a PID the OS later reused for an
+                # unrelated process; killing that blindly would terminate a
+                # random user process.
+                old_cmd = _pid_command(old_pid)
+                if not (old_cmd and _is_agentcockpit_bot_command(old_cmd)):
+                    logger.warning(
+                        f"Lock dosyasindaki PID {old_pid} bir AgentCockpit sureci "
+                        "degil veya dogrulanamadi; bayat lock olarak gecersiz sayiliyor."
+                    )
+                elif is_autostart:
                     record_runtime_event(
                         "bot_engine_lock_process_detected",
                         pid=old_pid,
@@ -1640,8 +1750,13 @@ def _kill_old_instances():
         except (ValueError, OSError):
             pass
 
-    with open(LOCK_FILE, "w", encoding="utf-8") as f:
-        f.write(str(os.getpid()))
+    if not _acquire_singleton_lock(my_pid):
+        record_runtime_event("bot_engine_lock_contended", action="exit")
+        logger.info(
+            "AgentCockpit tek-ornek kilidi baska bir aktif surec tarafindan tutuluyor; "
+            "cakismayi onlemek icin baslatma erteleniyor."
+        )
+        sys.exit(0)
 
     import atexit
     import signal

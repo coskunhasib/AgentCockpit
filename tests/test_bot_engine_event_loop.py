@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from core import bot_engine
@@ -102,6 +103,32 @@ class BotEngineEventLoopTests(unittest.TestCase):
         )
 
         self.assertTrue(bot_engine._is_agentcockpit_bot_command(cmd))
+
+    def test_agentcockpit_command_detection_handles_install_path_with_spaces(self):
+        # Regression: shlex.split() broke an install path containing a space
+        # (".../New project/..."), so a genuine running instance was treated as
+        # unrelated and never recognized. Match it against the real project root.
+        root = str(Path(bot_engine.__file__).resolve().parents[1])
+        cmd = f"{root}/venv/bin/python {root}/main.py"
+        self.assertTrue(bot_engine._is_agentcockpit_bot_command(cmd))
+
+        framework = (
+            "/Library/Frameworks/Python.framework/Versions/3.13/Resources/"
+            "Python.app/Contents/MacOS/Python"
+        )
+        self.assertTrue(
+            bot_engine._is_agentcockpit_bot_command(f"{framework} {root}/main.py --autostart")
+        )
+
+    def test_agentcockpit_command_detection_rejects_unrelated_python(self):
+        # A python process that merely lives under a similar path but is not our
+        # entry script must not be matched (would risk killing a random process).
+        self.assertFalse(
+            bot_engine._is_agentcockpit_bot_command("/usr/bin/python3 -m http.server 8000")
+        )
+        self.assertFalse(
+            bot_engine._is_agentcockpit_bot_command("/usr/bin/python3 /tmp/other/main.py")
+        )
 
     def test_bot_instance_cleanup_skips_when_launcher_already_did_it(self):
         with patch.dict(os.environ, {"AGENTCOCKPIT_BOT_CLEANUP_DONE": "1"}, clear=False), patch(

@@ -292,7 +292,7 @@ def _load_phone_notification_state():
     except FileNotFoundError:
         return {}
     except Exception:
-        legacy.logger.warning("Telefon bildirim state okunamadi", exc_info=True)
+        legacy.logger.opt(exception=True).warning("Telefon bildirim state okunamadi")
         return {}
 
 
@@ -304,7 +304,7 @@ def _save_phone_notification_state(state):
             encoding="utf-8",
         )
     except Exception:
-        legacy.logger.warning("Telefon bildirim state yazilamadi", exc_info=True)
+        legacy.logger.opt(exception=True).warning("Telefon bildirim state yazilamadi")
 
 
 def _remember_phone_chat(chat_id):
@@ -942,6 +942,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data if query else ""
     if query and isinstance(data, str) and data.startswith("phone:"):
+        # Authorize before doing any privileged work or persisting the caller's
+        # chat as a notification target. These phone: actions mint working
+        # remote-control links and toggle the public WAN tunnel, so they must be
+        # gated the same way the original callback handler gates everything else
+        # (core.bot_engine.handle_callback). The phone: branch returns before the
+        # original handler runs, so the gate has to live here too.
+        user_id = str(query.from_user.id) if query.from_user else None
+        if legacy.ALLOWED_IDS and user_id not in legacy.ALLOWED_IDS:
+            await query.answer()
+            return
         chat_id = query.message.chat_id if query and query.message else None
         _remember_phone_chat(chat_id)
         await query.answer()

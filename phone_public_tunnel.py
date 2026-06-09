@@ -465,6 +465,26 @@ def clear_public_url():
         logger.debug("Public tunnel URL dosyasi temizlenemedi.", exc_info=True)
 
 
+def _terminate_process(process):
+    """Best-effort terminate+kill of a tunnel subprocess.
+
+    Used to reap a child that was spawned but must not be adopted (because
+    stop() raced the launch); leaving it running would orphan an
+    internet-facing tunnel.
+    """
+    if not process or process.poll() is not None:
+        return
+    try:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=3)
+    except Exception:
+        logger.debug("Tunnel process sonlandirilamadi.", exc_info=True)
+
+
 class QuickTunnel:
     def __init__(self, target_url, *, mode="auto", allow_download=True):
         self.target_url = target_url.rstrip("/")
@@ -527,6 +547,8 @@ class QuickTunnel:
     def _launch_process(self):
         if not self._binary:
             raise RuntimeError("cloudflared binary hazir degil")
+        if self._stop_event.is_set():
+            return
 
         command = [
             str(self._binary),
@@ -550,17 +572,29 @@ class QuickTunnel:
             env=cloudflared_process_env(force_go_dns=self._force_go_dns),
         )
         with self._lock:
-            self.process = process
-            self.public_url = ""
-            self.status = "baslatiliyor"
-            self.error = ""
-            self.last_exit_code = None
-            self._validation_checked_at = 0.0
-            self._validation_ok = False
-            self._validation_failures = 0
-            self._url_seen_at = 0.0
-            self._url_event.clear()
-            clear_public_url()
+            if self._stop_event.is_set():
+                # stop() raced this (re)launch. Do NOT adopt the process: stop()
+                # has already terminated whatever process it could see, so a
+                # too-late adoption would leak an orphaned, internet-facing
+                # tunnel that nothing ever terminates. Reap it below instead.
+                adopted = False
+            else:
+                self.process = process
+                self.public_url = ""
+                self.status = "baslatiliyor"
+                self.error = ""
+                self.last_exit_code = None
+                self._validation_checked_at = 0.0
+                self._validation_ok = False
+                self._validation_failures = 0
+                self._url_seen_at = 0.0
+                self._url_event.clear()
+                clear_public_url()
+                adopted = True
+
+        if not adopted:
+            _terminate_process(process)
+            return
 
         self._reader_thread = threading.Thread(
             target=self._read_output,
@@ -610,10 +644,15 @@ class QuickTunnel:
             self._validation_failures = 0
             self._url_seen_at = 0.0
             self._url_event.clear()
-            clear_public_url()
             if self._stop_event.is_set():
+                # Do NOT clear the shared public-url file here. stop() may have
+                # been called as part of a fallback handover (cloudflared ->
+                # Bore); the manager clears/writes the file itself and the
+                # fallback URL may already be written. Clearing now would erase
+                # the live Bore URL. stop() handles clearing for a real shutdown.
                 self.status = "kapali"
                 return
+            clear_public_url()
             self.status = "yeniden_baslatiliyor"
             self.error = f"cloudflared cikti: {exit_code}"
 
@@ -778,19 +817,19 @@ class QuickTunnel:
     def stop(self):
         self._stop_event.set()
         clear_public_url()
+        # Read self.process under the SAME lock _launch_process adopts it with.
+        # Combined with the in-lock _stop_event re-check in _launch_process this
+        # fully serializes stop() against a racing relaunch: either we observe
+        # the freshly adopted process here and terminate it, or the relaunch
+        # observes the set event and refuses to adopt. A lock-free read here
+        # could miss a just-adopted process and orphan an internet-facing tunnel.
         with self._lock:
             self.public_url = ""
             self.status = "kapali"
             self.error = ""
             self._url_event.clear()
-        if not self.process or self.process.poll() is not None:
-            return
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=3)
+            process = self.process
+        _terminate_process(process)
 
 
 class BoreTunnel:
@@ -859,6 +898,8 @@ class BoreTunnel:
     def _launch_process(self):
         if not self._binary:
             raise RuntimeError("bore binary hazir degil")
+        if self._stop_event.is_set():
+            return
 
         remote_port = self.configured_remote_port or str(random.randint(20000, 60999))
         self.remote_port = remote_port
@@ -893,12 +934,23 @@ class BoreTunnel:
         )
         expected_url = f"http://{_format_http_host(self.public_host)}:{remote_port}"
         with self._lock:
-            self.process = process
-            self.public_url = expected_url
-            self.status = "dogrulaniyor"
-            self.error = ""
-            self.last_exit_code = None
-            self._url_event.set()
+            if self._stop_event.is_set():
+                # stop() raced this (re)launch; do not adopt, reap it below so it
+                # cannot survive as an orphaned WAN tunnel.
+                adopted = False
+            else:
+                self.process = process
+                self.public_url = expected_url
+                self.status = "dogrulaniyor"
+                self.error = ""
+                self.last_exit_code = None
+                self._url_event.set()
+                adopted = True
+
+        if not adopted:
+            _terminate_process(process)
+            return
+
         write_public_url(expected_url)
         logger.info(f"bore beklenen public URL: {expected_url}")
 
@@ -1014,14 +1066,12 @@ class BoreTunnel:
 
     def stop(self):
         self._stop_event.set()
-        if not self.process or self.process.poll() is not None:
-            return
-        self.process.terminate()
-        try:
-            self.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            self.process.kill()
-            self.process.wait(timeout=3)
+        # Read self.process under the lock so a relaunch racing stop() cannot
+        # adopt a freshly spawned process we then fail to terminate (orphaned
+        # WAN tunnel); see QuickTunnel.stop for the full reasoning.
+        with self._lock:
+            process = self.process
+        _terminate_process(process)
 
 
 class PublicTunnelManager:

@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import core.bot_engine as legacy
@@ -117,6 +118,112 @@ class PhoneNotificationTests(unittest.TestCase):
         finally:
             ux.PHONE_NOTIFICATION_STATE_FILE = original_path
             ux.create_phone_link = original_create_phone_link
+
+
+class PhoneCallbackAuthTests(unittest.TestCase):
+    """The phone: callback branch mints remote-control links and toggles the
+    public WAN tunnel; it must enforce ALLOWED_IDS before doing anything."""
+
+    class _Query:
+        def __init__(self, data, user_id, chat_id=999):
+            self.data = data
+            self.from_user = SimpleNamespace(id=user_id)
+            self.message = SimpleNamespace(chat_id=chat_id)
+            self.answered = False
+            self.edits = []
+
+        async def answer(self, *args, **kwargs):
+            self.answered = True
+
+        async def edit_message_text(self, text, **kwargs):
+            self.edits.append(text)
+
+    def _run(self, data, user_id):
+        """Invoke the override handle_callback with privileged ops tracked."""
+        query = self._Query(data, user_id)
+        update = SimpleNamespace(callback_query=query)
+        context = SimpleNamespace(bot=SimpleNamespace())
+        calls = []
+
+        def _track_create(*args, **kwargs):
+            calls.append("create_phone_link")
+            return self_link_payload()
+
+        async def _track_wan_start(*args, **kwargs):
+            calls.append("start_wan_session")
+            return True
+
+        async def _track_wan_stop(*args, **kwargs):
+            calls.append("stop_wan_session")
+            return True
+
+        def self_link_payload():
+            return {
+                "expires_in_text": "Sinirsiz",
+                "lan_urls": [],
+                "local_url": "http://127.0.0.1:8765/app?token=t",
+                "public_url": "https://x.trycloudflare.com",
+                "wan_url": "https://x.trycloudflare.com/app?token=t",
+            }
+
+        with patch.object(ux, "create_phone_link", _track_create), patch.object(
+            ux, "start_wan_session", _track_wan_start
+        ), patch.object(ux, "stop_wan_session", _track_wan_stop), patch.object(
+            ux, "_phone_bridge_status_text", lambda **kwargs: "status"
+        ), patch.object(
+            ux, "_phone_status_markup", lambda **kwargs: None
+        ), patch.object(
+            ux, "_phone_link_text", lambda payload: "link"
+        ), patch.object(
+            ux, "_phone_link_markup", lambda payload, **kwargs: None
+        ):
+            asyncio.run(ux.handle_callback(update, context))
+        return query, calls
+
+    def test_unauthorized_phone_callbacks_are_blocked_and_not_enrolled(self):
+        original_path = ux.PHONE_NOTIFICATION_STATE_FILE
+        original_allowed = set(legacy.ALLOWED_IDS)
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                ux.PHONE_NOTIFICATION_STATE_FILE = Path(tmp_dir) / "phone_state.json"
+                legacy.ALLOWED_IDS.clear()
+                legacy.ALLOWED_IDS.update({"777"})
+
+                for data in ("phone:status", "phone:new:0", "phone:wan:start", "phone:wan:stop"):
+                    with self.subTest(data=data):
+                        query, calls = self._run(data, user_id=555)
+                        # The query is acknowledged but no privileged op runs...
+                        self.assertTrue(query.answered)
+                        self.assertEqual(calls, [])
+                        self.assertEqual(query.edits, [])
+                        # ...and the attacker's chat is never persisted as a target.
+                        state = ux._load_phone_notification_state()
+                        self.assertEqual(state.get("chat_ids", []), [])
+        finally:
+            ux.PHONE_NOTIFICATION_STATE_FILE = original_path
+            legacy.ALLOWED_IDS.clear()
+            legacy.ALLOWED_IDS.update(original_allowed)
+
+    def test_authorized_phone_callback_proceeds_and_enrolls_chat(self):
+        original_path = ux.PHONE_NOTIFICATION_STATE_FILE
+        original_allowed = set(legacy.ALLOWED_IDS)
+        try:
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                ux.PHONE_NOTIFICATION_STATE_FILE = Path(tmp_dir) / "phone_state.json"
+                legacy.ALLOWED_IDS.clear()
+                legacy.ALLOWED_IDS.update({"777"})
+
+                query, calls = self._run("phone:wan:start", user_id=777)
+                self.assertTrue(query.answered)
+                self.assertIn("start_wan_session", calls)
+                self.assertEqual(len(query.edits), 1)
+                self.assertEqual(
+                    ux._load_phone_notification_state().get("chat_ids", []), ["999"]
+                )
+        finally:
+            ux.PHONE_NOTIFICATION_STATE_FILE = original_path
+            legacy.ALLOWED_IDS.clear()
+            legacy.ALLOWED_IDS.update(original_allowed)
 
 
 if __name__ == "__main__":
