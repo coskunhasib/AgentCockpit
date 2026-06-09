@@ -98,11 +98,11 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC=120`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
-- `PHONE_PUBLIC_TUNNEL_FALLBACK=bore`
+- `PHONE_PUBLIC_TUNNEL_FALLBACK=off`
 - `PHONE_BORE_SERVER=159.223.110.159`
 - `PHONE_BORE_PUBLIC_HOST=159.223.110.159`
 - `PHONE_BORE_REMOTE_PORT=`
-  Opsiyonel. Bos birakilirsa uzak WAN portu otomatik secilir.
+  Opsiyonel Bore fallback icindir. Bos birakilirsa uzak WAN portu otomatik secilir.
 - `PHONE_BORE_RESTART_DELAY_SEC=3`
 - `PHONE_BORE_RESTART_MAX_DELAY_SEC=60`
 - `PHONE_KEEP_AWAKE=1`
@@ -124,7 +124,7 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
 - `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
 - `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
-- `PHONE_PUBLIC_TUNNEL_FALLBACK=bore`, Cloudflare Quick Tunnel URL uretemezse IP tabanli Bore fallback'ini baslatir. WAN linki `http://159.223.110.159:<port>` formatinda gelir ve DNS bozuk olsa bile calisabilir.
+- Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. `PHONE_PUBLIC_TUNNEL_FALLBACK=bore` sadece bilincli acilirsa IP tabanli Bore fallback'ini baslatir; bu durumda WAN linki `http://159.223.110.159:<port>` formatinda gelir.
 - `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
 - `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 

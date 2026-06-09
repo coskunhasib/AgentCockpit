@@ -668,6 +668,7 @@ class QuickTunnel:
             process = self.process
             checked_at = self._validation_checked_at
             validation_ok = self._validation_ok
+            url_seen_at = self._url_seen_at
 
         if not url:
             return ""
@@ -680,14 +681,17 @@ class QuickTunnel:
 
         now = time.monotonic()
         cache_ttl = max(1.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC"))
+        grace_sec = max(0.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC"))
+        url_in_grace = bool(url_seen_at) and (now - url_seen_at) < grace_sec
         if validation_ok and (now - checked_at) < cache_ttl:
             return url
         if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
-            return ""
+            return url if url_in_grace else ""
 
         ok, validation_error = validate_public_tunnel_url(url, timeout=2.5)
 
         restart_process = None
+        return_url_during_grace = False
         with self._lock:
             if url == self.public_url:
                 self._validation_checked_at = now
@@ -699,12 +703,12 @@ class QuickTunnel:
                 else:
                     self.status = "dogrulaniyor"
                     self.error = f"public tunnel dogrulanamadi: {validation_error}"
-                    grace_sec = max(0.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC"))
                     max_failures = max(
                         1,
                         get_int("PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART"),
                     )
                     url_age = now - self._url_seen_at if self._url_seen_at else 0.0
+                    return_url_during_grace = bool(self._url_seen_at) and url_age < grace_sec
                     if url_age >= grace_sec:
                         self._validation_failures += 1
                         if self._validation_failures >= max_failures:
@@ -723,7 +727,7 @@ class QuickTunnel:
             )
             self._terminate_unreachable_process(restart_process)
 
-        return url if ok else ""
+        return url if ok or return_url_during_grace else ""
 
     def _terminate_unreachable_process(self, process):
         if not process or process.poll() is not None:
@@ -750,7 +754,12 @@ class QuickTunnel:
 
     def snapshot(self, *, validate=True):
         public_url = self.get_public_url(validate=validate)
-        if public_url and self.process and self.process.poll() is None:
+        if (
+            public_url
+            and self.process
+            and self.process.poll() is None
+            and self.status == "hazir"
+        ):
             status = "hazir"
         elif self.status == "baslatiliyor" and self.process and self.process.poll() is not None:
             status = "yeniden_baslatiliyor"

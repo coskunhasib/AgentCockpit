@@ -1,5 +1,6 @@
-import unittest
+import os
 import time
+import unittest
 import urllib.error
 from unittest.mock import patch
 
@@ -211,11 +212,17 @@ class PhonePublicTunnelTests(unittest.TestCase):
             tunnel,
             "_terminate_unreachable_process",
         ) as restart:
-            self.assertEqual(tunnel.get_public_url(validate=True), "")
+            self.assertEqual(
+                tunnel.get_public_url(validate=True),
+                "https://propagating.trycloudflare.com",
+            )
+            snapshot = tunnel.snapshot(validate=True)
 
         restart.assert_not_called()
         self.assertEqual(tunnel.public_url, "https://propagating.trycloudflare.com")
         self.assertEqual(tunnel.status, "dogrulaniyor")
+        self.assertEqual(snapshot["public_url"], "https://propagating.trycloudflare.com")
+        self.assertEqual(snapshot["status"], "dogrulaniyor")
 
     def test_public_tunnel_manager_uses_bore_fallback_when_primary_has_no_url(self):
         class Primary:
@@ -287,6 +294,21 @@ class PhonePublicTunnelTests(unittest.TestCase):
 
         self.assertEqual(tunnel.active_provider, "bore")
         write_url.assert_called_with("http://159.223.110.159:8518")
+
+    def test_public_tunnel_manager_disables_bore_fallback_by_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            tunnel = phone_public_tunnel.PublicTunnelManager("http://127.0.0.1:8765")
+
+        self.assertFalse(tunnel._fallback_enabled())
+
+    def test_public_tunnel_manager_keeps_explicit_bore_fallback_available(self):
+        with patch.dict(os.environ, {}, clear=True):
+            tunnel = phone_public_tunnel.PublicTunnelManager(
+                "http://127.0.0.1:8765",
+                fallback="bore",
+            )
+
+        self.assertTrue(tunnel._fallback_enabled())
 
 
 if __name__ == "__main__":
