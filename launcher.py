@@ -124,18 +124,23 @@ def _bridge_health():
 
 
 def ensure_bridge_running():
+    from core.logger import record_runtime_event
+
     healthy, base_url, details = _bridge_health()
     if healthy:
         print(f"[PHONE] Mevcut bridge kullaniliyor: {base_url}")
         print(f"[PHONE] Pairing dashboard: {base_url}/pair")
+        record_runtime_event("phone_bridge_reused", base_url=base_url)
         return None, True, base_url
 
     print(f"[PHONE] Bridge kapali gorunuyor ({details}). Baslatiliyor...")
+    record_runtime_event("phone_bridge_starting", base_url=base_url, details=str(details))
     bridge_script = os.path.join(PROJECT_ROOT, "phone_bridge_server.py")
     process = subprocess.Popen(
         [sys.executable, bridge_script],
         cwd=PROJECT_ROOT,
     )
+    record_runtime_event("phone_bridge_process_started", pid=process.pid)
 
     for _ in range(20):
         time.sleep(0.35)
@@ -143,11 +148,14 @@ def ensure_bridge_running():
         if healthy:
             print(f"[PHONE] Bridge hazir: {base_url}")
             print(f"[PHONE] Pairing dashboard: {base_url}/pair")
+            record_runtime_event("phone_bridge_ready", pid=process.pid, base_url=base_url)
             return process, True, base_url
         if process.poll() is not None:
+            record_runtime_event("phone_bridge_exited_during_startup", pid=process.pid, code=process.returncode)
             break
 
     print("[PHONE] Bridge dogrulanamadi. Bot yine de aciliyor; telefon tarafi sonra toparlanabilir.")
+    record_runtime_event("phone_bridge_startup_unverified", pid=process.pid, details=str(details))
     return process, False, base_url
 
 
@@ -167,6 +175,7 @@ def cleanup_existing_bot_instances():
         from core.bot_engine import _kill_old_instances
 
         _kill_old_instances()
+        os.environ["AGENTCOCKPIT_BOT_CLEANUP_DONE"] = "1"
     except Exception as exc:
         print(f"[UYARI] Eski bot surecleri temizlenemedi: {exc}")
 
@@ -199,6 +208,16 @@ def run_stack():
         import pip_system_certs  # noqa: F401
     except ImportError:
         pass
+
+    from core.logger import (
+        install_diagnostics_hooks,
+        record_runtime_event,
+        start_diagnostics_heartbeat,
+    )
+
+    install_diagnostics_hooks("launcher", main_excepthook=__name__ == "__main__")
+    start_diagnostics_heartbeat("launcher")
+    record_runtime_event("launcher_stack_start", version=__version__, argv=sys.argv[1:])
 
     from core.runtime_compat import (
         apply_runtime_defaults,
@@ -240,16 +259,21 @@ def run_stack():
 
         print("[START] AgentCockpit stack aciliyor: phone bridge + Telegram UX")
         if not _host_resolves("api.telegram.org"):
+            record_runtime_event("telegram_dns_wait_start", host="api.telegram.org")
             if not _wait_for_telegram_dns_while_bridge_runs(bridge_process):
+                record_runtime_event("telegram_dns_wait_stopped")
                 return
+            record_runtime_event("telegram_dns_wait_done", host="api.telegram.org")
         run_bot()
     finally:
         if bridge_process and bridge_process.poll() is None:
             print("[STOP] Launcher tarafindan acilan phone bridge kapatiliyor...")
+            record_runtime_event("phone_bridge_cleanup_terminate", pid=bridge_process.pid)
             bridge_process.terminate()
             try:
                 bridge_process.wait(timeout=5)
             except Exception:
+                record_runtime_event("phone_bridge_cleanup_kill", pid=bridge_process.pid)
                 bridge_process.kill()
 
 

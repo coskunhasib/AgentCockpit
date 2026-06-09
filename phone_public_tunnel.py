@@ -1,7 +1,10 @@
 import os
+import ipaddress
 import platform
 import re
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -9,6 +12,7 @@ import tarfile
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -21,6 +25,7 @@ from phone_runtime_config import CLOUDFLARED_BIN_DIR, CLOUDFLARED_URL_FILE
 logger = get_logger("phone_public_tunnel")
 
 TUNNEL_URL_RE = re.compile(r"https://[-a-zA-Z0-9.]+\.trycloudflare\.com")
+IP_TOKEN_RE = re.compile(r"(?<![A-Za-z0-9:])(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9A-Fa-f:]{3,})(?![A-Za-z0-9:])")
 
 
 def default_tunnel_mode():
@@ -44,6 +49,122 @@ def auto_download_enabled(value=None):
 def extract_tunnel_url(text):
     match = TUNNEL_URL_RE.search(text or "")
     return match.group(0) if match else ""
+
+
+def _public_ip_tokens(text):
+    ips = []
+    seen = set()
+    for match in IP_TOKEN_RE.finditer(text or ""):
+        token = match.group(0).strip("[]")
+        try:
+            ip = ipaddress.ip_address(token)
+        except ValueError:
+            continue
+        if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_private or ip.is_unspecified:
+            continue
+        value = str(ip)
+        if value not in seen:
+            seen.add(value)
+            ips.append(value)
+    return ips
+
+
+def _resolve_host_with_dns_tools(hostname):
+    if not hostname:
+        return []
+    commands = [
+        ["nslookup", hostname],
+    ]
+    if shutil.which("dig"):
+        commands.append(["dig", "+short", hostname])
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=3,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        ips = _public_ip_tokens(f"{result.stdout}\n{result.stderr}")
+        if ips:
+            return ips
+    return []
+
+
+def _https_get_via_resolved_ip(url, ip, *, timeout=2.5):
+    parsed = urllib.parse.urlsplit(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return False, "host yok"
+    port = parsed.port or 443
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    try:
+        raw_sock = socket.create_connection((ip, port), timeout=timeout)
+        with raw_sock:
+            context = ssl.create_default_context()
+            with context.wrap_socket(raw_sock, server_hostname=hostname) as sock:
+                request = (
+                    f"GET {path} HTTP/1.1\r\n"
+                    f"Host: {hostname}\r\n"
+                    "User-Agent: AgentCockpit/2.0\r\n"
+                    "Connection: close\r\n"
+                    "\r\n"
+                )
+                sock.settimeout(timeout)
+                sock.sendall(request.encode("ascii"))
+                data = sock.recv(256)
+        status_line = data.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+        parts = status_line.split()
+        if len(parts) >= 2 and parts[1].isdigit():
+            status = int(parts[1])
+            return 200 <= status < 300, f"HTTP {status}"
+        return False, f"gecersiz HTTP yaniti: {status_line}"
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def validate_public_tunnel_url(url, *, timeout=2.5):
+    health_url = f"{url.rstrip('/')}/_agentcockpit/tunnel-check"
+    request = urllib.request.Request(
+        health_url,
+        headers={"User-Agent": "AgentCockpit/2.0"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            ok = 200 <= response.status < 300
+            return ok, "" if ok else f"HTTP {response.status}"
+    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+        primary_error = f"{type(exc).__name__}: {exc}"
+    except Exception as exc:
+        primary_error = f"{type(exc).__name__}: {exc}"
+
+    hostname = urllib.parse.urlsplit(health_url).hostname or ""
+    if hostname.endswith(".trycloudflare.com"):
+        ips = _resolve_host_with_dns_tools(hostname)
+        for ip in ips[:4]:
+            ok, fallback_error = _https_get_via_resolved_ip(
+                health_url,
+                ip,
+                timeout=timeout,
+            )
+            if ok:
+                logger.info(
+                    "Public tunnel normal DNS dogrulamasi basarisizdi; "
+                    f"DNS fallback ile dogrulandi: {hostname} -> {ip}"
+                )
+                return True, ""
+            primary_error = f"{primary_error}; fallback {ip}: {fallback_error}"
+        if not ips:
+            primary_error = f"{primary_error}; DNS fallback IP bulamadi"
+
+    return False, primary_error
 
 
 def _machine_arch(machine=None):
@@ -383,20 +504,7 @@ class QuickTunnel:
         if (not validation_ok) and checked_at and (now - checked_at) < cache_ttl:
             return ""
 
-        health_url = f"{url}/_agentcockpit/tunnel-check"
-        request = urllib.request.Request(
-            health_url,
-            headers={"User-Agent": "AgentCockpit/2.0"},
-            method="GET",
-        )
-        ok = False
-        try:
-            with urllib.request.urlopen(request, timeout=2.5) as response:
-                ok = 200 <= response.status < 300
-        except (urllib.error.URLError, TimeoutError, ValueError):
-            ok = False
-        except Exception:
-            ok = False
+        ok, validation_error = validate_public_tunnel_url(url, timeout=2.5)
 
         restart_process = None
         with self._lock:
@@ -405,7 +513,11 @@ class QuickTunnel:
                 self._validation_ok = ok
                 if ok:
                     self._validation_failures = 0
+                    self.status = "hazir"
+                    self.error = ""
                 else:
+                    self.status = "dogrulaniyor"
+                    self.error = f"public tunnel dogrulanamadi: {validation_error}"
                     grace_sec = max(0.0, get_float("PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC"))
                     max_failures = max(
                         1,

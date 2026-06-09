@@ -59,9 +59,9 @@ class BotEngineEventLoopTests(unittest.TestCase):
     def test_kill_old_instances_keeps_env_protected_parent_pid(self):
         ps_output = "\n".join(
             [
-                "100 1 /usr/bin/python3 /Users/hasibcoskun/AgentCockpit/main.py",
-                "200 100 /Users/hasibcoskun/AgentCockpit/venv/bin/python /Users/hasibcoskun/AgentCockpit/main.py",
-                "300 1 /usr/bin/python3 /Users/hasibcoskun/AgentCockpit/main.py",
+                "100 1 /usr/bin/python3 /Users/example/AgentCockpit/main.py",
+                "200 100 /Users/example/AgentCockpit/venv/bin/python /Users/example/AgentCockpit/main.py",
+                "300 1 /usr/bin/python3 /Users/example/AgentCockpit/main.py",
             ]
         )
 
@@ -85,6 +85,45 @@ class BotEngineEventLoopTests(unittest.TestCase):
             bot_engine._kill_old_instances()
 
         kill_process.assert_called_once_with(300)
+
+    def test_agentcockpit_command_detection_ignores_shell_probe_text(self):
+        cmd = (
+            "/bin/zsh -c ps -axww -o pid,command | "
+            "rg 'AgentCockpit|main.py|python3' && "
+            "/Users/example/AgentCockpit/venv/bin/python3 -m json.tool"
+        )
+
+        self.assertFalse(bot_engine._is_agentcockpit_bot_command(cmd))
+
+    def test_agentcockpit_command_detection_accepts_real_python_main(self):
+        cmd = (
+            "/Users/example/AgentCockpit/venv/bin/python3 "
+            "/Users/example/AgentCockpit/main.py --autostart"
+        )
+
+        self.assertTrue(bot_engine._is_agentcockpit_bot_command(cmd))
+
+    def test_bot_instance_cleanup_skips_when_launcher_already_did_it(self):
+        with patch.dict(os.environ, {"AGENTCOCKPIT_BOT_CLEANUP_DONE": "1"}, clear=False), patch(
+            "core.bot_engine._kill_old_instances"
+        ) as kill_old_instances, patch("core.bot_engine.record_runtime_event") as record_event:
+            did_cleanup = bot_engine._ensure_bot_instance_cleanup()
+
+        self.assertFalse(did_cleanup)
+        kill_old_instances.assert_not_called()
+        record_event.assert_called_once_with(
+            "bot_engine_cleanup_skipped",
+            reason="already_done_by_launcher",
+        )
+
+    def test_bot_instance_cleanup_runs_when_launcher_did_not_do_it(self):
+        with patch.dict(os.environ, {}, clear=True), patch(
+            "core.bot_engine._kill_old_instances"
+        ) as kill_old_instances:
+            did_cleanup = bot_engine._ensure_bot_instance_cleanup()
+
+        self.assertTrue(did_cleanup)
+        kill_old_instances.assert_called_once()
 
 
 if __name__ == "__main__":

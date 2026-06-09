@@ -70,6 +70,26 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 sys.excepthook = global_exception_handler
 
 
+def _enable_runtime_diagnostics(process_name="main"):
+    try:
+        from core.logger import (
+            install_diagnostics_hooks,
+            record_runtime_event,
+            start_diagnostics_heartbeat,
+        )
+
+        install_diagnostics_hooks(process_name, main_excepthook=False)
+        start_diagnostics_heartbeat(process_name)
+        record_runtime_event(
+            "entrypoint_start",
+            version=__version__,
+            argv=sys.argv[1:],
+            autostart=os.getenv("AGENTCOCKPIT_AUTOSTART", ""),
+        )
+    except Exception as exc:
+        print(f"[UYARI] Diagnostics baslatilamadi: {exc}")
+
+
 def is_legacy_mode(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     return any(arg in {"--legacy", "legacy"} for arg in args)
@@ -209,6 +229,8 @@ def run_doctor():
 
 
 def run_application(argv=None):
+    _enable_runtime_diagnostics("main")
+
     if is_doctor_mode(argv):
         run_doctor()
         return

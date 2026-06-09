@@ -101,6 +101,16 @@ gelmeyen durumlari ayirt edebilirsin. `screen=0x0` veya `capture_error` varsa
 macOS ekran oturumu kilitli/uykuda olabilir ya da Screen Recording izni eksik
 olabilir.
 
+Runtime diagnostikleri `logs/diagnostics/` altina yazilir:
+
+- `state_<process>_<pid>.json`: son heartbeat ve process/runtime snapshot'i.
+- `events_<pid>.jsonl`: bridge, launcher, bot restart, DNS bekleme ve crash olaylari.
+- `fault_<pid>.log`: native crash veya `SIGUSR1` thread dump ciktilari.
+- `logs/crashes/crash_*.log`: traceback, runtime snapshot, thread dump ve son log tail'i.
+
+Varsayilan heartbeat araligi 30 saniyedir. `AGENTCOCKPIT_DIAGNOSTICS_INTERVAL=0`
+ile kapatilabilir. Token ve session query degerleri loglarda otomatik redakte edilir.
+
 ## Telefon ve PWA
 
 Telefon/PWA kurulum notlari:

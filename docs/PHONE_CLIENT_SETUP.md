@@ -110,6 +110,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
 - `screen=0x0` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
+- `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
+- `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 
 ## Guvenlik Notu
 

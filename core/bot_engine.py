@@ -4,7 +4,9 @@ import contextvars
 import functools
 import logging
 import os
+import shlex
 import sys
+from pathlib import Path
 
 
 async def _run_in_thread_with_context(func, *args, **kwargs):
@@ -84,7 +86,13 @@ from core.claude_bridge import (
     sync_claude_settings,
 )
 from core.data_manager import DataManager
-from core.logger import get_logger, log_crash, notify_crash
+from core.logger import (
+    configure_asyncio_diagnostics,
+    get_logger,
+    log_crash,
+    notify_crash,
+    record_runtime_event,
+)
 from core.platform_utils import (
     click_new_session,
     click_permission_button,
@@ -1495,6 +1503,27 @@ def _is_pid_alive(pid):
         return e.errno != errno.ESRCH
 
 
+def _is_agentcockpit_bot_command(cmdline):
+    try:
+        parts = shlex.split(cmdline, posix=sys.platform != "win32")
+    except ValueError:
+        parts = cmdline.split()
+    if len(parts) < 2:
+        return False
+
+    executable = Path(parts[0].strip("\"'")).name.lower()
+    if "python" not in executable:
+        return False
+
+    for arg in parts[1:]:
+        cleaned = arg.strip("\"'")
+        if Path(cleaned).name.lower() not in {"main.py", "telegram_ux.py"}:
+            continue
+        if "agentcockpit" in cleaned.lower() or str(Path(__file__).resolve().parents[1]) in cleaned:
+            return True
+    return False
+
+
 def _kill_old_instances():
     from core.platform_utils import kill_process
     import subprocess
@@ -1543,12 +1572,7 @@ def _kill_old_instances():
                 if pid == my_pid or pid in ancestor_pids:
                     continue
 
-                cmd_lower = cmd.lower()
-                is_agent = "agentcockpit" in cmd_lower
-                is_py = "python" in cmd_lower
-                is_main = "main.py" in cmd_lower or "telegram_ux.py" in cmd_lower
-
-                if is_agent and is_py and is_main:
+                if _is_agentcockpit_bot_command(cmd):
                     other_pids.append((pid, cmd))
         except Exception as e:
             logger.warning(f"Sistem geneli surec taramasi basarisiz (Unix): {e}")
@@ -1567,8 +1591,7 @@ def _kill_old_instances():
                         pid = item.get("ProcessId")
                         cmdline = item.get("CommandLine") or ""
                         if pid and pid != my_pid:
-                            cmd_lower = cmdline.lower()
-                            if "agentcockpit" in cmd_lower and ("main.py" in cmd_lower or "telegram_ux.py" in cmd_lower):
+                            if _is_agentcockpit_bot_command(cmdline):
                                 other_pids.append((pid, cmdline))
                 except Exception:
                     pass
@@ -1577,6 +1600,11 @@ def _kill_old_instances():
 
     if other_pids:
         if is_autostart:
+            record_runtime_event(
+                "bot_engine_duplicate_process_detected",
+                pid=other_pids[0][0],
+                action="exit_autostart",
+            )
             logger.info(
                 f"Sistem genelinde aktif baska bir AgentCockpit sureci calisiyor (PID: {other_pids[0][0]}). "
                 "Cakismalari onlemek icin autostart sureci sessizce sonlandiriliyor."
@@ -1595,6 +1623,11 @@ def _kill_old_instances():
                 old_pid = int(f.read().strip())
             if old_pid != my_pid and _is_pid_alive(old_pid):
                 if is_autostart:
+                    record_runtime_event(
+                        "bot_engine_lock_process_detected",
+                        pid=old_pid,
+                        action="exit_autostart",
+                    )
                     logger.info(
                         f"Diger aktif bot sureci calisiyor (PID: {old_pid}). "
                         "Autostart daemon cakismalari onlemek icin sessizce sonlandiriliyor."
@@ -1628,6 +1661,14 @@ def _kill_old_instances():
             pass
 
 
+def _ensure_bot_instance_cleanup():
+    if os.environ.get("AGENTCOCKPIT_BOT_CLEANUP_DONE") == "1":
+        record_runtime_event("bot_engine_cleanup_skipped", reason="already_done_by_launcher")
+        return False
+    _kill_old_instances()
+    return True
+
+
 def run_bot():
     global restart_counter
     restart_counter = 0
@@ -1640,8 +1681,9 @@ def run_bot():
         print("HATA: Token yok.")
         return
 
-    _kill_old_instances()
+    _ensure_bot_instance_cleanup()
     logger.info("Bot baslatiliyor...")
+    record_runtime_event("bot_engine_start", allowed_ids_count=len(ALLOWED_IDS), max_restart=max_restart)
 
     try:
         import httpx
@@ -1661,6 +1703,7 @@ def run_bot():
             # Force a fresh event loop on every start/retry iteration to prevent "Event loop is closed" errors
             _fresh_loop = asyncio.new_event_loop()
             asyncio.set_event_loop(_fresh_loop)
+            configure_asyncio_diagnostics(_fresh_loop, "bot_engine")
 
             app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
@@ -1688,6 +1731,7 @@ def run_bot():
 
             if isinstance(exc, Conflict):
                 restart_counter += 1
+                record_runtime_event("bot_engine_conflict", restart_counter=restart_counter, max_restart=max_restart)
                 logger.warning(
                     f"Baska bot calisiyor ({restart_counter}/{max_restart}). 30s bekleniyor..."
                 )
@@ -1702,6 +1746,7 @@ def run_bot():
 
             restart_counter += 1
             crash_file = log_crash("bot_engine", str(exc), traceback.format_exc())
+            record_runtime_event("bot_engine_crash_retry", restart_counter=restart_counter, max_restart=max_restart, crash_file=crash_file)
             logger.error(f"Bot coktu ({restart_counter}/{max_restart}): {exc}")
 
             try:
@@ -1726,6 +1771,7 @@ def run_bot():
                 print("5 saniye icinde yeniden baslatiliyor...")
                 time.sleep(5)
             else:
+                record_runtime_event("bot_engine_stop_after_crashes", restart_counter=restart_counter)
                 logger.critical("Bot 3 kez ust uste coktu. Durduruluyor.")
                 print("Bot 3 kez coktu. Durduruluyor.")
                 break

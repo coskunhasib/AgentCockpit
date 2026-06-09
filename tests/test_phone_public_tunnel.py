@@ -1,5 +1,6 @@
 import unittest
 import time
+import urllib.error
 from unittest.mock import patch
 
 import phone_public_tunnel
@@ -84,6 +85,24 @@ class PhonePublicTunnelTests(unittest.TestCase):
                 "https://live.trycloudflare.com",
             )
 
+    def test_validate_public_url_falls_back_to_dns_tool_resolution(self):
+        with patch(
+            "phone_public_tunnel.urllib.request.urlopen",
+            side_effect=urllib.error.URLError("resolver failed"),
+        ), patch(
+            "phone_public_tunnel._resolve_host_with_dns_tools",
+            return_value=["104.16.230.132"],
+        ), patch(
+            "phone_public_tunnel._https_get_via_resolved_ip",
+            return_value=(True, ""),
+        ):
+            ok, error = phone_public_tunnel.validate_public_tunnel_url(
+                "https://live.trycloudflare.com",
+            )
+
+        self.assertTrue(ok)
+        self.assertEqual(error, "")
+
     def test_snapshot_can_skip_validation(self):
         tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
         tunnel.public_url = "https://live.trycloudflare.com"
@@ -135,7 +154,7 @@ class PhonePublicTunnelTests(unittest.TestCase):
 
         restart.assert_not_called()
         self.assertEqual(tunnel.public_url, "https://propagating.trycloudflare.com")
-        self.assertEqual(tunnel.status, "kapali")
+        self.assertEqual(tunnel.status, "dogrulaniyor")
 
 
 if __name__ == "__main__":

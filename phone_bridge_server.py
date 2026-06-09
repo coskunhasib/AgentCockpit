@@ -44,7 +44,12 @@ try:
 except ImportError:
     qrcode = None
 
-from core.logger import get_logger
+from core.logger import (
+    get_logger,
+    install_diagnostics_hooks,
+    record_runtime_event,
+    start_diagnostics_heartbeat,
+)
 from core.runtime_compat import desktop_automation_help_text, detect_runtime_compatibility
 from core.system_tools import SystemOps
 from phone_runtime_config import (
@@ -139,6 +144,18 @@ def _redact_url_for_log(url):
     return _redact_capture_error(url)
 
 
+def _stdout_secret(value):
+    if os.environ.get("PHONE_PRINT_RAW_LINKS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return value
+    return _redact_capture_error(value)
+
+
+def _stdout_admin_token(value):
+    if os.environ.get("PHONE_PRINT_RAW_LINKS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return value
+    return "<redacted>"
+
+
 def _record_capture_success(width, height):
     with _CAPTURE_STATE_LOCK:
         _CAPTURE_STATE["last_error"] = ""
@@ -169,6 +186,42 @@ def _capture_health(screen):
         "capture_last_width": state["last_width"],
         "capture_last_height": state["last_height"],
     }
+
+
+def _diagnostic_snapshot(server=None):
+    screen = _get_screen_metrics()
+    capture = _capture_health(screen)
+    snapshot = {
+        "screen": {
+            "width": screen.get("width", 0),
+            "height": screen.get("height", 0),
+            "available": bool(screen.get("available")),
+        },
+        "capture": capture,
+        "keep_awake": _keep_awake_snapshot(),
+    }
+    if server is not None:
+        try:
+            tunnel = server.public_tunnel_snapshot(validate=False)
+        except Exception as exc:
+            tunnel = {"enabled": True, "status": "snapshot_error", "error": _redact_capture_error(exc)}
+        snapshot["public_tunnel"] = {
+            "enabled": tunnel.get("enabled", False),
+            "status": tunnel.get("status", ""),
+            "has_public_url": bool(tunnel.get("public_url")),
+            "error": tunnel.get("error", ""),
+            "restart_count": tunnel.get("restart_count", 0),
+            "last_exit_code": tunnel.get("last_exit_code", None),
+        }
+        try:
+            snapshot["trusted_devices"] = server.trusted_devices.count()
+        except Exception:
+            snapshot["trusted_devices"] = None
+        try:
+            snapshot["session_links"] = server.session_links.count()
+        except Exception:
+            snapshot["session_links"] = None
+    return snapshot
 
 
 def _keep_awake_enabled():
@@ -1159,7 +1212,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
         local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
-        public_url = self.server.get_public_url(validate=False)
+        public_url = self.server.get_public_url(validate=True)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
             **self._build_session_payload(session),
@@ -1860,6 +1913,7 @@ def build_arg_parser():
 
 
 def run_server(bind, port, admin_token, session_minutes, quality, max_width, poll_ms, public_tunnel="auto"):
+    install_diagnostics_hooks("phone_bridge")
     server = PhoneBridgeServer(
         (bind, port),
         PhoneBridgeHandler,
@@ -1869,6 +1923,8 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         poll_ms=max(500, poll_ms),
         default_session_minutes=int(session_minutes),
     )
+    start_diagnostics_heartbeat("phone_bridge", extra_snapshot=lambda: _diagnostic_snapshot(server))
+    record_runtime_event("phone_bridge_server_created", bind=bind, port=port)
 
     lan_ips = _get_local_ipv4_candidates()
     startup_session = server.startup_session
@@ -1887,6 +1943,14 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     wan_url = _build_app_url_from_base(public_url, startup_session["token"])
 
     logger.info("AgentCockpit phone bridge basladi")
+    record_runtime_event(
+        "phone_bridge_ready",
+        bind=bind,
+        port=port,
+        lan_ip_count=len(lan_ips),
+        public_tunnel_status=server.public_tunnel_snapshot(validate=False).get("status", ""),
+        capture=_diagnostic_snapshot(server).get("capture"),
+    )
     logger.info(f"Phone app (LAN): {_redact_url_for_log(lan_url)}")
     if wan_url:
         logger.info(f"Phone app (WAN): {_redact_url_for_log(wan_url)}")
@@ -1896,12 +1960,12 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
     print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")
-    print(f"LAN URL ({startup_session['expires_in_text']}): {lan_url}")
+    print(f"LAN URL ({startup_session['expires_in_text']}): {_stdout_secret(lan_url)}")
     if len(lan_urls) > 1:
         for index, alt_url in enumerate(lan_urls[1:], start=2):
-            print(f"LAN URL {index} ({startup_session['expires_in_text']}): {alt_url}")
+            print(f"LAN URL {index} ({startup_session['expires_in_text']}): {_stdout_secret(alt_url)}")
     if wan_url:
-        print(f"WAN URL ({startup_session['expires_in_text']}): {wan_url}")
+        print(f"WAN URL ({startup_session['expires_in_text']}): {_stdout_secret(wan_url)}")
     else:
         tunnel_snapshot = server.public_tunnel_snapshot()
         if tunnel_snapshot.get("enabled"):
@@ -1909,9 +1973,9 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
                 "WAN URL: hazirlaniyor veya kapali "
                 f"({tunnel_snapshot.get('status', 'bilinmiyor')})"
             )
-    print(f"Local URL ({startup_session['expires_in_text']}): {localhost_url}")
+    print(f"Local URL ({startup_session['expires_in_text']}): {_stdout_secret(localhost_url)}")
     print(f"Installation id: {get_installation_id()}")
-    print(f"Admin token: {admin_token}")
+    print(f"Admin token: {_stdout_admin_token(admin_token)}")
     print(f"Token file: {get_runtime_paths()['admin_token_file']}")
     print(
         "Not: Varsayilan telefon linki sinirsizdir. Yeni link uretmek icin /api/session-links endpoint'ini admin token ile cagirabilirsin."
@@ -1922,9 +1986,11 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     except KeyboardInterrupt:
         print("\nKapatiliyor...")
     finally:
+        record_runtime_event("phone_bridge_stopping")
         if server.public_tunnel:
             server.public_tunnel.stop()
         server.server_close()
+        record_runtime_event("phone_bridge_stopped")
 
 
 def main():

@@ -29,9 +29,9 @@ class PhoneBridgeSecurityTests(unittest.TestCase):
         )[0]
         self.assertNotIn("rotateHintDismissed", orientation_block)
 
-    def test_link_payload_uses_non_validating_public_url_for_qr(self):
+    def test_link_payload_uses_validated_public_url_for_qr(self):
         source = inspect.getsource(PhoneBridgeHandler._build_link_payload)
-        self.assertIn("get_public_url(validate=False)", source)
+        self.assertIn("get_public_url(validate=True)", source)
 
     def test_qr_alias_redirects_to_pair(self):
         source = inspect.getsource(PhoneBridgeHandler.do_GET)
