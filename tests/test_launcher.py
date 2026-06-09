@@ -1,5 +1,6 @@
 import os
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import launcher
@@ -23,6 +24,10 @@ class LauncherTests(unittest.TestCase):
             clear=False,
         ), patch.object(launcher.sys, "argv", ["launcher.py"]):
             self.assertFalse(launcher._keep_bridge_after_launcher_exit())
+
+    def test_runner_stop_includes_bore_tunnel_process(self):
+        runner = Path(__file__).resolve().parents[1] / "runner.sh"
+        self.assertIn("/.agentcockpit/runtime/bin/bore", runner.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

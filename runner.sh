@@ -16,6 +16,7 @@ patterns = [
     f"{root}/main.py",
     f"{root}/phone_bridge_server.py",
     f"{root}/.agentcockpit/runtime/bin/cloudflared",
+    f"{root}/.agentcockpit/runtime/bin/bore",
 ]
 
 
