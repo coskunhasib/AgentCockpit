@@ -1,16 +1,8 @@
 import unittest
 from unittest.mock import patch
 
-import phone_bridge_server
 import phone_bridge_client
-
-
-class _FakePyAutoGui:
-    def __init__(self):
-        self.writes = []
-
-    def write(self, text, interval=0.0):
-        self.writes.append((text, interval))
+import phone_bridge_server
 
 
 class PhoneBridgeClientTests(unittest.TestCase):
@@ -128,38 +120,67 @@ class PhoneBridgeClientTests(unittest.TestCase):
         finally:
             server.server_close()
 
-    def test_sensitive_phone_typing_uses_direct_keystrokes_without_clipboard(self):
-        fake = _FakePyAutoGui()
-
-        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake), patch.object(
+    def test_sensitive_phone_typing_uses_clipboard_paste_and_restores_clipboard(self):
+        with patch.object(
             phone_bridge_server.SystemOps,
-            "type_text",
-            side_effect=AssertionError("clipboard fallback should not be used"),
-        ):
+            "paste_text",
+            return_value=True,
+        ) as paste_text:
             self.assertTrue(phone_bridge_server._perform_type("Password123!", sensitive=True))
 
-        self.assertEqual(fake.writes, [("Password123!", 0.02)])
+        paste_text.assert_called_once_with("Password123!", restore_clipboard=True)
 
-    def test_normal_phone_typing_uses_clipboard_paste_path(self):
-        with patch.object(
-            phone_bridge_server,
-            "_require_pyautogui",
-            side_effect=AssertionError("direct keystrokes should not be used"),
-        ), patch.object(
+    def test_phone_typing_refocuses_last_screen_target_before_writing(self):
+        with patch.object(phone_bridge_server, "_perform_click") as click, patch.object(
             phone_bridge_server.SystemOps,
-            "type_text",
+            "paste_text",
             return_value=True,
-        ) as type_text:
+        ) as paste_text:
+            self.assertTrue(
+                phone_bridge_server._perform_type(
+                    "normal text",
+                    sensitive=False,
+                    focus={"x": 0.25, "y": 0.75},
+                )
+            )
+
+        click.assert_called_once_with(0.25, 0.75, "left")
+        paste_text.assert_called_once_with("normal text", restore_clipboard=False)
+
+    def test_normal_phone_typing_uses_clipboard_paste_for_ascii(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "paste_text",
+            return_value=True,
+        ) as paste_text:
             self.assertTrue(phone_bridge_server._perform_type("normal text", sensitive=False))
 
-        type_text.assert_called_once_with("normal text")
+        paste_text.assert_called_once_with("normal text", restore_clipboard=False)
 
-    def test_sensitive_phone_typing_rejects_non_direct_characters(self):
-        fake = _FakePyAutoGui()
+    def test_normal_phone_typing_uses_clipboard_paste_for_unicode(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "type_text_unicode",
+            side_effect=AssertionError("Quartz typing should not be used"),
+        ) as unicode_type, patch.object(
+            phone_bridge_server.SystemOps,
+            "paste_text",
+            return_value=True,
+        ) as paste_text:
+            self.assertTrue(phone_bridge_server._perform_type("Turkce şifre", sensitive=False))
 
-        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
-            with self.assertRaises(RuntimeError):
-                phone_bridge_server._perform_type("şifre", sensitive=True)
+        unicode_type.assert_not_called()
+        paste_text.assert_called_once_with("Turkce şifre", restore_clipboard=False)
+
+    def test_phone_typing_returns_false_when_clipboard_paste_fails(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "paste_text",
+            return_value=False,
+        ) as paste_text:
+            self.assertFalse(phone_bridge_server._perform_type("şifre", sensitive=True))
+
+        paste_text.assert_called_once_with("şifre", restore_clipboard=True)
 
 
 if __name__ == "__main__":

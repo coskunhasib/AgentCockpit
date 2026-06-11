@@ -4,6 +4,7 @@ import importlib
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from PIL import ImageDraw
@@ -16,6 +17,7 @@ logger = get_logger("system_tools")
 
 _PYAUTOGUI = None
 _PYPERCLIP = None
+_QUARTZ = None
 
 
 def _get_pyautogui():
@@ -44,6 +46,46 @@ def _get_pyperclip():
     except Exception as exc:
         logger.error(f"pyperclip kullanilamiyor: {exc}")
         return None
+
+
+def _get_quartz():
+    global _QUARTZ
+    if _QUARTZ is not None:
+        return _QUARTZ
+
+    try:
+        _QUARTZ = importlib.import_module("Quartz")
+        return _QUARTZ
+    except Exception as exc:
+        logger.error(f"Quartz unicode klavye kullanilamiyor: {exc}")
+        return None
+
+
+def _paste_with_system_events(timeout=2):
+    if sys.platform != "darwin":
+        return False
+
+    script = 'tell application "System Events" to keystroke "v" using command down'
+    try:
+        completed = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("System Events yapistirma zaman asimina ugradi.")
+        return False
+    except Exception as exc:
+        logger.warning(f"System Events yapistirma calistirilamadi: {exc}")
+        return False
+
+    if completed.returncode == 0:
+        return True
+
+    detail = (completed.stderr or completed.stdout or "").strip()
+    logger.warning(f"System Events yapistirma basarisiz: {detail}")
+    return False
 
 
 def _mouse_overlay_point(image_size):
@@ -76,17 +118,17 @@ class SystemOps:
         ("win", "d"): ["command", "f3"],
         ("winleft", "d"): ["command", "f3"],
         ("windows", "d"): ["command", "f3"],
-        ("win", "l"): ["control", "command", "q"],
-        ("winleft", "l"): ["control", "command", "q"],
-        ("windows", "l"): ["control", "command", "q"],
+        ("win", "l"): ["ctrl", "command", "q"],
+        ("winleft", "l"): ["ctrl", "command", "q"],
+        ("windows", "l"): ["ctrl", "command", "q"],
     }
     MAC_KEY_ALIASES = {
         "cmd": "command",
         "command": "command",
         "ctrl": "command",
         "control": "command",
-        "mac_ctrl": "control",
-        "mac_control": "control",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
         "win": "command",
         "winleft": "command",
         "windows": "command",
@@ -96,6 +138,8 @@ class SystemOps:
     DESKTOP_KEY_ALIASES = {
         "cmd": "ctrl",
         "command": "ctrl",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
         "option": "alt",
         "win": "winleft",
         "windows": "winleft",
@@ -296,16 +340,159 @@ class SystemOps:
             if not pyautogui:
                 return False
 
-            pyperclip = _get_pyperclip()
-            mod_key = "command" if sys.platform == "darwin" else "ctrl"
-            if pyperclip:
-                pyperclip.copy(text)
-                pyautogui.hotkey(mod_key, "v")
-            else:
-                pyautogui.write(text)
+            if SystemOps.paste_text(text):
+                return True
+
+            pyautogui.write(text)
             logger.debug("Metin yazildi.")
             return True
         except Exception as exc:
             logger.error(f"Yazma hatasi: {exc}")
             log_crash("system_tools.type_text", str(exc))
             return False
+
+    @staticmethod
+    def paste_text(text, *, restore_clipboard=False):
+        try:
+            if sys.platform == "darwin":
+                permissions = SystemOps.desktop_input_permissions()
+                if permissions.get("post_event_access") is False:
+                    logger.error(f"Yapistirma izni yok: {permissions}")
+                    return False
+
+            pyperclip = _get_pyperclip()
+            if not pyperclip:
+                return False
+            pyautogui = _get_pyautogui()
+            if sys.platform != "darwin" and not pyautogui:
+                return False
+
+            previous_clipboard = None
+            if restore_clipboard:
+                try:
+                    previous_clipboard = pyperclip.paste()
+                except Exception:
+                    previous_clipboard = None
+
+            pyperclip.copy(text)
+            time.sleep(0.12)
+            paste_method = ""
+            if sys.platform == "darwin":
+                if _paste_with_system_events():
+                    paste_method = "system_events"
+                elif pyautogui:
+                    pyautogui.hotkey("command", "v", interval=0.08)
+                    paste_method = "pyautogui"
+            else:
+                pyautogui.hotkey("ctrl", "v", interval=0.08)
+                paste_method = "pyautogui"
+
+            if not paste_method:
+                return False
+
+            if restore_clipboard and previous_clipboard is not None:
+                time.sleep(0.35)
+                pyperclip.copy(previous_clipboard)
+
+            logger.debug(f"Metin yapistirildi: method={paste_method}")
+            return True
+        except Exception as exc:
+            logger.error(f"Yapistirma hatasi: {exc}")
+            log_crash("system_tools.paste_text", str(exc))
+            return False
+
+    @staticmethod
+    def desktop_input_permissions():
+        status = {
+            "quartz_available": False,
+            "post_event_access": None,
+            "listen_event_access": None,
+            "screen_capture_access": None,
+        }
+        quartz = _get_quartz()
+        if not quartz:
+            return status
+
+        status["quartz_available"] = True
+        checks = {
+            "post_event_access": "CGPreflightPostEventAccess",
+            "listen_event_access": "CGPreflightListenEventAccess",
+            "screen_capture_access": "CGPreflightScreenCaptureAccess",
+        }
+        for key, function_name in checks.items():
+            function = getattr(quartz, function_name, None)
+            if not function:
+                continue
+            try:
+                status[key] = bool(function())
+            except Exception as exc:
+                status[f"{key}_error"] = str(exc)
+        return status
+
+    @staticmethod
+    def type_text_unicode(text, interval=0.02):
+        if sys.platform != "darwin" or not text:
+            return False
+
+        try:
+            quartz = _get_quartz()
+            if not quartz:
+                return False
+
+            pyautogui = _get_pyautogui()
+            ascii_buffer = []
+
+            def flush_ascii_buffer():
+                if not ascii_buffer:
+                    return
+                chunk = "".join(ascii_buffer)
+                ascii_buffer.clear()
+                if pyautogui:
+                    pyautogui.write(chunk, interval=interval)
+                    return
+                _post_unicode_chunk(quartz, chunk, interval)
+
+            for char in str(text):
+                if char in ("\n", "\r"):
+                    flush_ascii_buffer()
+                    if pyautogui:
+                        pyautogui.press("enter")
+                    else:
+                        _post_unicode_chunk(quartz, "\n", interval)
+                    continue
+                if char == "\t":
+                    flush_ascii_buffer()
+                    if pyautogui:
+                        pyautogui.press("tab")
+                    else:
+                        _post_unicode_chunk(quartz, "\t", interval)
+                    continue
+
+                if 32 <= ord(char) <= 126:
+                    ascii_buffer.append(char)
+                    continue
+
+                flush_ascii_buffer()
+                _post_unicode_chunk(quartz, char, interval)
+
+            flush_ascii_buffer()
+
+            logger.debug("Unicode metin hibrit klavye eventleriyle yazildi.")
+            return True
+        except Exception as exc:
+            logger.error(f"Unicode yazma hatasi: {exc}")
+            log_crash("system_tools.type_text_unicode", str(exc))
+            return False
+
+
+def _post_unicode_chunk(quartz, text, interval=0.02):
+    for char in str(text):
+        down = quartz.CGEventCreateKeyboardEvent(None, 0, True)
+        quartz.CGEventKeyboardSetUnicodeString(down, len(char), char)
+        quartz.CGEventPost(quartz.kCGHIDEventTap, down)
+
+        up = quartz.CGEventCreateKeyboardEvent(None, 0, False)
+        quartz.CGEventPost(quartz.kCGHIDEventTap, up)
+
+        if interval:
+            time.sleep(interval)

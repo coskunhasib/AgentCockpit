@@ -89,6 +89,7 @@ from core.data_manager import DataManager
 from core.logger import (
     configure_asyncio_diagnostics,
     get_logger,
+    harden_stdlib_logging,
     log_crash,
     notify_crash,
     record_runtime_event,
@@ -158,8 +159,7 @@ except Exception:
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.WARNING
 )
-for noisy_logger_name in ("httpx", "httpcore"):
-    logging.getLogger(noisy_logger_name).setLevel(logging.WARNING)
+harden_stdlib_logging()
 
 for warning in CLAUDE_UI_CONFIG_WARNINGS:
     logger.warning(f"Claude UI config uyarisi: {warning}")
@@ -1570,7 +1570,45 @@ def _pid_command(pid):
         return ""
 
 
+LAUNCHD_BOT_LABEL = "com.agentcockpit.bot"
+_launchd_bot_displaced = False
+
+
+def _schedule_launchd_bot_restore():
+    """Dev calismasi launchd botunu oldurduyse cikista geri baslatir.
+
+    KeepAlive(SuccessfulExit=false) nedeniyle temiz cikan autostart kopyasini
+    launchd kendiliginden geri getirmez; kickstart gecikmeli calisir ki yeni
+    kopya ps'te hala gorunen olmekte olan dev surecine yol vermesin.
+    """
+    global _launchd_bot_displaced
+    if not _launchd_bot_displaced or sys.platform != "darwin":
+        return
+    _launchd_bot_displaced = False
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_BOT_LABEL}.plist"
+    if not plist.exists():
+        return
+    try:
+        import subprocess
+
+        subprocess.Popen(
+            [
+                "/bin/sh",
+                "-c",
+                f"sleep 5; /bin/launchctl kickstart gui/{os.getuid()}/{LAUNCHD_BOT_LABEL}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        record_runtime_event("launchd_bot_restore_scheduled", label=LAUNCHD_BOT_LABEL)
+        logger.info("Cikista launchd botunun geri baslatilmasi planlandi.")
+    except Exception as exc:
+        logger.warning(f"launchd bot geri baslatma planlanamadi: {exc}")
+
+
 def _cleanup_lock():
+    _schedule_launchd_bot_restore()
     try:
         if os.path.exists(LOCK_FILE):
             with open(LOCK_FILE, "r", encoding="utf-8") as f:
@@ -1667,12 +1705,12 @@ def _kill_old_instances():
                 ancestor_pids.add(parent_pid)
                 parent_pid = parent_by_pid.get(parent_pid, 0)
 
-            for pid, _ppid, cmd in rows:
+            for pid, ppid, cmd in rows:
                 if pid == my_pid or pid in ancestor_pids:
                     continue
 
                 if _is_agentcockpit_bot_command(cmd):
-                    other_pids.append((pid, cmd))
+                    other_pids.append((pid, cmd, ppid))
         except Exception as e:
             logger.warning(f"Sistem geneli surec taramasi basarisiz (Unix): {e}")
     else:
@@ -1691,7 +1729,7 @@ def _kill_old_instances():
                         cmdline = item.get("CommandLine") or ""
                         if pid and pid != my_pid:
                             if _is_agentcockpit_bot_command(cmdline):
-                                other_pids.append((pid, cmdline))
+                                other_pids.append((pid, cmdline, 0))
                 except Exception:
                     pass
         except Exception as e:
@@ -1710,8 +1748,11 @@ def _kill_old_instances():
             )
             sys.exit(0)
         else:
-            for pid, cmd in other_pids:
+            global _launchd_bot_displaced
+            for pid, cmd, ppid in other_pids:
                 logger.info(f"Cakisabilecek diger AgentCockpit sureci sonlandiriliyor: PID {pid} ({cmd})")
+                if sys.platform == "darwin" and ppid == 1:
+                    _launchd_bot_displaced = True
                 kill_process(pid)
             time.sleep(2)
 

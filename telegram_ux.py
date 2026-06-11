@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -8,6 +11,7 @@ from telegram.ext import ContextTypes
 
 import core.bot_engine as legacy
 import core.claude_bridge as claude_bridge
+from core.logger import record_runtime_event
 import core.claude_state as claude_state
 import core.codex_bridge as codex_bridge
 import core.codex_state as codex_state
@@ -462,6 +466,81 @@ async def _watch_public_phone_link(application):
 
         # Poll quickly until the first announcement, then settle to the interval.
         await asyncio.sleep(interval if startup_done else min(interval, 5))
+
+
+def _bridge_restart_decision(consecutive_failures, last_restart, now, *, threshold=3, cooldown_seconds=120):
+    """Pure decision for the bridge supervisor (no I/O, so it is unit-testable).
+
+    Restart only after `threshold` consecutive health failures, and never more
+    often than once per `cooldown_seconds` (a crash-looping bridge must not
+    turn into a spawn storm)."""
+    if consecutive_failures < threshold:
+        return False
+    if last_restart is not None and (now - last_restart) < cooldown_seconds:
+        return False
+    return True
+
+
+def _restart_phone_bridge():
+    bridge_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phone_bridge_server.py")
+    process = subprocess.Popen(
+        [sys.executable, bridge_script],
+        cwd=os.path.dirname(bridge_script),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    record_runtime_event("phone_bridge_autorestart", pid=process.pid)
+    return process.pid
+
+
+async def _watch_bridge_process(application):
+    """Kopru surecinin bekcisi: olu kopruyu tespit edip yeniden baslatir.
+
+    launcher hicbir yolda (spawn/reuse) kopruyu olumden dondurmuyor; bu bekci
+    o sahipligi ustlenir. 30 May ve 9 Haz kesintilerinin kok nedeni buydu."""
+    if os.getenv("PHONE_BRIDGE_AUTORESTART", "1").strip().lower() in {"0", "false", "no", "off"}:
+        legacy.logger.info("Phone bridge otomatik yeniden baslatma devre disi (PHONE_BRIDGE_AUTORESTART).")
+        return
+    failures = 0
+    last_restart = None
+    legacy.logger.info("Phone bridge bekcisi basladi (esik: 3 ardisik basarisiz health kontrolu).")
+    while True:
+        await asyncio.sleep(20)
+        try:
+            await asyncio.to_thread(get_bridge_health)
+            failures = 0
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failures += 1
+            health_error = exc
+        if not _bridge_restart_decision(failures, last_restart, time.monotonic()):
+            continue
+        legacy.logger.warning(
+            f"Phone bridge {failures} ardisik kontrolde yanit vermedi ({health_error}); yeniden baslatiliyor."
+        )
+        try:
+            pid = _restart_phone_bridge()
+        except Exception as restart_exc:
+            legacy.logger.error(f"Phone bridge yeniden baslatilamadi: {restart_exc}")
+            last_restart = time.monotonic()
+            continue
+        last_restart = time.monotonic()
+        failures = 0
+        legacy.logger.info(f"Phone bridge yeniden baslatildi: PID {pid}")
+        for chat_id in _notification_target_chat_ids():
+            try:
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "Telefon koprusu yanit vermiyordu, otomatik olarak yeniden baslatildi. "
+                        "Yeni baglanti linki birazdan gonderilecek."
+                    ),
+                )
+            except Exception:
+                pass
 
 
 async def _send_phone_panel(update_or_chat, context, *, minutes=0, label="telegram", chat_id=None):
@@ -1052,6 +1131,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     await _ORIGINAL_POST_INIT(application)
     application.create_task(_watch_public_phone_link(application))
+    application.create_task(_watch_bridge_process(application))
 
 
 def _install_overrides():

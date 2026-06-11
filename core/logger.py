@@ -1,6 +1,7 @@
 import asyncio
 import faulthandler
 import json
+import logging
 import os
 import platform
 import re
@@ -44,6 +45,9 @@ _SECRET_PATTERNS = (
     (re.compile(r"(?i)(admin[_-]?token\s*[=:]\s*)[^\s]+"), r"\1<redacted>"),
     (re.compile(r"(?i)(credentials-contents\s+)[^\s]+"), r"\1<redacted>"),
     (re.compile(r"([?&](?:token|admin|session|key)=)[^&\s]+"), r"\1<redacted>"),
+    # Telegram API URL'leri token'i path icinde tasir: /bot<id>:<secret>/method.
+    # "bot" harfleri rakamlara bitisik oldugundan asagidaki \b deseni bunu yakalayamaz.
+    (re.compile(r"(?i)(/bot)\d{5,}:[A-Za-z0-9_-]{10,}"), r"\1<redacted>"),
     (re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{20,}\b"), "<telegram-token-redacted>"),
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"), "ghp_<redacted>"),
     (re.compile(r"\bacp_[A-Za-z0-9_-]+"), "acp_<redacted>"),
@@ -91,12 +95,15 @@ try:
 except Exception:
     pass
 
+# diagnose=True (varsayilan) traceback'lere yerel degisken DEGERLERINI yazar;
+# PTB Application repr'i bot token'ini icerdiginden loglara sizdirir.
 logger.add(
     _stderr_sink,
     format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
     level="INFO",
     colorize=True,
     filter=_sanitize_record,
+    diagnose=False,
 )
 
 logger.add(
@@ -108,7 +115,54 @@ logger.add(
     encoding="utf-8",
     enqueue=True,
     filter=_sanitize_record,
+    diagnose=False,
 )
+
+
+_NOISY_HTTP_LOGGERS = ("httpx", "httpcore")
+
+
+class _StdlibRedactionFilter(logging.Filter):
+    """stdlib logging kayitlarindaki gizli degerleri maskeler.
+
+    httpx INFO seviyesinde tam istek URL'sini loglar ve Telegram API URL'leri
+    bot token'ini icerir; bu kayitlar loguru filtrelerinden gecmeden stderr'e
+    (launchd_err.log) ulasir.
+    """
+
+    def filter(self, record):
+        try:
+            message = record.getMessage()
+        except Exception:
+            return True
+        redacted = redact_text(message)
+        if redacted != message:
+            record.msg = redacted
+            record.args = None
+        return True
+
+
+_STDLIB_REDACTION_FILTER = _StdlibRedactionFilter()
+
+
+def harden_stdlib_logging():
+    """httpx/httpcore log seviyesini kisar, stdlib handler'larina redaksiyon ekler.
+
+    Idempotenttir; logging.basicConfig sonradan handler eklediginde filtrenin
+    o handler'a da uygulanmasi icin basicConfig cagrisindan sonra tekrar
+    cagrilmalidir.
+    """
+    for noisy_name in _NOISY_HTTP_LOGGERS:
+        logging.getLogger(noisy_name).setLevel(logging.WARNING)
+    handlers = list(logging.getLogger().handlers)
+    if logging.lastResort is not None:
+        handlers.append(logging.lastResort)
+    for handler in handlers:
+        if _STDLIB_REDACTION_FILTER not in handler.filters:
+            handler.addFilter(_STDLIB_REDACTION_FILTER)
+
+
+harden_stdlib_logging()
 
 
 def _utc_now():

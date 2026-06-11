@@ -852,31 +852,29 @@ def _perform_keypress(keys):
     return SystemOps.press_key(keys.strip())
 
 
-def _can_type_directly(text):
-    return all(ch in "\n\r\t" or 32 <= ord(ch) <= 126 for ch in text)
+def _perform_focus_click(focus):
+    if not isinstance(focus, dict):
+        return False
+
+    if "x" not in focus or "y" not in focus:
+        return False
+
+    _perform_click(focus.get("x"), focus.get("y"), "left")
+    time.sleep(0.12)
+    return True
 
 
-def _perform_type(text, *, sensitive=False):
+def _perform_type(text, *, sensitive=False, focus=None):
     if not text:
         return True
 
-    if not sensitive:
-        return SystemOps.type_text(text)
-
-    if _can_type_directly(text):
-        # Password fields commonly block paste, so phone typing must be real
-        # keystrokes and must not leave the value in the clipboard.
-        pyautogui = _require_pyautogui()
-        pyautogui.write(text, interval=0.02)
-        return True
-
-    if sensitive:
-        raise RuntimeError(
-            "Bu metin dogrudan klavye ile yazilamayan karakterler iceriyor. "
-            "Sifre alanlari icin ASCII karakter kullanin veya fiziksel klavyeden girin."
-        )
-
-    return SystemOps.type_text(text)
+    focused = _perform_focus_click(focus)
+    pasted = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
+    logger.info(
+        f"Telefon metni clipboard paste ile gonderildi: chars={len(text)} "
+        f"sensitive={bool(sensitive)} focus={focused} success={pasted}"
+    )
+    return pasted
 
 
 def _parse_cookie_header(raw_cookie):
@@ -1465,6 +1463,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             capture = _capture_health(screen)
             keep_awake = _keep_awake_snapshot()
             compatibility = detect_runtime_compatibility()
+            input_permissions = SystemOps.desktop_input_permissions()
             self._json_response(
                 {
                     "status": "ok",
@@ -1490,6 +1489,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "browser_available": compatibility["browser_available"],
                     "desktop_automation_available": compatibility["desktop_automation_available"],
                     "desktop_automation_reason": compatibility["desktop_automation_reason"],
+                    "desktop_input_permissions": input_permissions,
                     "session_minutes": self.server.default_session_minutes,
                     "session_unlimited": self.server.default_session_minutes <= 0,
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
@@ -2047,6 +2047,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if not _perform_type(
                     payload.get("text", ""),
                     sensitive=bool(payload.get("sensitive", False)),
+                    focus=payload.get("focus"),
                 ):
                     raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":

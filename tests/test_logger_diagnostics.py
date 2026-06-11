@@ -1,3 +1,5 @@
+import io
+import logging
 import os
 import tempfile
 import unittest
@@ -25,6 +27,47 @@ class LoggerDiagnosticsTests(unittest.TestCase):
         self.assertNotIn("abcdefghijklmnopqrstuvwxyz", redacted)
         self.assertNotIn("/tmp/private-file", redacted)
         self.assertIn("<redacted>", redacted)
+
+    def test_redact_text_masks_token_inside_telegram_api_url(self):
+        text = (
+            "HTTP Request: POST "
+            'https://api.telegram.org/bot123456789:AAfake-token-abcdef/getMe "HTTP/1.1 200 OK"'
+        )
+
+        redacted = diagnostics.redact_text(text)
+
+        self.assertNotIn("123456789:AAfake-token", redacted)
+        self.assertIn("/bot<redacted>/getMe", redacted)
+
+    def test_harden_stdlib_logging_redacts_and_silences_httpx(self):
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        root = logging.getLogger()
+        root.addHandler(handler)
+        httpx_logger = logging.getLogger("httpx")
+        try:
+            diagnostics.harden_stdlib_logging()
+
+            self.assertEqual(httpx_logger.getEffectiveLevel(), logging.WARNING)
+
+            httpx_logger.info(
+                'HTTP Request: POST %s "%s"',
+                "https://api.telegram.org/bot123456789:AAfake-token-abcdef/getMe",
+                "HTTP/1.1 200 OK",
+            )
+            httpx_logger.warning(
+                'HTTP Request: POST %s "%s"',
+                "https://api.telegram.org/bot123456789:AAfake-token-abcdef/getMe",
+                "HTTP/1.1 429 Too Many Requests",
+            )
+        finally:
+            root.removeHandler(handler)
+
+        output = stream.getvalue()
+        self.assertNotIn("200 OK", output)
+        self.assertIn("429", output)
+        self.assertNotIn("123456789:AAfake-token", output)
+        self.assertIn("/bot<redacted>/getMe", output)
 
     def test_collect_diagnostics_snapshot_contains_core_process_fields(self):
         snapshot = diagnostics.collect_diagnostics_snapshot("unit-test")

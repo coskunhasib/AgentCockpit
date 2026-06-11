@@ -1,4 +1,4 @@
-const CACHE_NAME = 'agentcockpit-phone-v11';
+const CACHE_NAME = 'agentcockpit-phone-v13';
 const STATIC_ASSETS = [
   '/offline.html',
   '/icon.svg',

@@ -226,5 +226,20 @@ class PhoneCallbackAuthTests(unittest.TestCase):
             legacy.ALLOWED_IDS.update(original_allowed)
 
 
+
+
+class BridgeRestartDecisionTests(unittest.TestCase):
+    def test_no_restart_below_failure_threshold(self):
+        self.assertFalse(ux._bridge_restart_decision(0, None, 1000.0))
+        self.assertFalse(ux._bridge_restart_decision(2, None, 1000.0))
+
+    def test_restart_at_threshold_when_no_prior_restart(self):
+        self.assertTrue(ux._bridge_restart_decision(3, None, 1000.0))
+
+    def test_cooldown_blocks_rapid_respawns(self):
+        self.assertFalse(ux._bridge_restart_decision(3, 950.0, 1000.0))
+        self.assertTrue(ux._bridge_restart_decision(3, 950.0, 1071.0))
+
+
 if __name__ == "__main__":
     unittest.main()

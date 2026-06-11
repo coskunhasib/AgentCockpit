@@ -10,6 +10,8 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn('data-key="taskmgr-close"', html)
         self.assertIn('data-key="alt+f4"', html)
         self.assertIn('data-key="winleft+d"', html)
+        self.assertIn('data-key="ctrlleft+left"', html)
+        self.assertIn('data-key="ctrlleft+right"', html)
 
     def test_keyboard_defaults_to_visible_text_with_password_toggle(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
@@ -17,6 +19,9 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn('id="type-input" type="text"', html)
         self.assertIn('id="btn-sensitive"', html)
         self.assertIn("sensitive: sensitiveTyping", html)
+        self.assertIn("rememberTextTarget(coords)", html)
+        self.assertIn("const focus = recentTextTarget()", html)
+        self.assertIn("sensitive: sensitiveTyping, focus, delay", html)
         self.assertIn("typeInput.type = sensitiveTyping ? 'password' : 'text'", html)
 
 

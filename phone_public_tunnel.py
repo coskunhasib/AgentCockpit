@@ -550,13 +550,27 @@ class QuickTunnel:
         if self._stop_event.is_set():
             return
 
-        command = [
-            str(self._binary),
-            "tunnel",
-            "--url",
-            self.target_url,
-            "--no-autoupdate",
-        ]
+        # PHONE_CLOUDFLARE_TUNNEL_TOKEN tanimliysa rastgele *.trycloudflare.com
+        # yerine sabit hostname'li named tunnel kullanilir; ingress eslemesi
+        # (hostname -> http://127.0.0.1:8765) Cloudflare panelinde yapilir.
+        named_token = get_str("PHONE_CLOUDFLARE_TUNNEL_TOKEN", "").strip()
+        if named_token:
+            command = [
+                str(self._binary),
+                "--no-autoupdate",
+                "tunnel",
+                "run",
+                "--token",
+                named_token,
+            ]
+        else:
+            command = [
+                str(self._binary),
+                "tunnel",
+                "--url",
+                self.target_url,
+                "--no-autoupdate",
+            ]
         creationflags = 0
         if os.name == "nt":
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -603,6 +617,20 @@ class QuickTunnel:
             daemon=True,
         )
         self._reader_thread.start()
+
+        # Named tunnel ciktisinda trycloudflare URL'si gecmez; sabit hostname
+        # dogrudan yayinlanir.
+        named_hostname = get_str("PHONE_CLOUDFLARE_TUNNEL_HOSTNAME", "").strip().rstrip("/")
+        if named_token and named_hostname:
+            url = named_hostname if named_hostname.startswith("https://") else f"https://{named_hostname}"
+            with self._lock:
+                if process is self.process and not self._stop_event.is_set():
+                    self.public_url = url
+                    self.status = "hazir"
+                    self.error = ""
+                    self._url_seen_at = time.monotonic()
+            write_public_url(url)
+            self._url_event.set()
 
     def _read_output(self, process):
         if not process or not process.stdout:
@@ -670,18 +698,44 @@ class QuickTunnel:
 
     def _watchdog(self):
         delay = self.restart_delay
+        alive_since = 0.0
+        budget_reset_sec = max(60.0, get_float("PHONE_PUBLIC_TUNNEL_RESTART_RESET_SEC", "600"))
+        limit_cooloff_sec = max(
+            self.restart_delay_max,
+            get_float("PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC", "900"),
+        )
         while not self._stop_event.wait(delay):
             if not tunnel_enabled(self.mode):
                 return
             process = self.process
             if process and process.poll() is None:
+                now = time.monotonic()
+                if not alive_since:
+                    alive_since = now
+                elif self.restart_count and (now - alive_since) >= budget_reset_sec:
+                    # Uzun sure saglikli kalan tunel butcesini geri kazanir;
+                    # aksi halde gunlere yayilan tekil kopmalar limiti doldurur.
+                    logger.info(
+                        f"Public tunnel {int(budget_reset_sec)}s boyunca saglikli; "
+                        "yeniden baslatma butcesi sifirlandi."
+                    )
+                    self.restart_count = 0
                 delay = self.restart_delay
                 continue
+            alive_since = 0.0
             if self.max_restarts and self.restart_count >= self.max_restarts:
+                # Kalici pes etme yok: WAN erisimi olmadan kosan bot ise yaramaz.
+                # Sogumadan sonra butce sifirlanir ve tekrar denenir.
                 with self._lock:
                     self.status = "hata"
                     self.error = "public tunnel yeniden baslatma limiti doldu"
-                return
+                logger.warning(
+                    "Public tunnel yeniden baslatma limiti doldu; "
+                    f"{int(limit_cooloff_sec)}s sogumadan sonra tekrar denenecek."
+                )
+                self.restart_count = 0
+                delay = limit_cooloff_sec
+                continue
             try:
                 self.restart_count += 1
                 logger.warning(

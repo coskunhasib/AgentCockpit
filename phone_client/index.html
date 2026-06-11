@@ -74,6 +74,12 @@
       will-change: transform;
     }
 
+    /* Capture beklemedeyken donmus son kare canli goruntu sanilmasin. */
+    #screen.stale-frame {
+      filter: grayscale(1) brightness(0.45);
+      transition: filter 0.4s ease;
+    }
+
     #overlay {
       position: fixed;
       inset: 0;
@@ -860,6 +866,10 @@
       <button class="key-btn" data-key="alt+f4">Close</button>
       <button class="key-btn" data-key="winleft+d">Desktop</button>
     </div>
+    <div class="key-row">
+      <button class="key-btn" data-key="ctrlleft+left">Ekran Sol</button>
+      <button class="key-btn" data-key="ctrlleft+right">Ekran Sag</button>
+    </div>
   </div>
 
   <div id="connect-screen">
@@ -986,6 +996,7 @@
       let pendingScrollPayload = null;
       let lastTapTime = 0;
       let lastTapX = 0;
+      let lastTextTarget = null;
       let longPressTimer = null;
       let gesture = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
@@ -1586,6 +1597,7 @@
         } else {
           screenEl.src = `data:image/jpeg;base64,${payload.image}`;
         }
+        screenEl.classList.remove('stale-frame');
         setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir', true);
         if (wasDisconnected) {
           setStatusExpanded(false);
@@ -1607,6 +1619,7 @@
         const deferredFor = captureRetryDelay();
         if (deferredFor > 0) {
           connected = false;
+          screenEl.classList.add('stale-frame');
           setStatus('Ekran yakalama beklemede', captureWaitText(deferredFor), false);
           scheduleNextPoll(deferredFor + 250);
           return;
@@ -1641,9 +1654,12 @@
             }
           }
           const detail = (error && error.message) ? error.message : 'Sunucuya yeniden ulasmaya calisiyorum';
-          const title = (error && error.captureUnavailable) || /Siyah ekran|Screen Recording|ekran kilitli|uykuda|screen metrics unavailable/i.test(detail)
-            ? 'Ekran yakalama sorunu'
-            : 'Baglanti kesildi';
+          const captureProblem = (error && error.captureUnavailable)
+            || /Siyah ekran|Screen Recording|ekran kilitli|uykuda|screen metrics unavailable/i.test(detail);
+          if (captureProblem) {
+            screenEl.classList.add('stale-frame');
+          }
+          const title = captureProblem ? 'Ekran yakalama sorunu' : 'Baglanti kesildi';
           setStatus(title, retryDelay ? captureWaitText(retryDelay) : detail, false);
           setOfflineBanner(true, navigator.onLine
             ? (retryDelay ? 'Mac ekran yakalama hazir degil. App shell acik kaldi, bekleyip tekrar deniyorum.' : 'Baglanti koptu. App shell acik kaldi, tekrar deniyorum.')
@@ -1746,11 +1762,22 @@
         startPushStream();
       }
 
+      function forceFreshFramePoll() {
+        streamMode = 'frame';
+        streamSig = '';
+        streamForceRefresh = true;
+        if (streamAbort) {
+          streamAbort.abort();
+        }
+        scheduleNextPoll(0);
+      }
+
       async function runPushStream() {
         const generation = ++streamGeneration;
         const controller = new AbortController();
         streamAbort = controller;
         let gotFrame = false;
+        let fallbackToFrameNow = false;
         const watchdog = setTimeout(() => {
           if (!gotFrame) {
             controller.abort();   // no frame within the window -> fall back
@@ -1803,7 +1830,13 @@
             }
           }
         } catch (error) {
-          noteRetryAfter(error);
+          if (error && error.http === 429) {
+            // Existing WAN tabs can keep push-stream slots busy briefly. Keep
+            // the last visible frame and recover through the one-request frame path.
+            fallbackToFrameNow = true;
+          } else {
+            noteRetryAfter(error);
+          }
         } finally {
           clearTimeout(watchdog);
           if (generation === streamGeneration) {
@@ -1811,10 +1844,19 @@
           }
         }
         if (generation === streamGeneration && streamMode === 'stream') {
+          if (fallbackToFrameNow) {
+            streamMode = 'frame';
+            streamSig = '';
+            consecutiveErrors = 0;
+            setStatus('Hizli akis mesgul', 'Tek kare akisa donuldu, goruntu yenileniyor', connected);
+            scheduleNextPoll(0);
+            return;
+          }
           const deferredFor = captureRetryDelay();
           if (deferredFor > 0) {
             streamMode = 'frame';
             connected = false;
+            screenEl.classList.add('stale-frame');
             setStatus('Ekran yakalama beklemede', captureWaitText(deferredFor), false);
             setOfflineBanner(true, 'Mac ekran yakalama hazir degil. App shell acik kaldi, bekleyip tekrar deniyorum.');
             scheduleNextPoll(deferredFor + 250);
@@ -1833,6 +1875,7 @@
         const wasDisconnected = !connected || consecutiveErrors > 0;
         consecutiveErrors = 0;
         connected = true;
+        screenEl.classList.remove('stale-frame');
         setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Canli akis', true);
         if (wasDisconnected) {
           setStatusExpanded(false);
@@ -2235,6 +2278,27 @@
         };
       }
 
+      function rememberTextTarget(coords) {
+        if (!coords || !coords.inBounds) {
+          return;
+        }
+        lastTextTarget = {
+          x: coords.x,
+          y: coords.y,
+          at: Date.now()
+        };
+      }
+
+      function recentTextTarget(maxAgeMs = 180000) {
+        if (!lastTextTarget || Date.now() - lastTextTarget.at > maxAgeMs) {
+          return null;
+        }
+        return {
+          x: lastTextTarget.x,
+          y: lastTextTarget.y
+        };
+      }
+
       function clamp(value, min, max) {
         return Math.max(min, Math.min(max, value));
       }
@@ -2442,6 +2506,7 @@
           const now = Date.now();
           const isDouble = now - lastTapTime < 320 && Math.abs(gesture.x - lastTapX) < 30;
           const marker = spawnTapMarker(gesture.x, gesture.y, isDouble ? 'double' : 'left');
+          rememberTextTarget(coords);
           enqueueAction(
             {
               type: 'click',
@@ -2469,17 +2534,14 @@
       btnRefresh.addEventListener('click', () => {
         setTopbarVisible(true);
         boostLiveWindow(7000);
-        if (streamSupported) {
+        if (streamMode === 'stream' && streamSupported) {
           // Re-attempt / refresh the fast push stream.
           restartPushStream();
         } else if (streamMode === 'frame') {
           // Force the next long-poll to return the current frame immediately.
-          streamSig = '';
-          streamForceRefresh = true;
-          if (streamAbort) {
-            streamAbort.abort();
-          }
-          scheduleNextPoll(0);
+          forceFreshFramePoll();
+        } else if (streamSupported) {
+          startPushStream();
         } else {
           fetchScreenshot('manual');
         }
@@ -2505,12 +2567,7 @@
           restartPushStream();   // reconnect so the new quality/resolution applies
         } else if (streamMode === 'frame') {
           // Drop the in-flight long-poll so the new resolution applies right away.
-          streamSig = '';
-          streamForceRefresh = true;
-          if (streamAbort) {
-            streamAbort.abort();
-          }
-          scheduleNextPoll(0);
+          forceFreshFramePoll();
         } else {
           scheduleNextPoll(180);
         }
@@ -2567,9 +2624,10 @@
           return;
         }
         const wasSensitive = sensitiveTyping;
+        const focus = recentTextTarget();
         typeInput.value = '';
         enqueueAction(
-          { type: 'type', text: value, sensitive: sensitiveTyping, delay: 0.12 },
+          { type: 'type', text: value, sensitive: sensitiveTyping, focus, delay: 0.12 },
           {
             el: sendText,
             toast: wasSensitive ? 'Sifre gonderildi' : 'Metin gonderildi',
