@@ -295,8 +295,14 @@ class PhonePublicTunnelTests(unittest.TestCase):
         self.assertEqual(tunnel.active_provider, "bore")
         write_url.assert_called_with("http://159.223.110.159:8518")
 
-    def test_public_tunnel_manager_disables_bore_fallback_by_default(self):
+    def test_public_tunnel_manager_enables_bore_fallback_by_default(self):
         with patch.dict(os.environ, {}, clear=True):
+            tunnel = phone_public_tunnel.PublicTunnelManager("http://127.0.0.1:8765")
+
+        self.assertTrue(tunnel._fallback_enabled())
+
+    def test_public_tunnel_manager_can_disable_bore_fallback_explicitly(self):
+        with patch.dict(os.environ, {"PHONE_PUBLIC_TUNNEL_FALLBACK": "off"}, clear=True):
             tunnel = phone_public_tunnel.PublicTunnelManager("http://127.0.0.1:8765")
 
         self.assertFalse(tunnel._fallback_enabled())
