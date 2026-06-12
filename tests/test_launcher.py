@@ -25,6 +25,88 @@ class LauncherTests(unittest.TestCase):
         ), patch.object(launcher.sys, "argv", ["launcher.py"]):
             self.assertFalse(launcher._keep_bridge_after_launcher_exit())
 
+    def test_telegram_supervisor_restarts_when_bot_returns(self):
+        calls = []
+        sleeps = []
+        events = []
+
+        def fake_run_bot():
+            calls.append("run")
+            if len(calls) > 1:
+                raise KeyboardInterrupt()
+
+        def fake_event(event, **payload):
+            events.append((event, payload))
+
+        with self.assertRaises(KeyboardInterrupt):
+            launcher._run_telegram_ux_supervised(
+                run_bot_func=fake_run_bot,
+                record_runtime_event=fake_event,
+                sleep_func=sleeps.append,
+            )
+
+        self.assertEqual(calls, ["run", "run"])
+        self.assertEqual(sleeps, [5])
+        self.assertEqual(events[0][0], "telegram_ux_supervisor_returned")
+
+    def test_telegram_supervisor_restarts_clean_system_exit_in_autostart(self):
+        calls = []
+        sleeps = []
+        events = []
+
+        def fake_run_bot():
+            calls.append("run")
+            if len(calls) == 1:
+                raise SystemExit(0)
+            raise KeyboardInterrupt()
+
+        def fake_event(event, **payload):
+            events.append((event, payload))
+
+        with patch.dict(os.environ, {"AGENTCOCKPIT_AUTOSTART": "true"}, clear=False), self.assertRaises(
+            KeyboardInterrupt
+        ):
+            launcher._run_telegram_ux_supervised(
+                run_bot_func=fake_run_bot,
+                record_runtime_event=fake_event,
+                sleep_func=sleeps.append,
+            )
+
+        self.assertEqual(calls, ["run", "run"])
+        self.assertEqual(sleeps, [5])
+        self.assertEqual(events[0][0], "telegram_ux_supervisor_system_exit")
+        self.assertEqual(events[0][1]["action"], "restart")
+
+    def test_telegram_supervisor_propagates_manual_system_exit(self):
+        sleeps = []
+        events = []
+
+        def fake_run_bot():
+            raise SystemExit(0)
+
+        def fake_event(event, **payload):
+            events.append((event, payload))
+
+        with patch.dict(os.environ, {}, clear=True), patch.object(launcher.sys, "argv", ["launcher.py"]):
+            with self.assertRaises(SystemExit):
+                launcher._run_telegram_ux_supervised(
+                    run_bot_func=fake_run_bot,
+                    record_runtime_event=fake_event,
+                    sleep_func=sleeps.append,
+                )
+
+        self.assertEqual(sleeps, [])
+        self.assertEqual(events[0][0], "telegram_ux_supervisor_system_exit")
+        self.assertEqual(events[0][1]["action"], "propagate")
+
+    def test_runner_start_uses_autostart_mode(self):
+        runner = Path(__file__).resolve().parents[1] / "runner.sh"
+        text = runner.read_text(encoding="utf-8")
+        self.assertIn(
+            'AGENTCOCKPIT_AUTOSTART=true python3 "$PROJECT_ROOT/main.py" --autostart',
+            text,
+        )
+
     def _runner_stop_namespace(self):
         """Exec runner.sh's embedded stop script up to (but not including) the
         process-killing loop, so its matching logic can be exercised without

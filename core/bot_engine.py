@@ -1805,6 +1805,8 @@ def _kill_old_instances():
     atexit.register(_cleanup_lock)
 
     def _signal_handler(sig, frame):
+        os.environ["AGENTCOCKPIT_SHUTDOWN_REQUESTED"] = "1"
+        record_runtime_event("bot_engine_signal", signal=sig)
         _cleanup_lock()
         sys.exit(0)
 
@@ -1883,7 +1885,7 @@ def run_bot():
             logger.info("AgentCockpit baslatildi")
             print("AgentCockpit baslatildi...")
             _get_or_create_event_loop()
-            app.run_polling()
+            app.run_polling(stop_signals=None)
             restart_counter += 1
             record_runtime_event(
                 "bot_engine_polling_returned",

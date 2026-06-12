@@ -92,4 +92,4 @@ if [[ "${1:-}" == "stop" ]]; then
   exit 0
 fi
 
-python3 "$PROJECT_ROOT/main.py"
+AGENTCOCKPIT_AUTOSTART=true python3 "$PROJECT_ROOT/main.py" --autostart

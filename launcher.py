@@ -3,6 +3,7 @@ import socket
 import subprocess
 import sys
 import time
+import traceback
 import webbrowser
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -212,6 +213,84 @@ def _keep_bridge_after_launcher_exit():
     return "--autostart" in sys.argv or os.environ.get("AGENTCOCKPIT_AUTOSTART") == "true"
 
 
+def _shutdown_requested():
+    return os.environ.get("AGENTCOCKPIT_SHUTDOWN_REQUESTED") == "1"
+
+
+def _supervisor_delay_seconds(attempt):
+    if attempt <= 1:
+        return 5
+    return min(60, 5 * attempt)
+
+
+def _run_telegram_ux_supervised(*, run_bot_func=None, record_runtime_event=None, sleep_func=time.sleep):
+    if run_bot_func is None:
+        from telegram_ux import run_bot as run_bot_func
+    if record_runtime_event is None:
+        from core.logger import record_runtime_event
+
+    restart_attempt = 0
+    while True:
+        try:
+            run_bot_func()
+            restart_attempt += 1
+            delay_seconds = _supervisor_delay_seconds(restart_attempt)
+            record_runtime_event(
+                "telegram_ux_supervisor_returned",
+                restart_attempt=restart_attempt,
+                delay_seconds=delay_seconds,
+            )
+            print(
+                "[SUPERVISOR] Telegram UX beklenmeden dondu. "
+                f"{delay_seconds}s sonra yeniden baslatilacak."
+            )
+        except KeyboardInterrupt:
+            record_runtime_event("telegram_ux_supervisor_interrupted")
+            raise
+        except SystemExit as exc:
+            code = exc.code if isinstance(exc.code, int) else 1
+            if _shutdown_requested() or not _keep_bridge_after_launcher_exit():
+                record_runtime_event(
+                    "telegram_ux_supervisor_system_exit",
+                    code=code,
+                    action="propagate",
+                    shutdown_requested=_shutdown_requested(),
+                )
+                raise
+            restart_attempt += 1
+            delay_seconds = _supervisor_delay_seconds(restart_attempt)
+            record_runtime_event(
+                "telegram_ux_supervisor_system_exit",
+                code=code,
+                action="restart",
+                restart_attempt=restart_attempt,
+                delay_seconds=delay_seconds,
+            )
+            print(
+                "[SUPERVISOR] Telegram UX temiz cikti ama autostart aktif. "
+                f"{delay_seconds}s sonra yeniden baslatilacak."
+            )
+        except Exception as exc:
+            restart_attempt += 1
+            delay_seconds = _supervisor_delay_seconds(restart_attempt)
+            from core.logger import log_crash
+
+            crash_file = log_crash("launcher.telegram_ux_supervisor", str(exc), traceback.format_exc())
+            record_runtime_event(
+                "telegram_ux_supervisor_crash",
+                error=str(exc),
+                restart_attempt=restart_attempt,
+                delay_seconds=delay_seconds,
+                crash_file=crash_file,
+            )
+            print(
+                "[SUPERVISOR] Telegram UX hata ile durdu. "
+                f"{delay_seconds}s sonra yeniden baslatilacak: {exc}"
+            )
+
+        sleep_func(delay_seconds)
+
+
 def run_stack():
     try:
         import pip_system_certs  # noqa: F401
@@ -264,8 +343,6 @@ def run_stack():
             print(f"[PHONE] Pairing dashboard hazir: {bridge_base_url}/pair")
 
     try:
-        from telegram_ux import run_bot
-
         print("[START] AgentCockpit stack aciliyor: phone bridge + Telegram UX")
         if not _host_resolves("api.telegram.org"):
             record_runtime_event("telegram_dns_wait_start", host="api.telegram.org")
@@ -273,7 +350,7 @@ def run_stack():
                 record_runtime_event("telegram_dns_wait_stopped")
                 return
             record_runtime_event("telegram_dns_wait_done", host="api.telegram.org")
-        run_bot()
+        _run_telegram_ux_supervised(record_runtime_event=record_runtime_event)
     finally:
         if bridge_process and bridge_process.poll() is None:
             if _keep_bridge_after_launcher_exit():
