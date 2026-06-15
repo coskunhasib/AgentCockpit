@@ -51,7 +51,7 @@ http://127.0.0.1:8765/pair
 ```
 
 Bu sayfada QR goruruz. Telefonda kamerayla okutunca LAN linki acilir ve PWA kurulumu daha temiz baslar.
-Uzak baglanti hazirsa QR ve `Baglantiyi Ac` dugmesi uzak linki kullanir; degilse yerel linkle devam eder.
+Uzak Cloudflare baglantisi hazirsa QR ve `Baglantiyi Ac` dugmesi uzak linki kullanir; degilse yerel linkle devam eder.
 Quick Tunnel adresi stale/olu ise QR artik onu kullanmaz; saglikli WAN dogrulanamazsa otomatik LAN fallback uygulanir.
 Link suresi varsayilan olarak sinirsizdir; istersen bu PC'de acilan pairing sayfasindan degistirebiliriz.
 Ilk pairing tamamlandiktan sonra cihaz guvenilir olarak hatirlanir; bot/bridge yeniden baslasa da ayni origin uzerinden tekrar QR gerekmez.

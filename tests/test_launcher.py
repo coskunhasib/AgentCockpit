@@ -102,8 +102,9 @@ class LauncherTests(unittest.TestCase):
     def test_runner_start_uses_autostart_mode(self):
         runner = Path(__file__).resolve().parents[1] / "runner.sh"
         text = runner.read_text(encoding="utf-8")
+        self.assertIn('PYTHON_BIN="$PROJECT_ROOT/venv/bin/python3"', text)
         self.assertIn(
-            'AGENTCOCKPIT_AUTOSTART=true python3 "$PROJECT_ROOT/main.py" --autostart',
+            'AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart',
             text,
         )
 
@@ -143,6 +144,16 @@ class LauncherTests(unittest.TestCase):
         # Unrelated tunnels must NOT be killed.
         self.assertFalse(is_our_tunnel("/usr/bin/cloudflared tunnel run my-named-tunnel"))
         self.assertFalse(is_our_tunnel("/usr/local/bin/bore server --secret abc"))
+
+    def test_runner_stop_matches_relative_diagnostic_app_start(self):
+        is_our_app_process = self._runner_stop_namespace()["is_our_app_process"]
+
+        self.assertTrue(
+            is_our_app_process(
+                "/Library/Frameworks/Python.framework/Versions/3.13/Resources/Python.app/Contents/MacOS/Python main.py --autostart"
+            )
+        )
+        self.assertFalse(is_our_app_process("/usr/bin/python3 other.py --autostart"))
 
 
 if __name__ == "__main__":

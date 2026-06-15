@@ -3,9 +3,19 @@ set -u
 
 export PYTHONIOENCODING=utf-8
 PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
+PYTHON_BIN="${PYTHON_BIN:-}"
+if [[ -z "$PYTHON_BIN" ]]; then
+  if [[ -x "$PROJECT_ROOT/venv/bin/python3" ]]; then
+    PYTHON_BIN="$PROJECT_ROOT/venv/bin/python3"
+  elif [[ -x "$PROJECT_ROOT/.venv/bin/python3" ]]; then
+    PYTHON_BIN="$PROJECT_ROOT/.venv/bin/python3"
+  else
+    PYTHON_BIN="python3"
+  fi
+fi
 
 stop_stack() {
-  PROJECT_ROOT_ENV="$PROJECT_ROOT" python3 - <<'PY'
+  PROJECT_ROOT_ENV="$PROJECT_ROOT" "$PYTHON_BIN" - <<'PY'
 import os
 import signal
 import subprocess
@@ -54,6 +64,18 @@ def is_our_tunnel(command):
     return False
 
 
+def is_our_app_process(command):
+    # Direct diagnostic starts may show up in ps as "main.py --autostart"
+    # instead of the absolute "$PROJECT_ROOT/main.py" path. Match that shape so
+    # runner.sh stop can still cleanly tear down the stack it owns.
+    text = f" {command} "
+    if " main.py --autostart " in text:
+        return True
+    if " phone_bridge_server.py " in text:
+        return True
+    return False
+
+
 def matching_pids():
     output = subprocess.check_output(["ps", "-ax", "-o", "pid=,command="], text=True)
     pids = []
@@ -68,7 +90,7 @@ def matching_pids():
         pid = int(pid_text)
         if pid == current_pid:
             continue
-        if any(pattern in command for pattern in patterns) or is_our_tunnel(command):
+        if any(pattern in command for pattern in patterns) or is_our_tunnel(command) or is_our_app_process(command):
             pids.append(pid)
     return pids
 
@@ -92,4 +114,4 @@ if [[ "${1:-}" == "stop" ]]; then
   exit 0
 fi
 
-AGENTCOCKPIT_AUTOSTART=true python3 "$PROJECT_ROOT/main.py" --autostart
+AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart

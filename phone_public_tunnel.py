@@ -1147,24 +1147,36 @@ class PublicTunnelManager:
         self.error = ""
         self._primary_stopped_for_fallback = False
         self._lock = threading.Lock()
+        self._started_at = 0.0
 
     def start(self):
         if not tunnel_enabled(self.mode):
             clear_public_url()
             return self
+        self._started_at = time.monotonic()
         self.primary.start()
         return self
 
     def _fallback_enabled(self):
         return tunnel_enabled(self.mode) and self.fallback_mode in {"auto", "bore", "1", "true", "yes", "on"}
 
+    def _fallback_delay_elapsed(self):
+        if self.fallback_mode != "auto":
+            return True
+        if not self._started_at:
+            return False
+        delay = max(0.0, get_float("PHONE_PUBLIC_TUNNEL_FALLBACK_DELAY_SEC", "20"))
+        return (time.monotonic() - self._started_at) >= delay
+
     def _ensure_fallback(self):
         if not self._fallback_enabled():
+            return None
+        if not self._fallback_delay_elapsed():
             return None
         with self._lock:
             if not self.fallback:
                 logger.warning(
-                    "Cloudflare Quick Tunnel hazir degil; Bore WAN fallback baslatiliyor."
+                    "Cloudflare Quick Tunnel bekleme suresinde URL uretmedi; Bore WAN fallback baslatiliyor."
                 )
                 self.fallback = self.fallback_cls(
                     self.target_url,

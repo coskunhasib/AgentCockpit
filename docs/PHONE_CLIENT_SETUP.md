@@ -92,17 +92,19 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_SCREENSHOT_MAX_WIDTH=1600`
 - `PHONE_PUBLIC_TUNNEL=auto`
 - `PHONE_PUBLIC_TUNNEL_DOWNLOAD=1`
+- `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
 - `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=0`
 - `PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC=3`
 - `PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC=60`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC=120`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
-- `PHONE_PUBLIC_TUNNEL_FALLBACK=auto`
+- `PHONE_PUBLIC_TUNNEL_FALLBACK=off`
+- `PHONE_PUBLIC_TUNNEL_FALLBACK_DELAY_SEC=20`
 - `PHONE_BORE_SERVER=159.223.110.159`
 - `PHONE_BORE_PUBLIC_HOST=159.223.110.159`
 - `PHONE_BORE_REMOTE_PORT=`
-  Opsiyonel Bore fallback icindir. Bos birakilirsa uzak WAN portu otomatik secilir.
+  Opsiyonel Bore fallback icindir. Varsayilan kapali kalir; acilirsa bos port degerinde uzak WAN portu otomatik secilir.
 - `PHONE_BORE_RESTART_DELAY_SEC=3`
 - `PHONE_BORE_RESTART_MAX_DELAY_SEC=60`
 - `PHONE_KEEP_AWAKE=1`
@@ -124,7 +126,7 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
 - `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
 - `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
-- Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. Cloudflare quick tunnel URL uretemezse `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` IP tabanli Bore fallback'ini baslatir; bu durumda WAN linki `http://159.223.110.159:<port>` formatinda gelir. Uzaktan link uretilmeden telefon/PWA akisi tamamlanmis sayilmaz.
+- Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. IP tabanli Bore fallback varsayilan kapali tutulur; sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilirsa kullanilir. Uzaktan link uretilmeden telefon/PWA akisi tamamlanmis sayilmaz.
 - `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
 - `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 
