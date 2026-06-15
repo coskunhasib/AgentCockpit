@@ -842,6 +842,32 @@ def _perform_scroll(x_ratio, y_ratio, delta):
         pyautogui.scroll(int(delta))
 
 
+def _action_audit_payload(action_type, payload, *, request_id=""):
+    body = {
+        "action_type": str(action_type or "")[:32],
+        "request_id": str(request_id or "")[:128],
+        "no_screenshot": bool(payload.get("no_screenshot")),
+    }
+    if action_type == "key":
+        body["keys"] = str(payload.get("keys", ""))[:120]
+    elif action_type == "type":
+        body["text_chars"] = len(str(payload.get("text", "")))
+        body["sensitive"] = bool(payload.get("sensitive", False))
+        body["has_focus"] = isinstance(payload.get("focus"), dict)
+    elif action_type == "click":
+        body["button"] = str(payload.get("button", "left"))[:24]
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
+    elif action_type == "scroll":
+        try:
+            body["delta"] = int(payload.get("delta", 0) or 0)
+        except (TypeError, ValueError):
+            body["delta"] = 0
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.5)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.5)), 4)
+    return body
+
+
 def _perform_keypress(keys):
     if not keys:
         return True
@@ -2018,6 +2044,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         if cached_response is not None:
             self._json_response(cached_response)
             return
+        action_audit = _action_audit_payload(action_type, payload, request_id=request_id)
+        record_runtime_event("phone_bridge_action_received", **action_audit)
 
         try:
             # Parse delay inside the try so the except path below releases the
@@ -2084,8 +2112,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 "wan_url": wan_url,
                 "screenshot": screenshot_payload,
             }
+            record_runtime_event("phone_bridge_action_succeeded", **action_audit)
         except Exception as exc:
             logger.exception(f"Phone bridge action failed: {exc}")
+            record_runtime_event(
+                "phone_bridge_action_failed",
+                **action_audit,
+                error=_redact_capture_error(exc),
+            )
             if is_owner:
                 self.server.action_dedup.abort(request_id)
             self._json_response(

@@ -182,6 +182,31 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         paste_text.assert_called_once_with("şifre", restore_clipboard=True)
 
+    def test_action_audit_payload_does_not_log_text_content(self):
+        payload = {
+            "type": "type",
+            "text": "SuperSecret123!",
+            "sensitive": True,
+            "focus": {"x": 0.2, "y": 0.3},
+            "request_id": "req-1",
+            "no_screenshot": True,
+        }
+
+        audit = phone_bridge_server._action_audit_payload(
+            "type",
+            payload,
+            request_id=payload["request_id"],
+        )
+
+        self.assertEqual(audit["action_type"], "type")
+        self.assertEqual(audit["request_id"], "req-1")
+        self.assertEqual(audit["text_chars"], len(payload["text"]))
+        self.assertTrue(audit["sensitive"])
+        self.assertTrue(audit["has_focus"])
+        self.assertTrue(audit["no_screenshot"])
+        self.assertNotIn("text", audit)
+        self.assertNotIn("SuperSecret123!", str(audit))
+
 
 if __name__ == "__main__":
     unittest.main()

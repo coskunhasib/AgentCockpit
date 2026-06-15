@@ -127,6 +127,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
 - `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
 - Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. IP tabanli Bore fallback varsayilan kapali tutulur; sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilirsa kullanilir. Uzaktan link uretilmeden telefon/PWA akisi tamamlanmis sayilmaz.
+- Uzaktan input tarafinda `Win+L`, macOS `Control+Command+Q`, `Shift+Command+Q`, `sleep`, `power` ve benzeri kilit/uyku kombinasyonlari bilerek engellenir. Bu uygulama kilitli ekrani kontrol edemedigi icin remote-control akisini bozan sistem kisa yollarina fail-closed davranir.
+- `/api/action` komutlari `logs/diagnostics/events_<pid>.jsonl` icine audit olarak yazilir. Metin icerigi kaydedilmez; sadece action tipi, hotkey, text uzunlugu, sensitive bayragi ve basari/hata sonucu tutulur.
 - `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
 - `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 

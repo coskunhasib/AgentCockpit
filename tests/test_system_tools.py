@@ -12,7 +12,6 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["alt", "tab"]), ["command", "tab"])
             self.assertEqual(SystemOps.normalize_hotkey(["alt", "shift", "tab"]), ["command", "shift", "tab"])
             self.assertEqual(SystemOps.normalize_hotkey(["winleft", "d"]), ["command", "f3"])
-            self.assertEqual(SystemOps.normalize_hotkey(["win", "l"]), ["ctrl", "command", "q"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "right"]), ["ctrl", "right"])
             self.assertEqual(
@@ -26,6 +25,47 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["command", "v"]), ["ctrl", "v"])
             self.assertEqual(SystemOps.normalize_hotkey(["option", "tab"]), ["alt", "tab"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
+
+    def test_system_lock_hotkeys_are_blocked_before_pyautogui(self):
+        class FakePyAutoGui:
+            def hotkey(self, *keys, **kwargs):
+                raise AssertionError("blocked hotkey should not reach pyautogui")
+
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools,
+            "_get_pyautogui",
+            return_value=FakePyAutoGui(),
+        ):
+            self.assertFalse(SystemOps.execute_hotkey(["win", "l"]))
+            self.assertFalse(SystemOps.execute_hotkey(["winleft", "l"]))
+            self.assertFalse(SystemOps.execute_hotkey(["mac_control", "command", "q"]))
+            self.assertFalse(SystemOps.execute_hotkey(["shift", "command", "q"]))
+
+    def test_windows_lock_hotkey_is_blocked_before_pyautogui(self):
+        class FakePyAutoGui:
+            def hotkey(self, *keys, **kwargs):
+                raise AssertionError("blocked hotkey should not reach pyautogui")
+
+        with patch.object(system_tools.sys, "platform", "win32"), patch.object(
+            system_tools,
+            "_get_pyautogui",
+            return_value=FakePyAutoGui(),
+        ):
+            self.assertFalse(SystemOps.execute_hotkey(["win", "l"]))
+
+    def test_mac_dangerous_single_keys_are_blocked_before_pyautogui(self):
+        class FakePyAutoGui:
+            def press(self, key):
+                raise AssertionError("blocked key should not reach pyautogui")
+
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools,
+            "_get_pyautogui",
+            return_value=FakePyAutoGui(),
+        ):
+            self.assertFalse(SystemOps.press_key("sleep"))
+            self.assertFalse(SystemOps.press_key("power"))
+            self.assertFalse(SystemOps.press_key("lock"))
 
     def test_task_manager_close_command_uses_windows_taskkill(self):
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()

@@ -118,10 +118,13 @@ class SystemOps:
         ("win", "d"): ["command", "f3"],
         ("winleft", "d"): ["command", "f3"],
         ("windows", "d"): ["command", "f3"],
-        ("win", "l"): ["ctrl", "command", "q"],
-        ("winleft", "l"): ["ctrl", "command", "q"],
-        ("windows", "l"): ["ctrl", "command", "q"],
     }
+    BLOCKED_HOTKEY_COMBOS = {
+        ("win", "l"),
+        ("winleft", "l"),
+        ("windows", "l"),
+    }
+    MAC_DANGEROUS_KEYS = {"eject", "power", "sleep", "lock", "lockscreen", "lock_screen"}
     MAC_KEY_ALIASES = {
         "cmd": "command",
         "command": "command",
@@ -154,6 +157,43 @@ class SystemOps:
     def _normalize_key_name(key_name):
         key = str(key_name or "").strip().lower()
         return SystemOps.KEY_ALIASES.get(key, key)
+
+    @staticmethod
+    def _mac_hotkey_safety_alias(key_name):
+        key = SystemOps._normalize_key_name(key_name)
+        return {
+            "cmd": "command",
+            "command": "command",
+            "win": "command",
+            "winleft": "command",
+            "windows": "command",
+            "ctrl": "ctrl",
+            "control": "ctrl",
+            "mac_ctrl": "ctrl",
+            "mac_control": "ctrl",
+            "alt": "option",
+            "option": "option",
+            "shiftleft": "shift",
+            "shiftright": "shift",
+        }.get(key, key)
+
+    @staticmethod
+    def _is_blocked_hotkey(keys_list):
+        normalized = tuple(SystemOps._normalize_key_name(key) for key in keys_list or [])
+        if normalized in SystemOps.BLOCKED_HOTKEY_COMBOS:
+            return True
+
+        if sys.platform != "darwin":
+            return False
+
+        keys = {SystemOps._mac_hotkey_safety_alias(key) for key in normalized}
+        if keys & SystemOps.MAC_DANGEROUS_KEYS:
+            return True
+        if {"ctrl", "command", "q"}.issubset(keys):
+            return True
+        if {"shift", "command", "q"}.issubset(keys):
+            return True
+        return False
 
     @staticmethod
     def close_task_manager():
@@ -300,6 +340,9 @@ class SystemOps:
             normalized = SystemOps._normalize_key_name(key_name)
             if normalized in SystemOps.SPECIAL_COMMANDS:
                 return SystemOps.close_task_manager()
+            if SystemOps._is_blocked_hotkey([normalized]):
+                logger.warning(f"Riskli sistem tusu engellendi: {normalized}")
+                return False
 
             pyautogui = _get_pyautogui()
             if not pyautogui:
@@ -315,6 +358,9 @@ class SystemOps:
             normalized_keys = [
                 SystemOps._normalize_key_name(key) for key in keys_list or []
             ]
+            if SystemOps._is_blocked_hotkey(normalized_keys):
+                logger.warning(f"Riskli sistem kisayolu engellendi: {normalized_keys}")
+                return False
             if normalized_keys and all(
                 key in SystemOps.SPECIAL_COMMANDS for key in normalized_keys
             ):
