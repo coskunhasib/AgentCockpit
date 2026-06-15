@@ -68,11 +68,11 @@ class PhonePublicTunnelTests(unittest.TestCase):
             "http://159.223.110.159:8518",
         )
 
-    def test_tunnel_restart_limit_defaults_to_unlimited(self):
+    def test_tunnel_restart_limit_defaults_to_finite_budget(self):
         with patch.dict("os.environ", {}, clear=True):
             tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
 
-        self.assertEqual(tunnel.max_restarts, 0)
+        self.assertEqual(tunnel.max_restarts, 5)
 
     def test_cloudflared_process_env_keeps_system_dns_by_default_on_macos(self):
         with patch("phone_public_tunnel.sys.platform", "darwin"), patch.dict(
@@ -120,6 +120,16 @@ class PhonePublicTunnelTests(unittest.TestCase):
 
         tunnel._update_dns_strategy_from_output("tls: failed to verify certificate: x509: OSStatus -26276")
         self.assertFalse(tunnel._force_go_dns)
+        self.assertIn("macOS DNS", tunnel._environment_failure_detail())
+        self.assertIn("Keychain", tunnel._environment_failure_detail())
+
+    def test_tunnel_environment_failure_detail_reports_single_dns_failure(self):
+        with patch.dict("os.environ", {}, clear=True):
+            tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")
+
+        tunnel._update_dns_strategy_from_output("lookup api.trycloudflare.com: no such host")
+
+        self.assertIn("api.trycloudflare.com", tunnel._environment_failure_detail())
 
     def test_get_public_url_returns_empty_when_health_validation_fails(self):
         tunnel = phone_public_tunnel.QuickTunnel("http://127.0.0.1:8765")

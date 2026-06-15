@@ -514,6 +514,7 @@ class QuickTunnel:
         self._url_seen_at = 0.0
         self._dns_strategy = get_str("CLOUDFLARED_FORCE_GO_DNS", "auto").lower()
         self._force_go_dns = _truthy(self._dns_strategy)
+        self._failure_signals = set()
 
     def start(self):
         if not tunnel_enabled(self.mode):
@@ -682,13 +683,39 @@ class QuickTunnel:
                 return
             clear_public_url()
             self.status = "yeniden_baslatiliyor"
-            self.error = f"cloudflared cikti: {exit_code}"
+            detail = self._environment_failure_detail()
+            self.error = (
+                f"{detail}; cloudflared cikti: {exit_code}"
+                if detail
+                else f"cloudflared cikti: {exit_code}"
+            )
+
+    def _environment_failure_detail(self):
+        signals = set(self._failure_signals)
+        if {"dns", "tls_trust"}.issubset(signals):
+            return (
+                "cloudflared baslatilamadi: macOS DNS bos ve TLS root certificate/"
+                "Keychain dogrulamasi basarisiz"
+            )
+        if "tls_trust" in signals:
+            return (
+                "cloudflared TLS dogrulamasi basarisiz: macOS root certificate/"
+                "Keychain erisimi bozuk olabilir"
+            )
+        if "dns" in signals:
+            return "cloudflared DNS api.trycloudflare.com adresini cozemiyor"
+        return ""
 
     def _update_dns_strategy_from_output(self, line):
         if self._dns_strategy not in {"", "auto"}:
             return
         text = (line or "").lower()
         with self._lock:
+            if "no such host" in text:
+                self._failure_signals.add("dns")
+            if "osstatus -26276" in text or "failed to verify certificate" in text:
+                self._failure_signals.add("tls_trust")
+
             if "no such host" in text and not self._force_go_dns:
                 self._force_go_dns = True
                 logger.warning("cloudflared DNS hatasi aldi; sonraki denemede Go DNS kullanilacak.")
@@ -702,7 +729,7 @@ class QuickTunnel:
         budget_reset_sec = max(60.0, get_float("PHONE_PUBLIC_TUNNEL_RESTART_RESET_SEC", "600"))
         limit_cooloff_sec = max(
             self.restart_delay_max,
-            get_float("PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC", "900"),
+            get_float("PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC", "300"),
         )
         while not self._stop_event.wait(delay):
             if not tunnel_enabled(self.mode):
@@ -726,11 +753,14 @@ class QuickTunnel:
             if self.max_restarts and self.restart_count >= self.max_restarts:
                 # Kalici pes etme yok: WAN erisimi olmadan kosan bot ise yaramaz.
                 # Sogumadan sonra butce sifirlanir ve tekrar denenir.
+                detail = self._environment_failure_detail()
+                if not detail:
+                    detail = "public tunnel yeniden baslatma limiti doldu"
                 with self._lock:
                     self.status = "hata"
-                    self.error = "public tunnel yeniden baslatma limiti doldu"
+                    self.error = detail
                 logger.warning(
-                    "Public tunnel yeniden baslatma limiti doldu; "
+                    f"{detail}; "
                     f"{int(limit_cooloff_sec)}s sogumadan sonra tekrar denenecek."
                 )
                 self.restart_count = 0

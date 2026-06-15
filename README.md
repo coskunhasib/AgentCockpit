@@ -125,6 +125,9 @@ Kisa notlar:
 - WAN icin varsayilan ve hedef yol Cloudflare Quick Tunnel'dir. `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
   Cloudflare'in gercek URL uretmesi icin bekler; IP tabanli Bore fallback varsayilan kapali tutulur.
   Bore sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilir.
+- Cloudflare DNS/TLS hatasinda sonsuz hizli yeniden baslatma yapilmaz. Varsayilan
+  `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5` denemeden sonra kisa bir cooloff'a girer ve
+  `/health` icinde macOS DNS/root certificate/Keychain kaynakli hata acikca gorunur.
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
 - WAN tunnelini terminal/Codex gibi eksik GUI/DNS baglamindan yeniden baslatmak
   Cloudflare quick tunnel olusturmayi bozabilir; kalici calisma icin auto-start

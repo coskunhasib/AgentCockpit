@@ -93,12 +93,13 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_PUBLIC_TUNNEL=auto`
 - `PHONE_PUBLIC_TUNNEL_DOWNLOAD=1`
 - `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
-- `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=0`
+- `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5`
 - `PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC=3`
 - `PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC=60`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC=120`
 - `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
+- `PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC=300`
 - `PHONE_PUBLIC_TUNNEL_FALLBACK=off`
 - `PHONE_PUBLIC_TUNNEL_FALLBACK_DELAY_SEC=20`
 - `PHONE_BORE_SERVER=159.223.110.159`
@@ -126,6 +127,10 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
 - `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
 - `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
+- Cloudflare DNS/TLS hatasi devam ederse hizli sonsuz restart yapilmaz. Varsayilan
+  `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5` denemeden sonra `PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC=300`
+  saniye cooloff uygular; `/health` icindeki `public_tunnel_error` macOS DNS/root certificate/Keychain
+  sorununu acikca yazar.
 - Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. IP tabanli Bore fallback varsayilan kapali tutulur; sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilirsa kullanilir. Uzaktan link uretilmeden telefon/PWA akisi tamamlanmis sayilmaz.
 - Uzaktan input tarafinda `Win+L`, macOS `Control+Command+Q`, `Shift+Command+Q`, `sleep`, `power` ve benzeri kilit/uyku kombinasyonlari bilerek engellenir. Bu uygulama kilitli ekrani kontrol edemedigi icin remote-control akisini bozan sistem kisa yollarina fail-closed davranir.
 - `/api/action` komutlari `logs/diagnostics/events_<pid>.jsonl` icine audit olarak yazilir. Metin icerigi kaydedilmez; sadece action tipi, hotkey, text uzunlugu, sensitive bayragi ve basari/hata sonucu tutulur.
