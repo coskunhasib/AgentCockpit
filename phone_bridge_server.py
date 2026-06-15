@@ -872,10 +872,15 @@ def _perform_keypress(keys):
     if not keys:
         return True
     if "+" in keys:
-        return SystemOps.execute_hotkey(
-            [part.strip() for part in keys.split("+") if part.strip()]
-        )
-    return SystemOps.press_key(keys.strip())
+        parts = [part.strip() for part in keys.split("+") if part.strip()]
+        if SystemOps._is_blocked_hotkey(parts):
+            raise RuntimeError("Riskli sistem kisayolu engellendi.")
+        return SystemOps.execute_hotkey(parts)
+
+    key = keys.strip()
+    if SystemOps._is_blocked_hotkey([key]):
+        raise RuntimeError("Riskli sistem tusu engellendi.")
+    return SystemOps.press_key(key)
 
 
 def _perform_focus_click(focus):

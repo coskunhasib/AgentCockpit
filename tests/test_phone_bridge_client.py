@@ -182,6 +182,14 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         paste_text.assert_called_once_with("şifre", restore_clipboard=True)
 
+    def test_blocked_phone_hotkey_reports_system_shortcut_reason(self):
+        with patch.object(phone_bridge_server.sys, "platform", "darwin"):
+            with self.assertRaisesRegex(RuntimeError, "Riskli sistem kisayolu"):
+                phone_bridge_server._perform_keypress("win+l")
+
+            with self.assertRaisesRegex(RuntimeError, "Riskli sistem tusu"):
+                phone_bridge_server._perform_keypress("sleep")
+
     def test_action_audit_payload_does_not_log_text_content(self):
         payload = {
             "type": "type",
