@@ -2,6 +2,10 @@ import asyncio
 import importlib
 import io
 import os
+import re
+import subprocess
+import sys
+import tempfile
 import time
 from dataclasses import dataclass, field
 
@@ -47,6 +51,16 @@ class WanSnapshotSession:
 _sessions: dict[int, WanSnapshotSession] = {}
 
 
+def _safe_error_text(error):
+    text = str(error or "").strip()
+    text = re.sub(r"(/private)?/var/folders/\S+", "<temp-file>", text)
+    text = re.sub(r"(/tmp|/var/tmp)/\S+", "<temp-file>", text)
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot<redacted>", text)
+    text = re.sub(r"token=[A-Za-z0-9:_-]+", "token=<redacted>", text)
+    text = " ".join(text.split())
+    return text[:300]
+
+
 def _get_pyautogui():
     global _PYAUTOGUI
     if _PYAUTOGUI is not None:
@@ -75,11 +89,23 @@ def _mouse_overlay_point(image_size):
 
 
 def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
-    pyautogui = _get_pyautogui()
-    if not pyautogui:
-        raise RuntimeError(desktop_automation_help_text())
-
-    screenshot = pyautogui.screenshot()
+    screenshot = None
+    capture_error = None
+    if sys.platform == "darwin":
+        screenshot = _capture_with_screencapture()
+        if screenshot is None:
+            capture_error = RuntimeError("screencapture ile ekran alinmadi")
+    if screenshot is None:
+        pyautogui = _get_pyautogui()
+        if not pyautogui:
+            raise RuntimeError(desktop_automation_help_text())
+        try:
+            screenshot = pyautogui.screenshot()
+        except Exception as exc:
+            capture_error = exc
+            raise RuntimeError(
+                f"Ekran goruntusu olusturulamadi. Asil hata: {_safe_error_text(exc)}"
+            ) from exc
 
     try:
         mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
@@ -114,6 +140,38 @@ def _capture_frame(max_width=DEFAULT_MAX_WIDTH, quality=DEFAULT_QUALITY):
         height=screenshot.height,
         signature=signature,
     )
+
+
+def _capture_with_screencapture():
+    if sys.platform != "darwin":
+        return None
+
+    temp_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            temp_path = tmp.name
+
+        result = subprocess.run(
+            ["screencapture", "-x", "-t", "jpg", temp_path],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+        if result.returncode != 0:
+            return None
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) <= 0:
+            return None
+
+        with Image.open(temp_path) as captured:
+            return captured.convert("RGB")
+    except Exception:
+        return None
+    finally:
+        if temp_path:
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
 
 
 def _change_score(previous, current):
@@ -191,11 +249,12 @@ async def _run_loop(bot, session):
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        logger.exception("WAN snapshot loop failed: %s", exc)
+        safe_error = _safe_error_text(exc)
+        logger.warning(f"WAN snapshot loop failed: {safe_error}")
         try:
             await bot.send_message(
                 chat_id=session.chat_id,
-                text=f"WAN snapshot oturumu durdu: {exc}",
+                text=f"WAN snapshot oturumu durdu: {safe_error}",
             )
         except Exception:
             pass

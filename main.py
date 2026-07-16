@@ -13,6 +13,15 @@ if str(PROJECT_ROOT) not in sys.path:
 
 os.environ["PYTHONIOENCODING"] = "utf-8"
 
+try:
+    from core.dns_fallback import install as install_dns_fallback
+    from core.dns_fallback import install_tls_fallback
+
+    install_dns_fallback()
+    install_tls_fallback()
+except Exception:
+    pass
+
 
 __version__ = "2.0.0 (AgentCockpit unified)"
 
@@ -59,6 +68,26 @@ def global_exception_handler(exc_type, exc_value, exc_traceback):
 
 
 sys.excepthook = global_exception_handler
+
+
+def _enable_runtime_diagnostics(process_name="main"):
+    try:
+        from core.logger import (
+            install_diagnostics_hooks,
+            record_runtime_event,
+            start_diagnostics_heartbeat,
+        )
+
+        install_diagnostics_hooks(process_name, main_excepthook=False)
+        start_diagnostics_heartbeat(process_name)
+        record_runtime_event(
+            "entrypoint_start",
+            version=__version__,
+            argv=sys.argv[1:],
+            autostart=os.getenv("AGENTCOCKPIT_AUTOSTART", ""),
+        )
+    except Exception as exc:
+        print(f"[UYARI] Diagnostics baslatilamadi: {exc}")
 
 
 def is_legacy_mode(argv=None):
@@ -139,7 +168,22 @@ def _bootstrap_without_launcher(script_path):
     except Exception as exc:
         print(f"[UYARI] Bagimlilik kurulumunda sorun: {exc}. Devam ediyorum.")
 
-    subprocess.call([str(venv_python), script_path] + sys.argv[1:], cwd=PROJECT_ROOT)
+    restart_env = os.environ.copy()
+    protected_pids = [
+        pid
+        for pid in (
+            restart_env.get("AGENTCOCKPIT_PARENT_PIDS", ""),
+            str(os.getpid()),
+            str(os.getppid()),
+        )
+        if pid
+    ]
+    restart_env["AGENTCOCKPIT_PARENT_PIDS"] = ",".join(protected_pids)
+    subprocess.call(
+        [str(venv_python), script_path] + sys.argv[1:],
+        cwd=PROJECT_ROOT,
+        env=restart_env,
+    )
     sys.exit()
 
 
@@ -185,6 +229,8 @@ def run_doctor():
 
 
 def run_application(argv=None):
+    _enable_runtime_diagnostics("main")
+
     if is_doctor_mode(argv):
         run_doctor()
         return

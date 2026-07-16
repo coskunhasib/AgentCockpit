@@ -4,7 +4,9 @@ import contextvars
 import functools
 import logging
 import os
+import re
 import sys
+from pathlib import Path
 
 
 async def _run_in_thread_with_context(func, *args, **kwargs):
@@ -84,7 +86,14 @@ from core.claude_bridge import (
     sync_claude_settings,
 )
 from core.data_manager import DataManager
-from core.logger import get_logger, log_crash, notify_crash
+from core.logger import (
+    configure_asyncio_diagnostics,
+    get_logger,
+    harden_stdlib_logging,
+    log_crash,
+    notify_crash,
+    record_runtime_event,
+)
 from core.platform_utils import (
     click_new_session,
     click_permission_button,
@@ -148,8 +157,9 @@ except Exception:
     pass
 
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.WARNING
 )
+harden_stdlib_logging()
 
 for warning in CLAUDE_UI_CONFIG_WARNINGS:
     logger.warning(f"Claude UI config uyarisi: {warning}")
@@ -874,9 +884,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_markup=get_claude_keyboard(),
                 )
                 return
-            handle = find_claude_window()
-            if handle and focus_window(handle):
-                if click_new_session():
+            # These resolve to blocking osascript subprocess calls + sleeps on
+            # macOS; run them off the event loop so the bot stays responsive.
+            handle = await _run_in_thread_with_context(find_claude_window)
+            if handle and await _run_in_thread_with_context(focus_window, handle):
+                if await _run_in_thread_with_context(click_new_session):
                     await _run_in_thread_with_context(sync_claude_settings)
                     await update.message.reply_text(
                         "Yeni session acildi.", reply_markup=get_claude_keyboard()
@@ -1151,17 +1163,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if msg in BUTTON_SCREENSHOT or msg == "📸 Ekran Al":
         status = await update.message.reply_text("Screenshot aliniyor...")
         path = SystemOps.take_screenshot()
-        if path:
-            try:
+        try:
+            if path:
                 with open(path, "rb") as photo_file:
                     await context.bot.send_photo(
                         chat_id=update.effective_chat.id, photo=photo_file
                     )
-            finally:
+            else:
+                await update.message.reply_text("Screenshot alinamadi.")
+        finally:
+            if path:
                 SystemOps.clean_up(path)
-                await context.bot.delete_message(
-                    chat_id=update.effective_chat.id, message_id=status.message_id
-                )
+            await context.bot.delete_message(
+                chat_id=update.effective_chat.id, message_id=status.message_id
+            )
 
     elif msg in {"PC Restart", "🔄 PC Restart"}:
         await update.message.reply_text("PC yeniden baslatiliyor...")
@@ -1283,9 +1298,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Yeni session secildi. Sonraki prompt Claude CLI tarafinda yeni bir oturum baslatacak."
             )
             return
-        handle = find_claude_window()
-        if handle and focus_window(handle):
-            if click_new_session():
+        # Offload the blocking osascript window calls off the event loop.
+        handle = await _run_in_thread_with_context(find_claude_window)
+        if handle and await _run_in_thread_with_context(focus_window, handle):
+            if await _run_in_thread_with_context(click_new_session):
                 await _run_in_thread_with_context(sync_claude_settings)
                 await query.edit_message_text("Yeni session acildi.")
             else:
@@ -1466,8 +1482,133 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 LOCK_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bot.lock")
 
+# fd of the held single-instance flock (POSIX). Kept open for the process
+# lifetime so the exclusive lock persists; released on exit.
+_LOCK_FD = None
+
+
+def _release_lock_fd():
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        try:
+            os.close(_LOCK_FD)
+        except OSError:
+            pass
+        _LOCK_FD = None
+
+
+def _acquire_singleton_lock(my_pid, *, retries=8, retry_delay=1.0):
+    """Atomically claim the single-instance lock.
+
+    Holds an exclusive ``flock`` for the process lifetime. This closes the
+    check-then-write TOCTOU (two near-simultaneous launches could both "win" the
+    old plain write) and removes stale-lock hazards entirely: if the holder dies
+    the OS releases the lock automatically. Returns True if acquired.
+
+    On Windows (no ``fcntl``) it falls back to a best-effort write; there the
+    system-wide process scan is the primary guard.
+    """
+    global _LOCK_FD
+    if _LOCK_FD is not None:
+        return True
+
+    if sys.platform == "win32":
+        with open(LOCK_FILE, "w", encoding="utf-8") as f:
+            f.write(str(my_pid))
+        return True
+
+    import fcntl
+
+    for attempt in range(max(1, retries)):
+        try:
+            fd = os.open(LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o644)
+        except OSError as exc:
+            logger.warning(f"Lock dosyasi acilamadi: {exc}")
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+                continue
+            return False
+        try:
+            os.ftruncate(fd, 0)
+            os.write(fd, str(my_pid).encode("utf-8"))
+            os.fsync(fd)
+        except OSError:
+            pass
+        _LOCK_FD = fd
+        return True
+    return False
+
+
+def _pid_command(pid):
+    """Best-effort command line of `pid`, or '' if it cannot be determined."""
+    if not pid or pid <= 0:
+        return ""
+    import subprocess
+
+    try:
+        if sys.platform != "win32":
+            out = subprocess.check_output(
+                ["ps", "-o", "command=", "-p", str(int(pid))],
+                encoding="utf-8",
+                errors="ignore",
+            )
+            return out.strip()
+        cmd_args = [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine",
+        ]
+        out = subprocess.check_output(cmd_args, encoding="utf-8", errors="ignore")
+        return out.strip()
+    except Exception:
+        return ""
+
+
+LAUNCHD_BOT_LABEL = "com.agentcockpit.bot"
+_launchd_bot_displaced = False
+
+
+def _schedule_launchd_bot_restore():
+    """Dev calismasi launchd botunu oldurduyse cikista geri baslatir.
+
+    KeepAlive(SuccessfulExit=false) nedeniyle temiz cikan autostart kopyasini
+    launchd kendiliginden geri getirmez; kickstart gecikmeli calisir ki yeni
+    kopya ps'te hala gorunen olmekte olan dev surecine yol vermesin.
+    """
+    global _launchd_bot_displaced
+    if not _launchd_bot_displaced or sys.platform != "darwin":
+        return
+    _launchd_bot_displaced = False
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_BOT_LABEL}.plist"
+    if not plist.exists():
+        return
+    try:
+        import subprocess
+
+        subprocess.Popen(
+            [
+                "/bin/sh",
+                "-c",
+                f"sleep 5; /bin/launchctl kickstart gui/{os.getuid()}/{LAUNCHD_BOT_LABEL}",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        record_runtime_event("launchd_bot_restore_scheduled", label=LAUNCHD_BOT_LABEL)
+        logger.info("Cikista launchd botunun geri baslatilmasi planlandi.")
+    except Exception as exc:
+        logger.warning(f"launchd bot geri baslatma planlanamadi: {exc}")
+
 
 def _cleanup_lock():
+    _schedule_launchd_bot_restore()
     try:
         if os.path.exists(LOCK_FILE):
             with open(LOCK_FILE, "r", encoding="utf-8") as f:
@@ -1476,24 +1617,187 @@ def _cleanup_lock():
                 os.remove(LOCK_FILE)
     except Exception:
         pass
+    finally:
+        _release_lock_fd()
+
+
+def _is_pid_alive(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as e:
+        import errno
+        return e.errno != errno.ESRCH
+
+
+def _is_agentcockpit_bot_command(cmdline):
+    if not cmdline:
+        return False
+    lowered = cmdline.lower()
+    # A python interpreter actually being launched (executable immediately
+    # followed by an argument), not merely the word "python" appearing inside a
+    # grep/ps probe string.
+    if not re.search(r"python[\w.]*(?:\.exe)?[\"']?\s", lowered):
+        return False
+    # ...running one of our entry scripts as a real file path (a path separator
+    # precedes the name). A shell probe that only mentions "main.py" inside a
+    # quoted pattern has no separator and is correctly rejected.
+    if not any(
+        marker in lowered
+        for marker in ("/main.py", "\\main.py", "/telegram_ux.py", "\\telegram_ux.py")
+    ):
+        return False
+    # ...from an AgentCockpit install. Substring tests (not shlex.split) so an
+    # install path that contains spaces — e.g. ".../New project/..." — is matched
+    # correctly; shlex would split the path on the space and drop the python
+    # executable, making a real running instance look unrelated.
+    project_root = str(Path(__file__).resolve().parents[1]).lower()
+    return "agentcockpit" in lowered or project_root in lowered
 
 
 def _kill_old_instances():
     from core.platform_utils import kill_process
+    import subprocess
 
+    is_autostart = "--autostart" in sys.argv or os.environ.get("AGENTCOCKPIT_AUTOSTART") == "true"
+    my_pid = os.getpid()
+    protected_pids = set()
+    for raw_pid in os.environ.get("AGENTCOCKPIT_PARENT_PIDS", "").replace(";", ",").split(","):
+        try:
+            pid = int(raw_pid.strip())
+        except ValueError:
+            continue
+        if pid > 0:
+            protected_pids.add(pid)
+
+    # 1. Sistem genelinde diger cakisabilecek AgentCockpit sureclerini ara ve temizle
+    other_pids = []
+    if sys.platform != "win32":
+        try:
+            output = subprocess.check_output(["ps", "-ax", "-o", "pid,ppid,command"], encoding="utf-8", errors="ignore")
+            rows = []
+            parent_by_pid = {}
+            for line in output.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                parts = line.split(None, 2)
+                if len(parts) < 3:
+                    continue
+                pid_str, ppid_str, cmd = parts
+                try:
+                    pid = int(pid_str)
+                    ppid = int(ppid_str)
+                except ValueError:
+                    continue
+                rows.append((pid, ppid, cmd))
+                parent_by_pid[pid] = ppid
+
+            ancestor_pids = set(protected_pids)
+            parent_pid = parent_by_pid.get(my_pid, os.getppid())
+            while parent_pid and parent_pid not in ancestor_pids:
+                ancestor_pids.add(parent_pid)
+                parent_pid = parent_by_pid.get(parent_pid, 0)
+
+            for pid, ppid, cmd in rows:
+                if pid == my_pid or pid in ancestor_pids:
+                    continue
+
+                if _is_agentcockpit_bot_command(cmd):
+                    other_pids.append((pid, cmd, ppid))
+        except Exception as e:
+            logger.warning(f"Sistem geneli surec taramasi basarisiz (Unix): {e}")
+    else:
+        try:
+            cmd_args = ["powershell", "-NoProfile", "-Command", 
+                        "Get-CimInstance Win32_Process -Filter \"name like 'python%'\" | Select-Object ProcessId, CommandLine | ConvertTo-Json"]
+            output = subprocess.check_output(cmd_args, encoding="utf-8", errors="ignore").strip()
+            if output:
+                import json
+                try:
+                    data = json.loads(output)
+                    if not isinstance(data, list):
+                        data = [data]
+                    for item in data:
+                        pid = item.get("ProcessId")
+                        cmdline = item.get("CommandLine") or ""
+                        if pid and pid != my_pid:
+                            if _is_agentcockpit_bot_command(cmdline):
+                                other_pids.append((pid, cmdline, 0))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Sistem geneli surec taramasi basarisiz (Windows): {e}")
+
+    if other_pids:
+        if is_autostart:
+            record_runtime_event(
+                "bot_engine_duplicate_process_detected",
+                pid=other_pids[0][0],
+                action="exit_autostart",
+            )
+            logger.info(
+                f"Sistem genelinde aktif baska bir AgentCockpit sureci calisiyor (PID: {other_pids[0][0]}). "
+                "Cakismalari onlemek icin autostart sureci sessizce sonlandiriliyor."
+            )
+            sys.exit(0)
+        else:
+            global _launchd_bot_displaced
+            for pid, cmd, ppid in other_pids:
+                logger.info(f"Cakisabilecek diger AgentCockpit sureci sonlandiriliyor: PID {pid} ({cmd})")
+                if sys.platform == "darwin" and ppid == 1:
+                    _launchd_bot_displaced = True
+                kill_process(pid)
+            time.sleep(2)
+
+    # 2. Yerel lock dosyasi kontrolu (ekstra guvenlik icin)
     if os.path.exists(LOCK_FILE):
         try:
             with open(LOCK_FILE, "r", encoding="utf-8") as f:
                 old_pid = int(f.read().strip())
-            if old_pid != os.getpid():
-                kill_process(old_pid)
-                logger.info(f"Eski bot process kapatildi: PID {old_pid}")
-                time.sleep(2)
+            if old_pid != my_pid and _is_pid_alive(old_pid):
+                # Verify the PID actually belongs to an AgentCockpit process
+                # before killing it. A stale lock (crash/power-loss skips
+                # _cleanup_lock) can point at a PID the OS later reused for an
+                # unrelated process; killing that blindly would terminate a
+                # random user process.
+                old_cmd = _pid_command(old_pid)
+                if not (old_cmd and _is_agentcockpit_bot_command(old_cmd)):
+                    logger.warning(
+                        f"Lock dosyasindaki PID {old_pid} bir AgentCockpit sureci "
+                        "degil veya dogrulanamadi; bayat lock olarak gecersiz sayiliyor."
+                    )
+                elif is_autostart:
+                    record_runtime_event(
+                        "bot_engine_lock_process_detected",
+                        pid=old_pid,
+                        action="exit_autostart",
+                    )
+                    logger.info(
+                        f"Diger aktif bot sureci calisiyor (PID: {old_pid}). "
+                        "Autostart daemon cakismalari onlemek icin sessizce sonlandiriliyor."
+                    )
+                    sys.exit(0)
+                else:
+                    kill_process(old_pid)
+                    logger.info(f"Eski yerel bot process kapatildi: PID {old_pid}")
+                    time.sleep(2)
         except (ValueError, OSError):
             pass
 
-    with open(LOCK_FILE, "w", encoding="utf-8") as f:
-        f.write(str(os.getpid()))
+    if not _acquire_singleton_lock(my_pid):
+        record_runtime_event("bot_engine_lock_contended", action="exit")
+        logger.info(
+            "AgentCockpit tek-ornek kilidi baska bir aktif surec tarafindan tutuluyor; "
+            "cakismayi onlemek icin baslatma erteleniyor."
+        )
+        sys.exit(0)
 
     import atexit
     import signal
@@ -1501,6 +1805,8 @@ def _kill_old_instances():
     atexit.register(_cleanup_lock)
 
     def _signal_handler(sig, frame):
+        os.environ["AGENTCOCKPIT_SHUTDOWN_REQUESTED"] = "1"
+        record_runtime_event("bot_engine_signal", signal=sig)
         _cleanup_lock()
         sys.exit(0)
 
@@ -1511,6 +1817,14 @@ def _kill_old_instances():
             signal.signal(signal.SIGBREAK, _signal_handler)
         except (AttributeError, OSError):
             pass
+
+
+def _ensure_bot_instance_cleanup():
+    if os.environ.get("AGENTCOCKPIT_BOT_CLEANUP_DONE") == "1":
+        record_runtime_event("bot_engine_cleanup_skipped", reason="already_done_by_launcher")
+        return False
+    _kill_old_instances()
+    return True
 
 
 def run_bot():
@@ -1525,8 +1839,9 @@ def run_bot():
         print("HATA: Token yok.")
         return
 
-    _kill_old_instances()
+    _ensure_bot_instance_cleanup()
     logger.info("Bot baslatiliyor...")
+    record_runtime_event("bot_engine_start", allowed_ids_count=len(ALLOWED_IDS), max_restart=max_restart)
 
     try:
         import httpx
@@ -1541,8 +1856,16 @@ def run_bot():
     except Exception as exc:
         logger.warning(f"Cache temizleme atlandi: {exc}")
 
-    while restart_counter < max_restart:
+    while True:
+        _fresh_loop = None
+        sleep_after_iteration = 0
+        reset_restart_counter = False
         try:
+            # Force a fresh event loop on every start/retry iteration to prevent "Event loop is closed" errors
+            _fresh_loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(_fresh_loop)
+            configure_asyncio_diagnostics(_fresh_loop, "bot_engine")
+
             app = ApplicationBuilder().token(TOKEN).post_init(post_init).build()
 
             app.add_handler(CommandHandler("start", start))
@@ -1562,51 +1885,92 @@ def run_bot():
             logger.info("AgentCockpit baslatildi")
             print("AgentCockpit baslatildi...")
             _get_or_create_event_loop()
-            app.run_polling()
+            app.run_polling(stop_signals=None)
+            restart_counter += 1
+            record_runtime_event(
+                "bot_engine_polling_returned",
+                restart_counter=restart_counter,
+                max_restart=max_restart,
+            )
+            logger.warning(
+                "Telegram polling beklenmeden durdu. Stack kapatilmadan yeniden baslatilacak."
+            )
+            if restart_counter >= max_restart:
+                record_runtime_event(
+                    "bot_engine_polling_returned_backoff",
+                    restart_counter=restart_counter,
+                    max_restart=max_restart,
+                )
+                reset_restart_counter = True
+                sleep_after_iteration = 60
+            else:
+                sleep_after_iteration = 5
 
         except Exception as exc:
             from telegram.error import Conflict
 
             if isinstance(exc, Conflict):
                 restart_counter += 1
+                record_runtime_event("bot_engine_conflict", restart_counter=restart_counter, max_restart=max_restart)
                 logger.warning(
                     f"Baska bot calisiyor ({restart_counter}/{max_restart}). 30s bekleniyor..."
                 )
                 print(
                     f"[UYARI] Conflict ({restart_counter}/{max_restart}). 30s bekleniyor..."
                 )
-                time.sleep(30)
                 if restart_counter >= max_restart:
-                    logger.critical("Conflict cozulemedi. Durduruluyor.")
-                    break
-                continue
+                    record_runtime_event(
+                        "bot_engine_conflict_backoff",
+                        restart_counter=restart_counter,
+                        max_restart=max_restart,
+                    )
+                    logger.critical("Conflict cozulemedi. Durdurmak yerine backoff ile tekrar denenecek.")
+                    reset_restart_counter = True
+                    sleep_after_iteration = 60
+                else:
+                    sleep_after_iteration = 30
 
-            restart_counter += 1
-            crash_file = log_crash("bot_engine", str(exc), traceback.format_exc())
-            logger.error(f"Bot coktu ({restart_counter}/{max_restart}): {exc}")
-
-            try:
-                first_id = next(iter(ALLOWED_IDS), None)
-                if first_id:
-                    try:
-                        loop = asyncio.new_event_loop()
-                        loop.run_until_complete(
-                            notify_crash(TOKEN, first_id, crash_file, str(exc))
-                        )
-                        loop.close()
-                    except Exception:
-                        pass
-            except Exception as notify_err:
-                logger.error(f"Bildirim hatasi: {notify_err}")
-
-            if restart_counter < max_restart:
-                logger.warning(
-                    f"Yeniden baslatiliyor... ({restart_counter}/{max_restart})"
-                )
-                print(f"[HATA] Bot coktu: {exc}")
-                print("5 saniye icinde yeniden baslatiliyor...")
-                time.sleep(5)
             else:
-                logger.critical("Bot 3 kez ust uste coktu. Durduruluyor.")
-                print("Bot 3 kez coktu. Durduruluyor.")
-                break
+                restart_counter += 1
+                crash_file = log_crash("bot_engine", str(exc), traceback.format_exc())
+                record_runtime_event("bot_engine_crash_retry", restart_counter=restart_counter, max_restart=max_restart, crash_file=crash_file)
+                logger.error(f"Bot coktu ({restart_counter}/{max_restart}): {exc}")
+
+                try:
+                    first_id = next(iter(ALLOWED_IDS), None)
+                    if first_id:
+                        try:
+                            loop = asyncio.new_event_loop()
+                            loop.run_until_complete(
+                                notify_crash(TOKEN, first_id, crash_file, str(exc))
+                            )
+                            loop.close()
+                        except Exception:
+                            pass
+                except Exception as notify_err:
+                    logger.error(f"Bildirim hatasi: {notify_err}")
+
+                if restart_counter < max_restart:
+                    logger.warning(
+                        f"Yeniden baslatiliyor... ({restart_counter}/{max_restart})"
+                    )
+                    print(f"[HATA] Bot coktu: {exc}")
+                    print("5 saniye icinde yeniden baslatiliyor...")
+                    sleep_after_iteration = 5
+                else:
+                    record_runtime_event("bot_engine_backoff_after_crashes", restart_counter=restart_counter)
+                    logger.critical("Bot 3 kez ust uste coktu. Durdurmak yerine backoff ile tekrar denenecek.")
+                    print("Bot 3 kez coktu. 60 saniye sonra tekrar denenecek.")
+                    reset_restart_counter = True
+                    sleep_after_iteration = 60
+        finally:
+            try:
+                if _fresh_loop is not None and not _fresh_loop.is_closed():
+                    _fresh_loop.close()
+            except Exception:
+                pass
+
+        if sleep_after_iteration:
+            time.sleep(sleep_after_iteration)
+        if reset_restart_counter:
+            restart_counter = 0

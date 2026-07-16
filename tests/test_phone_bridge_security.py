@@ -29,9 +29,9 @@ class PhoneBridgeSecurityTests(unittest.TestCase):
         )[0]
         self.assertNotIn("rotateHintDismissed", orientation_block)
 
-    def test_link_payload_uses_non_validating_public_url_for_qr(self):
+    def test_link_payload_uses_validated_public_url_for_qr(self):
         source = inspect.getsource(PhoneBridgeHandler._build_link_payload)
-        self.assertIn("get_public_url(validate=False)", source)
+        self.assertIn("get_public_url(validate=True)", source)
 
     def test_qr_alias_redirects_to_pair(self):
         source = inspect.getsource(PhoneBridgeHandler.do_GET)
@@ -41,14 +41,18 @@ class PhoneBridgeSecurityTests(unittest.TestCase):
     def test_app_shell_can_recover_with_persisted_device_token(self):
         source = inspect.getsource(PhoneBridgeHandler)
         get_source = inspect.getsource(PhoneBridgeHandler.do_GET)
+        viewer_source = inspect.getsource(PhoneBridgeHandler._get_viewer_session)
         app_block = get_source.split('if route == "/app":', 1)[1].split(
             'if route == "/manifest.webmanifest":',
             1,
         )[0]
 
+        # Device tokens are read from cookie, query, or header, and the viewer
+        # session check falls back to the persisted trusted-device token, so a
+        # reinstalled PWA recovers without a fresh pairing link.
         self.assertIn('or query.get("device", [""])[0]', source)
-        self.assertIn("session, auth_kind = self._get_viewer_session()", app_block)
-        self.assertNotIn("_require_viewer_session(html=True)", app_block)
+        self.assertIn("session, auth_kind = self._require_viewer_session(html=True)", app_block)
+        self.assertIn("trusted_device = self.server.trusted_devices.consume(self._extract_device_token())", viewer_source)
         self.assertIn('"{{DEVICE_TOKEN}}"', app_block)
         self.assertIn('handoff_token = ""', app_block)
         self.assertIn('if session:', app_block)

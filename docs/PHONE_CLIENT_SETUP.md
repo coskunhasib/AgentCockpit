@@ -92,6 +92,29 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_SCREENSHOT_MAX_WIDTH=1600`
 - `PHONE_PUBLIC_TUNNEL=auto`
 - `PHONE_PUBLIC_TUNNEL_DOWNLOAD=1`
+- `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
+- `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5`
+- `PHONE_PUBLIC_TUNNEL_RESTART_DELAY_SEC=3`
+- `PHONE_PUBLIC_TUNNEL_RESTART_MAX_DELAY_SEC=60`
+- `PHONE_PUBLIC_TUNNEL_VALIDATE_CACHE_SEC=8`
+- `PHONE_PUBLIC_TUNNEL_VALIDATE_GRACE_SEC=120`
+- `PHONE_PUBLIC_TUNNEL_VALIDATE_FAILURES_BEFORE_RESTART=3`
+- `PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC=300`
+- `PHONE_PUBLIC_TUNNEL_FALLBACK=off`
+- `PHONE_PUBLIC_TUNNEL_FALLBACK_DELAY_SEC=20`
+- `PHONE_BORE_SERVER=159.223.110.159`
+- `PHONE_BORE_PUBLIC_HOST=159.223.110.159`
+- `PHONE_BORE_REMOTE_PORT=`
+  Opsiyonel Bore fallback icindir. Varsayilan kapali kalir; acilirsa bos port degerinde uzak WAN portu otomatik secilir.
+- `PHONE_BORE_RESTART_DELAY_SEC=3`
+- `PHONE_BORE_RESTART_MAX_DELAY_SEC=60`
+- `PHONE_KEEP_AWAKE=1`
+- `PHONE_KEEP_AWAKE_FLAGS=-dims`
+- `PHONE_CAPTURE_LOCK_TIMEOUT_SEC=3.0`
+- `PHONE_STREAM_MAX_CONNECTIONS=2`
+- `PHONE_STREAM_MAX_SECONDS=600`
+- `PHONE_STREAM_GC_EVERY_FRAMES=120`
+- `CLOUDFLARED_FORCE_GO_DNS=auto`
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
@@ -99,6 +122,20 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
+- `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at`, `active_streams`, `max_streams` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
+- `screen=unavailable` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
+- `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
+- `PHONE_STREAM_MAX_CONNECTIONS` ve capture lock ayarlari, ayni anda birden fazla WAN sekmesi acildiginda ekran yakalamanin bellek tuketimini sinirlar.
+- `CLOUDFLARED_FORCE_GO_DNS=auto`, cloudflared `no such host` ve macOS TLS `OSStatus -26276` hatalari arasinda otomatik DNS stratejisi degistirir. `1` Go DNS'i zorlar, `0` sistem DNS'inden cikmaz.
+- Cloudflare DNS/TLS hatasi devam ederse hizli sonsuz restart yapilmaz. Varsayilan
+  `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5` denemeden sonra `PHONE_PUBLIC_TUNNEL_LIMIT_COOLOFF_SEC=300`
+  saniye cooloff uygular; `/health` icindeki `public_tunnel_error` macOS DNS/root certificate/Keychain
+  sorununu acikca yazar.
+- Varsayilan WAN yolu Cloudflare Quick Tunnel'dir. IP tabanli Bore fallback varsayilan kapali tutulur; sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilirsa kullanilir. Uzaktan link uretilmeden telefon/PWA akisi tamamlanmis sayilmaz.
+- Uzaktan input tarafinda `Win+L`, macOS `Control+Command+Q`, `Shift+Command+Q`, `sleep`, `power` ve benzeri kilit/uyku kombinasyonlari bilerek engellenir. Bu uygulama kilitli ekrani kontrol edemedigi icin remote-control akisini bozan sistem kisa yollarina fail-closed davranir.
+- `/api/action` komutlari `logs/diagnostics/events_<pid>.jsonl` icine audit olarak yazilir. Metin icerigi kaydedilmez; sadece action tipi, hotkey, text uzunlugu, sensitive bayragi ve basari/hata sonucu tutulur.
+- `logs/diagnostics/state_<process>_<pid>.json` son heartbeat snapshot'ini, `events_<pid>.jsonl` runtime olaylarini, `fault_<pid>.log` native/thread dump ciktilarini tutar.
+- `logs/crashes/crash_*.log` artik traceback'e ek olarak runtime snapshot, thread dump ve son log tail'i icerir. Token/session query degerleri otomatik redakte edilir.
 
 ## Guvenlik Notu
 

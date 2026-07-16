@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import threading
+from pathlib import Path
 
 _data_lock = threading.Lock()
 
@@ -31,7 +32,8 @@ def _platform_hotkeys():
             "Yapistir": ["ctrl", "v"],
         }
 
-DATA_FILE = "hotkeys.json"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DATA_FILE = str(PROJECT_ROOT / "hotkeys.json")
 DEFAULT_CLAUDE_SETTINGS = {
     "tab": "code",
     "chat_model": "opus",

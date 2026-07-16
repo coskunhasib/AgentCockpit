@@ -1,6 +1,9 @@
 import asyncio
 import json
 import os
+import subprocess
+import sys
+import time
 from datetime import datetime, timezone
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -8,6 +11,7 @@ from telegram.ext import ContextTypes
 
 import core.bot_engine as legacy
 import core.claude_bridge as claude_bridge
+from core.logger import record_runtime_event
 import core.claude_state as claude_state
 import core.codex_bridge as codex_bridge
 import core.codex_state as codex_state
@@ -292,7 +296,7 @@ def _load_phone_notification_state():
     except FileNotFoundError:
         return {}
     except Exception:
-        legacy.logger.warning("Telefon bildirim state okunamadi", exc_info=True)
+        legacy.logger.opt(exception=True).warning("Telefon bildirim state okunamadi")
         return {}
 
 
@@ -304,7 +308,7 @@ def _save_phone_notification_state(state):
             encoding="utf-8",
         )
     except Exception:
-        legacy.logger.warning("Telefon bildirim state yazilamadi", exc_info=True)
+        legacy.logger.opt(exception=True).warning("Telefon bildirim state yazilamadi")
 
 
 def _remember_phone_chat(chat_id):
@@ -329,6 +333,11 @@ def _notification_target_chat_ids():
     state = _load_phone_notification_state()
     targets = {str(value) for value in state.get("chat_ids", []) if str(value).strip()}
     targets.update(str(value) for value in getattr(legacy, "ALLOWED_IDS", set()) if str(value).strip())
+    targets.update(
+        value.strip()
+        for value in os.getenv("ALLOWED_USER_ID", "").split(",")
+        if value.strip()
+    )
     return sorted(targets)
 
 
@@ -340,10 +349,17 @@ def _phone_notification_interval_seconds():
 
 
 def _phone_repair_text(link_payload, old_url=None):
-    old_line = f"Eski uzak adres: {old_url}\n" if old_url else ""
+    if old_url:
+        title = "Uzak baglanti adresi degisti."
+        detail = "Tekrar QR okutmana gerek yok. Bu yeni linke dokununca ayni PWA yeniden eslesir ve devam eder."
+        old_line = f"Eski uzak adres: {old_url}\n"
+    else:
+        title = "Telefon uzak baglanti hazir."
+        detail = "Bu linke dokunarak telefondan AgentCockpit'e baglanabilirsin."
+        old_line = ""
     return (
-        "Uzak baglanti adresi degisti.\n\n"
-        "Tekrar QR okutmana gerek yok. Bu yeni linke dokununca ayni PWA yeniden eslesir ve devam eder.\n\n"
+        f"{title}\n\n"
+        f"{detail}\n\n"
         f"{old_line}"
         + _phone_link_text(link_payload)
     )
@@ -361,48 +377,170 @@ async def _send_phone_repair_link(bot, chat_id, old_url=None):
     return public_url
 
 
+def _notification_decision(current_url, notified_url, file_url, startup_done, checks, grace_checks=8):
+    """Pure decision for the phone-link watcher (no I/O, so it is unit-testable).
+
+    Returns (should_send, is_startup, mark_startup_done):
+      - should_send: broadcast the link now.
+      - is_startup: this is the first-launch announcement (old_url is None).
+      - mark_startup_done: the startup phase is over after this tick.
+    """
+    current_url = (current_url or "").strip()
+    if not startup_done:
+        tunnel_ready = bool(current_url)
+        grace_over = checks >= grace_checks
+        if not (tunnel_ready or grace_over):
+            return (False, False, False)  # keep waiting for the tunnel to come up
+        already_announced = bool(current_url) and current_url == file_url
+        # Announce on first launch unless this exact link was already announced
+        # in a previous run (i.e. only the bot restarted, not the tunnel).
+        return ((not already_announced), True, True)
+    if current_url and current_url != notified_url:
+        return (True, False, False)  # tunnel address changed mid-session
+    return (False, False, False)
+
+
+async def _broadcast_phone_link(application, current_url, *, old_url=None):
+    """Send the current phone link to every notification target. Logs loudly so a
+    silent failure (e.g. the user never opened the bot chat) is actually visible."""
+    targets = _notification_target_chat_ids()
+    if not targets:
+        legacy.logger.warning(
+            "Telefon link bildirimi atlandi: hedef chat yok. ALLOWED_USER_ID tanimli mi?"
+        )
+        return False
+    sent_any = False
+    for chat_id in targets:
+        try:
+            await _send_phone_repair_link(application.bot, chat_id, old_url=old_url)
+            sent_any = True
+            legacy.logger.info(
+                f"Telefon link bildirimi gonderildi -> chat {chat_id} ({current_url or 'LAN'})"
+            )
+        except Exception as exc:
+            legacy.logger.warning(
+                f"Telefon link bildirimi GONDERILEMEDI -> chat {chat_id}: {exc}"
+            )
+    if sent_any and current_url:
+        _remember_notified_public_url(current_url)
+    return sent_any
+
+
 async def _watch_public_phone_link(application):
     if os.getenv("PHONE_NOTIFY_TUNNEL_CHANGES", "1").strip().lower() in {"0", "false", "no", "off"}:
+        legacy.logger.info("Telefon link bildirimi devre disi (PHONE_NOTIFY_TUNNEL_CHANGES).")
         return
 
     interval = _phone_notification_interval_seconds()
-    last_seen = _load_phone_notification_state().get("last_public_url", "")
-    await asyncio.sleep(3)
+    # The watcher keeps its own in-memory "last announced" URL; we only read the
+    # state file once (to avoid re-announcing the same link after a bot-only
+    # restart). Other code paths also write that file, so we never let it suppress
+    # a genuine first-launch announcement.
+    file_url = _load_phone_notification_state().get("last_public_url", "")
+    notified_url = None
+    startup_done = False
+    checks = 0
+    legacy.logger.info(f"Telefon link bildirim watcher basladi (hedefler: {_notification_target_chat_ids() or 'yok'}).")
+    await asyncio.sleep(2)
 
     while True:
         try:
+            checks += 1
             health = await asyncio.to_thread(get_bridge_health)
             current_url = (health.get("public_url") or "").strip()
-            if current_url and current_url != last_seen:
-                targets = _notification_target_chat_ids()
-                if not last_seen:
-                    _remember_notified_public_url(current_url)
-                    last_seen = current_url
-                elif targets:
-                    sent_any = False
-                    for chat_id in targets:
-                        try:
-                            await _send_phone_repair_link(
-                                application.bot,
-                                chat_id,
-                                old_url=last_seen,
-                            )
-                            sent_any = True
-                        except Exception as exc:
-                            legacy.logger.warning(
-                                f"Telefon uzak link bildirimi gonderilemedi ({chat_id}): {exc}"
-                            )
-                    if sent_any:
-                        _remember_notified_public_url(current_url)
-                        last_seen = current_url
-                else:
-                    legacy.logger.debug("Telefon uzak link degisti ama bildirim hedefi yok.")
+            should_send, is_startup, mark_done = _notification_decision(
+                current_url, notified_url, file_url, startup_done, checks
+            )
+            if should_send:
+                old = None if is_startup else notified_url
+                if await _broadcast_phone_link(application, current_url, old_url=old):
+                    notified_url = current_url
+            if mark_done:
+                startup_done = True
+                if not should_send and current_url:
+                    notified_url = current_url
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            legacy.logger.debug(f"Telefon uzak link watcher beklemede: {exc}")
+            legacy.logger.warning(f"Telefon link watcher hatasi: {exc}")
 
-        await asyncio.sleep(interval)
+        # Poll quickly until the first announcement, then settle to the interval.
+        await asyncio.sleep(interval if startup_done else min(interval, 5))
+
+
+def _bridge_restart_decision(consecutive_failures, last_restart, now, *, threshold=3, cooldown_seconds=120):
+    """Pure decision for the bridge supervisor (no I/O, so it is unit-testable).
+
+    Restart only after `threshold` consecutive health failures, and never more
+    often than once per `cooldown_seconds` (a crash-looping bridge must not
+    turn into a spawn storm)."""
+    if consecutive_failures < threshold:
+        return False
+    if last_restart is not None and (now - last_restart) < cooldown_seconds:
+        return False
+    return True
+
+
+def _restart_phone_bridge():
+    bridge_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "phone_bridge_server.py")
+    process = subprocess.Popen(
+        [sys.executable, bridge_script],
+        cwd=os.path.dirname(bridge_script),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    record_runtime_event("phone_bridge_autorestart", pid=process.pid)
+    return process.pid
+
+
+async def _watch_bridge_process(application):
+    """Kopru surecinin bekcisi: olu kopruyu tespit edip yeniden baslatir.
+
+    launcher hicbir yolda (spawn/reuse) kopruyu olumden dondurmuyor; bu bekci
+    o sahipligi ustlenir. 30 May ve 9 Haz kesintilerinin kok nedeni buydu."""
+    if os.getenv("PHONE_BRIDGE_AUTORESTART", "1").strip().lower() in {"0", "false", "no", "off"}:
+        legacy.logger.info("Phone bridge otomatik yeniden baslatma devre disi (PHONE_BRIDGE_AUTORESTART).")
+        return
+    failures = 0
+    last_restart = None
+    legacy.logger.info("Phone bridge bekcisi basladi (esik: 3 ardisik basarisiz health kontrolu).")
+    while True:
+        await asyncio.sleep(20)
+        try:
+            await asyncio.to_thread(get_bridge_health)
+            failures = 0
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            failures += 1
+            health_error = exc
+        if not _bridge_restart_decision(failures, last_restart, time.monotonic()):
+            continue
+        legacy.logger.warning(
+            f"Phone bridge {failures} ardisik kontrolde yanit vermedi ({health_error}); yeniden baslatiliyor."
+        )
+        try:
+            pid = _restart_phone_bridge()
+        except Exception as restart_exc:
+            legacy.logger.error(f"Phone bridge yeniden baslatilamadi: {restart_exc}")
+            last_restart = time.monotonic()
+            continue
+        last_restart = time.monotonic()
+        failures = 0
+        legacy.logger.info(f"Phone bridge yeniden baslatildi: PID {pid}")
+        for chat_id in _notification_target_chat_ids():
+            try:
+                await application.bot.send_message(
+                    chat_id=chat_id,
+                    text=(
+                        "Telefon koprusu yanit vermiyordu, otomatik olarak yeniden baslatildi. "
+                        "Yeni baglanti linki birazdan gonderilecek."
+                    ),
+                )
+            except Exception:
+                pass
 
 
 async def _send_phone_panel(update_or_chat, context, *, minutes=0, label="telegram", chat_id=None):
@@ -883,6 +1021,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     data = query.data if query else ""
     if query and isinstance(data, str) and data.startswith("phone:"):
+        # Authorize before doing any privileged work or persisting the caller's
+        # chat as a notification target. These phone: actions mint working
+        # remote-control links and toggle the public WAN tunnel, so they must be
+        # gated the same way the original callback handler gates everything else
+        # (core.bot_engine.handle_callback). The phone: branch returns before the
+        # original handler runs, so the gate has to live here too.
+        user_id = str(query.from_user.id) if query.from_user else None
+        if legacy.ALLOWED_IDS and user_id not in legacy.ALLOWED_IDS:
+            await query.answer()
+            return
         chat_id = query.message.chat_id if query and query.message else None
         _remember_phone_chat(chat_id)
         await query.answer()
@@ -983,6 +1131,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def post_init(application):
     await _ORIGINAL_POST_INIT(application)
     application.create_task(_watch_public_phone_link(application))
+    application.create_task(_watch_bridge_process(application))
 
 
 def _install_overrides():

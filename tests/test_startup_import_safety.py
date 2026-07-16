@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from core.system_tools import SystemOps
 import core.system_tools as system_tools
 import phone_bridge_server
@@ -77,9 +79,22 @@ class StartupImportSafetyTests(unittest.TestCase):
         self.assertFalse(metrics["available"])
 
     def test_phone_wan_capture_reports_clear_runtime_error_without_pyautogui(self):
-        with patch("phone_wan_transport._get_pyautogui", return_value=None):
+        with patch("phone_wan_transport._get_pyautogui", return_value=None), patch(
+            "phone_wan_transport._capture_with_screencapture", return_value=None
+        ):
             with self.assertRaises(RuntimeError):
                 phone_wan_transport._capture_frame()
+
+    def test_phone_wan_capture_uses_screencapture_without_pyautogui(self):
+        image = Image.new("RGB", (80, 60), (70, 80, 90))
+        with patch("phone_wan_transport._get_pyautogui", return_value=None), patch(
+            "phone_wan_transport._capture_with_screencapture", return_value=image
+        ):
+            frame = phone_wan_transport._capture_frame(max_width=80, quality=60)
+
+        self.assertEqual(frame.width, 80)
+        self.assertEqual(frame.height, 60)
+        self.assertGreater(len(frame.image_bytes), 20)
 
 
 if __name__ == "__main__":

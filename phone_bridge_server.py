@@ -1,20 +1,26 @@
 import argparse
 import base64
+import gc
 import importlib
 import ipaddress
 import io
 import json
 import os
+import re
 import secrets
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import zlib
+from collections import deque
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from socketserver import TCPServer
 from urllib.parse import parse_qs, urlparse
 
 ROOT_DIR = Path(__file__).resolve().parent
@@ -23,15 +29,29 @@ PROJECT_ROOT = ROOT_DIR
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+try:
+    from core.dns_fallback import install as install_dns_fallback
+    from core.dns_fallback import install_tls_fallback
+
+    install_dns_fallback()
+    install_tls_fallback()
+except Exception:
+    pass
+
 from PIL import Image, ImageDraw
-from core.app_config import get_int, get_str
+from core.app_config import get_float, get_int, get_str
 from dotenv import load_dotenv
 try:
     import qrcode
 except ImportError:
     qrcode = None
 
-from core.logger import get_logger
+from core.logger import (
+    get_logger,
+    install_diagnostics_hooks,
+    record_runtime_event,
+    start_diagnostics_heartbeat,
+)
 from core.runtime_compat import desktop_automation_help_text, detect_runtime_compatibility
 from core.system_tools import SystemOps
 from phone_runtime_config import (
@@ -46,6 +66,19 @@ from phone_public_tunnel import start_public_tunnel
 load_dotenv(PROJECT_ROOT / ".env")
 logger = get_logger("phone_bridge")
 _PYAUTOGUI = None
+_CAPTURE_STATE = {
+    "last_error": "",
+    "last_error_at": 0.0,
+    "last_success_at": 0.0,
+    "last_width": 0,
+    "last_height": 0,
+    "failure_count": 0,
+    "backoff_until": 0.0,
+}
+_CAPTURE_STATE_LOCK = threading.Lock()
+_CAPTURE_LOCK = threading.Lock()
+_KEEP_AWAKE_PROCESS = None
+_KEEP_AWAKE_ERROR = ""
 
 PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 
@@ -60,6 +93,21 @@ DEFAULT_SESSION_MINUTES = get_int("PHONE_SESSION_MINUTES")
 DEFAULT_TELEGRAM_URL = get_str("PHONE_TELEGRAM_URL")
 DEFAULT_TELEGRAM_USERNAME = get_str("TELEGRAM_BOT_USERNAME").lstrip("@")
 DEFAULT_PUBLIC_TUNNEL = get_str("PHONE_PUBLIC_TUNNEL")
+DEFAULT_KEEP_AWAKE = get_str("PHONE_KEEP_AWAKE")
+DEFAULT_KEEP_AWAKE_FLAGS = get_str("PHONE_KEEP_AWAKE_FLAGS")
+DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC = max(0.5, get_float("PHONE_CAPTURE_LOCK_TIMEOUT_SEC", "3.0"))
+DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC = max(
+    3.0, get_float("PHONE_CAPTURE_UNAVAILABLE_RETRY_SEC", "12.0")
+)
+DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", "2"))
+DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
+DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
+
+
+class CaptureUnavailable(RuntimeError):
+    def __init__(self, message, retry_after=None):
+        super().__init__(message)
+        self.retry_after = int(max(1, retry_after or DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC))
 
 
 def _get_pyautogui():
@@ -90,14 +138,241 @@ def _get_screen_metrics():
 
     try:
         size = pyautogui.size()
+        width = int(size.width)
+        height = int(size.height)
         return {
-            "width": int(size.width),
-            "height": int(size.height),
-            "available": True,
+            "width": width,
+            "height": height,
+            "available": bool(width > 0 and height > 0),
         }
     except Exception as exc:
         logger.error(f"Ekran boyutu okunamadi: {exc}")
         return {"width": 0, "height": 0, "available": False}
+
+
+def _redact_capture_error(error):
+    text = str(error or "").strip()
+    text = re.sub(r"(/private)?/var/folders/\S+", "<temp-file>", text)
+    text = re.sub(r"(/tmp|/var/tmp)/\S+", "<temp-file>", text)
+    text = re.sub(r"([?&]token=)[^&\s]+", r"\1<redacted>", text)
+    text = re.sub(r"\bacp_[A-Za-z0-9_-]+", "acp_<redacted>", text)
+    text = " ".join(text.split())
+    return text[:300]
+
+
+def _redact_url_for_log(url):
+    return _redact_capture_error(url)
+
+
+def _stdout_secret(value):
+    if os.environ.get("PHONE_PRINT_RAW_LINKS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return value
+    return _redact_capture_error(value)
+
+
+def _stdout_admin_token(value):
+    if os.environ.get("PHONE_PRINT_RAW_LINKS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return value
+    return "<redacted>"
+
+
+def _record_capture_success(width, height):
+    with _CAPTURE_STATE_LOCK:
+        _CAPTURE_STATE["last_error"] = ""
+        _CAPTURE_STATE["last_success_at"] = time.time()
+        _CAPTURE_STATE["last_width"] = int(width)
+        _CAPTURE_STATE["last_height"] = int(height)
+        _CAPTURE_STATE["failure_count"] = 0
+        _CAPTURE_STATE["backoff_until"] = 0.0
+
+
+def _is_capture_unavailable_error(text):
+    return bool(
+        re.search(
+            r"screen metrics unavailable|could not create image|cannot identify image|"
+            r"Screen Recording|Siyah ekran|kilitli|uykuda|screencapture",
+            str(text or ""),
+            re.IGNORECASE,
+        )
+    )
+
+
+def _record_capture_error(error):
+    now = time.time()
+    redacted = _redact_capture_error(error)
+    with _CAPTURE_STATE_LOCK:
+        _CAPTURE_STATE["last_error"] = redacted
+        _CAPTURE_STATE["last_error_at"] = now
+        _CAPTURE_STATE["failure_count"] = int(_CAPTURE_STATE.get("failure_count", 0)) + 1
+        if isinstance(error, CaptureUnavailable) or _is_capture_unavailable_error(redacted):
+            retry_after = getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)
+            _CAPTURE_STATE["backoff_until"] = max(
+                float(_CAPTURE_STATE.get("backoff_until", 0.0)),
+                now + float(retry_after),
+            )
+
+
+def _capture_retry_after_seconds():
+    with _CAPTURE_STATE_LOCK:
+        backoff_until = float(_CAPTURE_STATE.get("backoff_until", 0.0) or 0.0)
+    remaining = backoff_until - time.time()
+    return int(remaining) + 1 if remaining > 0 else 0
+
+
+def _raise_if_capture_deferred():
+    retry_after = _capture_retry_after_seconds()
+    if retry_after > 0:
+        raise CaptureUnavailable(
+            "Ekran yakalama gecici olarak durduruldu; macOS ekran oturumu hazir degil.",
+            retry_after=retry_after,
+        )
+
+    screen = _get_screen_metrics()
+    if not screen.get("available"):
+        raise CaptureUnavailable(
+            "Ekran yakalama hazir degil: screen metrics unavailable. "
+            "Mac kilitli/uykuda olabilir veya aktif GUI ekran oturumu yok.",
+            retry_after=DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC,
+        )
+
+
+def _capture_retry_headers(error):
+    retry_after = int(max(1, getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)))
+    return {
+        "Retry-After": str(retry_after),
+        "X-AgentCockpit-Capture": "unavailable",
+    }
+
+
+def _capture_error_payload(error):
+    retry_after = int(max(1, getattr(error, "retry_after", DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC)))
+    return {
+        "status": "capture_unavailable",
+        "message": _redact_capture_error(error),
+        "retry_after": retry_after,
+    }
+
+
+def _capture_health(screen):
+    with _CAPTURE_STATE_LOCK:
+        state = dict(_CAPTURE_STATE)
+    metrics_ok = bool(screen.get("available")) and screen.get("width", 0) > 0 and screen.get("height", 0) > 0
+    capture_error = state["last_error"]
+    if not metrics_ok:
+        capture_error = "screen metrics unavailable"
+    return {
+        "capture_available": bool(metrics_ok and not capture_error),
+        "capture_error": capture_error,
+        "capture_last_error": state["last_error"],
+        "capture_last_error_at": int(state["last_error_at"]) if state["last_error_at"] else 0,
+        "capture_last_success_at": int(state["last_success_at"]) if state["last_success_at"] else 0,
+        "capture_last_width": state["last_width"],
+        "capture_last_height": state["last_height"],
+        "capture_retry_after": _capture_retry_after_seconds(),
+    }
+
+
+def _diagnostic_snapshot(server=None):
+    screen = _get_screen_metrics()
+    capture = _capture_health(screen)
+    snapshot = {
+        "screen": {
+            "width": screen.get("width", 0),
+            "height": screen.get("height", 0),
+            "available": bool(screen.get("available")),
+        },
+        "capture": capture,
+        "keep_awake": _keep_awake_snapshot(),
+    }
+    if server is not None:
+        try:
+            tunnel = server.public_tunnel_snapshot(validate=False)
+        except Exception as exc:
+            tunnel = {"enabled": True, "status": "snapshot_error", "error": _redact_capture_error(exc)}
+        snapshot["public_tunnel"] = {
+            "enabled": tunnel.get("enabled", False),
+            "provider": tunnel.get("provider", ""),
+            "status": tunnel.get("status", ""),
+            "has_public_url": bool(tunnel.get("public_url")),
+            "error": tunnel.get("error", ""),
+            "restart_count": tunnel.get("restart_count", 0),
+            "last_exit_code": tunnel.get("last_exit_code", None),
+            "primary_status": tunnel.get("primary_status", ""),
+            "primary_error": tunnel.get("primary_error", ""),
+            "fallback_status": tunnel.get("fallback_status", ""),
+            "fallback_error": tunnel.get("fallback_error", ""),
+            "fallback_last_exit_code": tunnel.get("fallback_last_exit_code", None),
+        }
+        try:
+            snapshot["trusted_devices"] = server.trusted_devices.count()
+        except Exception:
+            snapshot["trusted_devices"] = None
+        try:
+            snapshot["session_links"] = server.session_links.count()
+        except Exception:
+            snapshot["session_links"] = None
+        try:
+            snapshot["stream"] = {
+                "active": server.active_stream_count(),
+                "max": server.max_stream_connections,
+                "max_seconds": int(server.stream_max_seconds),
+            }
+        except Exception:
+            snapshot["stream"] = None
+    return snapshot
+
+
+def _keep_awake_enabled():
+    return DEFAULT_KEEP_AWAKE.strip().lower() not in {"", "0", "false", "no", "off", "disabled"}
+
+
+def _start_keep_awake():
+    global _KEEP_AWAKE_PROCESS, _KEEP_AWAKE_ERROR
+    if sys.platform != "darwin" or not _keep_awake_enabled():
+        return
+    if _KEEP_AWAKE_PROCESS and _KEEP_AWAKE_PROCESS.poll() is None:
+        return
+
+    caffeinate = "/usr/bin/caffeinate"
+    if not Path(caffeinate).exists():
+        _KEEP_AWAKE_ERROR = "caffeinate bulunamadi"
+        logger.warning(_KEEP_AWAKE_ERROR)
+        return
+
+    flags = [flag for flag in DEFAULT_KEEP_AWAKE_FLAGS.split() if flag.startswith("-")]
+    if not flags:
+        flags = ["-dims"]
+    command = [caffeinate, *flags, "-w", str(os.getpid())]
+    try:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        time.sleep(0.15)
+        if process.poll() is not None:
+            stderr = (process.stderr.read() if process.stderr else "").strip()
+            _KEEP_AWAKE_ERROR = _redact_capture_error(stderr or f"caffeinate cikti: {process.returncode}")
+            logger.warning(f"Keep-awake baslatilamadi: {_KEEP_AWAKE_ERROR}")
+            return
+        _KEEP_AWAKE_PROCESS = process
+        _KEEP_AWAKE_ERROR = ""
+        logger.info(f"Keep-awake aktif: caffeinate {' '.join(flags)}")
+    except Exception as exc:
+        _KEEP_AWAKE_ERROR = _redact_capture_error(exc)
+        logger.warning(f"Keep-awake baslatilamadi: {_KEEP_AWAKE_ERROR}")
+
+
+def _keep_awake_snapshot():
+    if sys.platform != "darwin" or not _keep_awake_enabled():
+        return {"enabled": False, "active": False, "error": ""}
+    active = bool(_KEEP_AWAKE_PROCESS and _KEEP_AWAKE_PROCESS.poll() is None)
+    return {
+        "enabled": True,
+        "active": active,
+        "error": "" if active else _KEEP_AWAKE_ERROR,
+    }
 
 
 def _telegram_bot_url():
@@ -110,11 +385,9 @@ def _telegram_bot_url():
 
 def _get_local_ip():
     try:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.connect(("8.8.8.8", 80))
-        ip = sock.getsockname()[0]
-        sock.close()
-        return ip
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+            sock.connect(("8.8.8.8", 80))
+            return sock.getsockname()[0]
     except OSError:
         return LOCAL_HOST
 
@@ -136,13 +409,9 @@ def _get_local_ipv4_candidates():
     preferred = _get_local_ip()
     add(preferred)
 
+    # socket.getfqdn() can block on macOS while doing reverse mDNS lookups.
+    # Hostname + active route IP is enough for LAN phone links.
     host_names = [socket.gethostname()]
-    try:
-        fqdn = socket.getfqdn()
-        if fqdn and fqdn not in host_names:
-            host_names.append(fqdn)
-    except Exception:
-        pass
 
     for host in host_names:
         try:
@@ -217,9 +486,35 @@ def _mouse_overlay_point(image_size):
     return mouse_x * scale_x, mouse_y * scale_y
 
 
-def _capture_payload(quality, max_width):
-    pyautogui = _require_pyautogui()
-    screenshot = pyautogui.screenshot().convert("RGB")
+def _capture_legacy():
+    """Capture via screencapture/pyautogui -> RGB PIL image (no cursor, no scaling)."""
+    primary_capture_error = None
+    fallback_capture_error = None
+
+    screenshot = None
+    if sys.platform == "darwin":
+        screenshot = _capture_with_screencapture()
+        if screenshot is None:
+            primary_capture_error = RuntimeError("screencapture ile ekran alinmadi")
+            try:
+                pyautogui = _require_pyautogui()
+                screenshot = pyautogui.screenshot().convert("RGB")
+            except Exception as exc:
+                fallback_capture_error = exc
+    else:
+        try:
+            pyautogui = _require_pyautogui()
+            screenshot = pyautogui.screenshot().convert("RGB")
+        except Exception as exc:
+            primary_capture_error = exc
+
+    if screenshot is None:
+        detail = fallback_capture_error or primary_capture_error
+        raise RuntimeError(
+            "Ekran goruntusu olusturulamadi. "
+            "macOS'ta Screen Recording iznini kontrol edin ve kilitli/uykuda ekran olmadigindan emin olun. "
+            f"Asil hata: {detail}"
+        ) from detail
 
     if _is_nearly_black_frame(screenshot):
         fallback = _capture_with_screencapture()
@@ -230,12 +525,134 @@ def _capture_payload(quality, max_width):
                 "Siyah ekran algilandi. Ekran kilitli/uykuda olabilir veya Screen Recording izni eksik. "
                 "macOS'ta Terminal/iTerm icin Screen Recording iznini acip uygulamayi yeniden baslatin."
             )
+    elif primary_capture_error is not None or fallback_capture_error is not None:
+        logger.warning(
+            "Primary screenshot path failed, backup screenshot path kullanildi: %s",
+            fallback_capture_error or primary_capture_error,
+        )
 
-    screen_width, screen_height = screenshot.size
+    return screenshot
 
+
+_QUARTZ_STATE = {"checked": False, "ok": False}
+
+
+def _capture_with_quartz():
+    """Fast in-memory full-screen capture via Quartz. Returns an RGB image or None."""
+    if sys.platform != "darwin":
+        return None
     try:
-        mouse_x, mouse_y = _mouse_overlay_point(screenshot.size)
-        draw = ImageDraw.Draw(screenshot)
+        import Quartz
+    except Exception:
+        return None
+    try:
+        image_ref = Quartz.CGDisplayCreateImage(Quartz.CGMainDisplayID())
+        if image_ref is None:
+            return None
+        width = Quartz.CGImageGetWidth(image_ref)
+        height = Quartz.CGImageGetHeight(image_ref)
+        if not width or not height:
+            return None
+        bytes_per_row = Quartz.CGImageGetBytesPerRow(image_ref)
+        provider = Quartz.CGImageGetDataProvider(image_ref)
+        data = Quartz.CGDataProviderCopyData(provider)
+        if data is None:
+            return None
+        # CGDisplayCreateImage yields 32-bit little-endian BGRA; map straight to RGBA.
+        image = Image.frombuffer(
+            "RGBA", (width, height), bytes(data), "raw", "BGRA", bytes_per_row, 1
+        )
+        return image.convert("RGB")
+    except Exception:
+        return None
+
+
+def _channel_means(image):
+    small = image.resize((32, 18), Image.BILINEAR)
+    pixels = list(small.getdata())
+    count = len(pixels) or 1
+    return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+
+
+def _validate_quartz_once():
+    """One-time guard: only trust Quartz if its colours match screencapture, so a
+    wrong pixel-format mapping can never silently ship miscoloured frames.
+
+    A genuine format mismatch diverges on every attempt, whereas a transient
+    screen change between the two samples only diverges sometimes -- so we retry
+    a few rounds and accept Quartz if any round matches closely.
+    """
+    if _QUARTZ_STATE["checked"]:
+        return _QUARTZ_STATE["ok"]
+    _QUARTZ_STATE["checked"] = True
+    try:
+        if _capture_with_quartz() is None:
+            _QUARTZ_STATE["ok"] = False
+            return False
+        best = None
+        for _ in range(3):
+            reference = _capture_with_screencapture()
+            quartz_frame = _capture_with_quartz()
+            if reference is None:
+                # screencapture unavailable; Quartz is our only working capture path.
+                _QUARTZ_STATE["ok"] = True
+                logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
+                return True
+            if quartz_frame is None:
+                continue
+            divergence = max(
+                abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
+            )
+            best = divergence if best is None else min(best, divergence)
+            if divergence <= 45:
+                _QUARTZ_STATE["ok"] = True
+                logger.info("Hizli Quartz ekran yakalama etkin.")
+                return True
+        _QUARTZ_STATE["ok"] = False
+        logger.warning(
+            "Quartz renkleri screencapture ile uyusmadi (en iyi fark=%s); screencapture kullanilacak.",
+            round(best) if best is not None else "?",
+        )
+    except Exception as exc:
+        logger.warning(f"Quartz dogrulamasi basarisiz, screencapture kullanilacak: {exc}")
+        _QUARTZ_STATE["ok"] = False
+    return _QUARTZ_STATE["ok"]
+
+
+def _raw_capture():
+    """Capture the full screen -> RGB image. Prefers fast Quartz, falls back to screencapture."""
+    if sys.platform == "darwin" and _validate_quartz_once():
+        fast = _capture_with_quartz()
+        if fast is not None and not _is_nearly_black_frame(fast):
+            return fast
+    return _capture_legacy()
+
+
+def _close_image(image):
+    try:
+        image.close()
+    except Exception:
+        pass
+
+
+def _raw_capture_serialized():
+    """Serialize full-screen capture so concurrent WAN streams cannot fan out memory use."""
+    _raise_if_capture_deferred()
+    acquired = _CAPTURE_LOCK.acquire(timeout=DEFAULT_CAPTURE_LOCK_TIMEOUT_SEC)
+    if not acquired:
+        raise RuntimeError(
+            "Ekran yakalama mesgul. Aktif goruntu akis sayisini azaltin veya sayfayi yenileyin."
+        )
+    try:
+        return _raw_capture()
+    finally:
+        _CAPTURE_LOCK.release()
+
+
+def _draw_cursor(image):
+    try:
+        mouse_x, mouse_y = _mouse_overlay_point(image.size)
+        draw = ImageDraw.Draw(image)
         radius = 10
         draw.ellipse(
             (mouse_x - radius, mouse_y - radius, mouse_x + radius, mouse_y + radius),
@@ -248,25 +665,103 @@ def _capture_payload(quality, max_width):
         )
     except Exception:
         pass
+    return image
 
-    if screenshot.width > max_width:
-        ratio = max_width / screenshot.width
-        screenshot = screenshot.resize(
-            (max_width, int(screenshot.height * ratio)),
-            Image.LANCZOS,
+
+def _scale_to_width(image, max_width):
+    if image.width > max_width:
+        ratio = max_width / image.width
+        image = image.resize(
+            (max_width, int(image.height * ratio)),
+            Image.BILINEAR,
         )
+    return image
 
+
+def _frame_signature(raw_image):
+    """Cheap change fingerprint of a raw capture.
+
+    A tiny grayscale thumbnail plus the quantized cursor position. Folding the
+    cursor in means pointer-only movement still yields a fresh frame (so the
+    remote cursor stays live) without re-sending an otherwise unchanged screen.
+    """
+    try:
+        factor = max(1, raw_image.width // 96)
+        thumb = raw_image.reduce(factor).convert("L")
+        checksum = zlib.crc32(thumb.tobytes()) & 0xFFFFFFFF
+    except Exception:
+        checksum = 0
+    try:
+        mouse_x, mouse_y = _get_pyautogui().position()
+        checksum = zlib.crc32(f"|{mouse_x // 3},{mouse_y // 3}".encode(), checksum) & 0xFFFFFFFF
+    except Exception:
+        pass
+    return format(checksum, "08x")
+
+
+def _encode_jpeg(image, quality):
     buffer = io.BytesIO()
-    screenshot.save(buffer, format="JPEG", quality=quality, optimize=True)
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+    # optimize=False trades ~10% size for a much cheaper encode, which matters
+    # when frames are produced continuously for the live stream.
+    image.save(buffer, format="JPEG", quality=quality, optimize=False)
+    return buffer.getvalue()
+
+
+def _grab_frame(quality, max_width):
+    """Capture one finished frame.
+
+    Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
+    """
+    raw = None
+    image = None
+    try:
+        raw = _raw_capture_serialized()
+        screen_width, screen_height = raw.size
+        _record_capture_success(screen_width, screen_height)
+        signature = _frame_signature(raw)
+        image = _scale_to_width(_draw_cursor(raw), max_width)
+        jpeg = _encode_jpeg(image, quality)
+        return jpeg, signature, image.width, image.height, screen_width, screen_height
+    except Exception as exc:
+        _record_capture_error(exc)
+        raise
+    finally:
+        if image is not None and image is not raw:
+            _close_image(image)
+        if raw is not None:
+            _close_image(raw)
+
+
+def _capture_payload(quality, max_width):
+    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(quality, max_width)
     return {
-        "image": encoded,
-        "width": screenshot.width,
-        "height": screenshot.height,
-        "screen_width": screen_width,
-        "screen_height": screen_height,
+        "image": base64.b64encode(jpeg).decode("ascii"),
+        "signature": signature,
+        "width": frame_w,
+        "height": frame_h,
+        "screen_width": screen_w,
+        "screen_height": screen_h,
         "timestamp": time.time(),
     }
+
+
+def _parse_stream_params(query, default_quality, default_width):
+    """Parse optional ?q=<jpeg quality>&w=<max width> for the frame/stream endpoints.
+
+    Width is capped at 2560 so an 'HD' client mode can ask for more detail than
+    the default while still staying well under the native Retina width.
+    """
+    try:
+        requested_quality = int(query.get("q", [""])[0])
+    except (TypeError, ValueError):
+        requested_quality = default_quality
+    quality = max(20, min(95, requested_quality))
+    try:
+        requested_width = int(query.get("w", [""])[0])
+    except (TypeError, ValueError):
+        requested_width = default_width
+    max_width = max(640, min(2560, requested_width))
+    return quality, max_width
 
 
 def _is_nearly_black_frame(image, *, max_channel=4):
@@ -333,23 +828,84 @@ def _perform_scroll(x_ratio, y_ratio, delta):
     x = int(_clamp_ratio(x_ratio) * screen_width)
     y = int(_clamp_ratio(y_ratio) * screen_height)
     pyautogui.moveTo(x, y)
-    pyautogui.scroll(int(delta))
+    
+    # PyAutoGUI has a platform-dependent inconsistency:
+    # - On Windows, pyautogui.scroll() expects units where 120 is one scroll notch.
+    # - On macOS and Linux, it expects units where 1 is one scroll notch/line.
+    # The client sends values in Windows-compatible units (e.g. approx 120 per notch).
+    if sys.platform in ("darwin", "linux", "linux2"):
+        scaled_delta = int(delta / 120)
+        if scaled_delta == 0 and delta != 0:
+            scaled_delta = 1 if delta > 0 else -1
+        pyautogui.scroll(scaled_delta)
+    else:
+        pyautogui.scroll(int(delta))
+
+
+def _action_audit_payload(action_type, payload, *, request_id=""):
+    body = {
+        "action_type": str(action_type or "")[:32],
+        "request_id": str(request_id or "")[:128],
+        "no_screenshot": bool(payload.get("no_screenshot")),
+    }
+    if action_type == "key":
+        body["keys"] = str(payload.get("keys", ""))[:120]
+    elif action_type == "type":
+        body["text_chars"] = len(str(payload.get("text", "")))
+        body["sensitive"] = bool(payload.get("sensitive", False))
+        body["has_focus"] = isinstance(payload.get("focus"), dict)
+    elif action_type == "click":
+        body["button"] = str(payload.get("button", "left"))[:24]
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
+    elif action_type == "scroll":
+        try:
+            body["delta"] = int(payload.get("delta", 0) or 0)
+        except (TypeError, ValueError):
+            body["delta"] = 0
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.5)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.5)), 4)
+    return body
 
 
 def _perform_keypress(keys):
     if not keys:
-        return
+        return True
     if "+" in keys:
-        SystemOps.execute_hotkey(
-            [part.strip() for part in keys.split("+") if part.strip()]
-        )
-    else:
-        SystemOps.press_key(keys.strip())
+        parts = [part.strip() for part in keys.split("+") if part.strip()]
+        if SystemOps._is_blocked_hotkey(parts):
+            raise RuntimeError("Riskli sistem kisayolu engellendi.")
+        return SystemOps.execute_hotkey(parts)
+
+    key = keys.strip()
+    if SystemOps._is_blocked_hotkey([key]):
+        raise RuntimeError("Riskli sistem tusu engellendi.")
+    return SystemOps.press_key(key)
 
 
-def _perform_type(text):
-    if text:
-        SystemOps.type_text(text)
+def _perform_focus_click(focus):
+    if not isinstance(focus, dict):
+        return False
+
+    if "x" not in focus or "y" not in focus:
+        return False
+
+    _perform_click(focus.get("x"), focus.get("y"), "left")
+    time.sleep(0.12)
+    return True
+
+
+def _perform_type(text, *, sensitive=False, focus=None):
+    if not text:
+        return True
+
+    focused = _perform_focus_click(focus)
+    pasted = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
+    logger.info(
+        f"Telefon metni clipboard paste ile gonderildi: chars={len(text)} "
+        f"sensitive={bool(sensitive)} focus={focused} success={pasted}"
+    )
+    return pasted
 
 
 def _parse_cookie_header(raw_cookie):
@@ -807,6 +1363,98 @@ class TrustedDeviceStore:
             return self._snapshot_locked(device, include_token=True, now=now)
 
 
+class ActionDedup:
+    """Single-flight + short-TTL cache keyed by request_id.
+
+    The phone client retries a command (re-using the same request_id) when a
+    response is lost in transit. This makes such a retry safe: the command is
+    applied exactly once and every retry receives the original response instead
+    of triggering the desktop action a second time.
+    """
+
+    def __init__(self, ttl_seconds=30.0, max_entries=256, wait_timeout=15.0, inflight_ttl=60.0):
+        self._cond = threading.Condition()
+        self._done = {}          # request_id -> (timestamp, response)
+        self._inflight = {}      # request_id -> acquired timestamp
+        self._order = deque()    # insertion order of completed ids for eviction
+        self._ttl = ttl_seconds
+        self._max = max_entries
+        self._wait_timeout = wait_timeout
+        # Safety net: if an owner ever fails to call complete()/abort() (e.g. an
+        # unexpected error escapes the action handler), its reservation would
+        # otherwise live forever and later block retries of the same request_id.
+        # No real action takes anywhere near this long, so evicting stale
+        # in-flight ids cannot drop a still-running one.
+        self._inflight_ttl = inflight_ttl
+
+    def _evict_locked(self, now):
+        if self._inflight:
+            stale = [rid for rid, ts in self._inflight.items() if now - ts > self._inflight_ttl]
+            for rid in stale:
+                self._inflight.pop(rid, None)
+        while self._order:
+            rid = self._order[0]
+            entry = self._done.get(rid)
+            if entry is None:
+                self._order.popleft()
+                continue
+            if now - entry[0] > self._ttl:
+                self._order.popleft()
+                self._done.pop(rid, None)
+                continue
+            break
+        while len(self._done) > self._max and self._order:
+            rid = self._order.popleft()
+            self._done.pop(rid, None)
+
+    def acquire(self, request_id):
+        """Reserve a request_id for execution.
+
+        Returns ``(cached_response_or_None, is_owner)``:
+        - ``(response, False)``  -> already applied; caller replays ``response``.
+        - ``(None, True)``       -> caller owns execution; must call
+          ``complete()`` on success or ``abort()`` on failure.
+        - ``(None, False)``      -> no request_id, or the in-flight original took
+          too long; caller proceeds best-effort without caching.
+        """
+        if not request_id:
+            return (None, False)
+        deadline = time.time() + self._wait_timeout
+        with self._cond:
+            while True:
+                now = time.time()
+                self._evict_locked(now)
+                entry = self._done.get(request_id)
+                if entry is not None:
+                    return (entry[1], False)
+                if request_id not in self._inflight:
+                    self._inflight[request_id] = now
+                    return (None, True)
+                remaining = deadline - now
+                if remaining <= 0:
+                    return (None, False)
+                self._cond.wait(remaining)
+
+    def complete(self, request_id, response):
+        if not request_id:
+            return
+        now = time.time()
+        with self._cond:
+            if request_id not in self._done:
+                self._order.append(request_id)
+            self._done[request_id] = (now, response)
+            self._inflight.pop(request_id, None)
+            self._evict_locked(now)
+            self._cond.notify_all()
+
+    def abort(self, request_id):
+        if not request_id:
+            return
+        with self._cond:
+            self._inflight.pop(request_id, None)
+            self._cond.notify_all()
+
+
 def _expired_page():
     return """<!DOCTYPE html>
 <html lang="tr">
@@ -848,6 +1496,15 @@ def _expired_page():
 
 class PhoneBridgeHandler(BaseHTTPRequestHandler):
     server_version = "AgentCockpitPhone/2.0"
+    # Bound the per-connection socket timeout so a slow/stalled client (e.g. a
+    # slowloris sending headers or a body byte-by-byte, or one that stops
+    # reading mid-stream) cannot pin a handler thread forever. Active screen
+    # streams write a frame or keepalive at least once per second, so this never
+    # trips a healthy stream; a stalled write raises OSError, which the stream
+    # loop already treats as a clean disconnect.
+    timeout = max(15, get_int("PHONE_BRIDGE_SOCKET_TIMEOUT_SEC"))
+    # Cap request bodies so a huge/forged Content-Length cannot exhaust memory.
+    MAX_REQUEST_BODY_BYTES = 1 * 1024 * 1024  # 1 MiB
 
     def log_message(self, format, *args):
         logger.info(f"{self.address_string()} - {format % args}")
@@ -1012,7 +1669,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ]
         lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
         local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
-        public_url = self.server.get_public_url(validate=False)
+        public_url = self.server.get_public_url(validate=True)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
             **self._build_session_payload(session),
@@ -1062,12 +1719,45 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             raw_length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             raw_length = 0
+        if raw_length < 0:
+            raw_length = 0
+        if raw_length > self.MAX_REQUEST_BODY_BYTES:
+            self._json_response(
+                {"status": "payload_too_large", "message": "Request body too large."},
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+            )
+            return None
 
         try:
-            return json.loads(self.rfile.read(raw_length).decode("utf-8") or "{}")
-        except json.JSONDecodeError:
+            raw_body = self.rfile.read(raw_length)
+        except (OSError, ValueError):
+            # Socket timeout / reset while reading the (possibly stalled) body.
+            return None
+
+        try:
+            return json.loads(raw_body.decode("utf-8") or "{}")
+        except (json.JSONDecodeError, UnicodeDecodeError):
             self._json_response(
                 {"status": "bad_request", "message": "Invalid JSON body."},
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return None
+
+    def _coerce_minutes(self, payload):
+        """Parse the client-supplied ``minutes`` field, replying 400 on garbage.
+
+        Returns the int on success, or ``None`` after sending a bad-request
+        response (so the caller just returns). A bare int() on attacker JSON
+        would otherwise raise and tear down the connection with no response.
+        """
+        raw_minutes = payload.get("minutes", self.server.default_session_minutes)
+        if raw_minutes in (None, ""):
+            return self.server.default_session_minutes
+        try:
+            return int(raw_minutes)
+        except (TypeError, ValueError):
+            self._json_response(
+                {"status": "bad_request", "message": "minutes must be an integer."},
                 status=HTTPStatus.BAD_REQUEST,
             )
             return None
@@ -1076,13 +1766,19 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         route = parsed.path
 
+        if route == "/_agentcockpit/tunnel-check":
+            self._json_response({"status": "ok", "client": "phone-bridge"})
+            return
+
         if route == "/health":
             lan_ips = _get_local_ipv4_candidates()
-            # /health icinde kendi uzerinden tekrar /health dogrulamasi yapma.
-            tunnel_snapshot = self.server.public_tunnel_snapshot(validate=False)
+            tunnel_snapshot = self.server.public_tunnel_snapshot(validate=True)
             screen = _get_screen_metrics()
+            capture = _capture_health(screen)
+            keep_awake = _keep_awake_snapshot()
             compatibility = detect_runtime_compatibility()
             repo_state = self.server.repo_tracker.snapshot()
+            input_permissions = SystemOps.desktop_input_permissions()
             self._json_response(
                 {
                     "status": "ok",
@@ -1092,11 +1788,23 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
                     "screen_available": screen["available"],
+                    "capture_available": capture["capture_available"],
+                    "capture_error": capture["capture_error"],
+                    "capture_last_error": capture["capture_last_error"],
+                    "capture_last_error_at": capture["capture_last_error_at"],
+                    "capture_last_success_at": capture["capture_last_success_at"],
+                    "capture_last_width": capture["capture_last_width"],
+                    "capture_last_height": capture["capture_last_height"],
+                    "capture_retry_after": capture["capture_retry_after"],
+                    "keep_awake_enabled": keep_awake["enabled"],
+                    "keep_awake_active": keep_awake["active"],
+                    "keep_awake_error": keep_awake["error"],
                     "runtime_platform": compatibility["platform"],
                     "gui_session": compatibility["gui_session"],
                     "browser_available": compatibility["browser_available"],
                     "desktop_automation_available": compatibility["desktop_automation_available"],
                     "desktop_automation_reason": compatibility["desktop_automation_reason"],
+                    "desktop_input_permissions": input_permissions,
                     "session_minutes": self.server.default_session_minutes,
                     "session_unlimited": self.server.default_session_minutes <= 0,
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
@@ -1105,13 +1813,21 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "pairing_local_only": True,
                     "public_url": tunnel_snapshot.get("public_url", ""),
                     "public_tunnel_enabled": tunnel_snapshot.get("enabled", False),
+                    "public_tunnel_provider": tunnel_snapshot.get("provider", ""),
                     "public_tunnel_status": tunnel_snapshot.get("status", "kapali"),
                     "public_tunnel_error": tunnel_snapshot.get("error", ""),
                     "public_tunnel_restart_count": tunnel_snapshot.get("restart_count", 0),
                     "public_tunnel_last_exit_code": tunnel_snapshot.get("last_exit_code"),
+                    "public_tunnel_primary_status": tunnel_snapshot.get("primary_status", ""),
+                    "public_tunnel_primary_error": tunnel_snapshot.get("primary_error", ""),
+                    "public_tunnel_fallback_status": tunnel_snapshot.get("fallback_status", ""),
+                    "public_tunnel_fallback_error": tunnel_snapshot.get("fallback_error", ""),
+                    "public_tunnel_fallback_last_exit_code": tunnel_snapshot.get("fallback_last_exit_code"),
                     "wan_pwa_available": bool(tunnel_snapshot.get("public_url")),
                     "telegram_wan_available": bool(_telegram_bot_url()),
                     "repo_state": repo_state,
+                    "active_streams": self.server.active_stream_count(),
+                    "max_streams": self.server.max_stream_connections,
                 }
             )
             return
@@ -1143,7 +1859,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         if route == "/app":
-            session, auth_kind = self._get_viewer_session()
+            session, auth_kind = self._require_viewer_session(html=True)
+            if not session:
+                return
             html_path = PHONE_CLIENT_DIR / "index.html"
             if not html_path.exists():
                 self._text_response(
@@ -1151,7 +1869,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 )
                 return
             html = html_path.read_text(encoding="utf-8")
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             device_token = ""
             extra_headers = None
             if auth_kind == "link":
@@ -1235,20 +1953,29 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            quality, max_width = _parse_stream_params(
+                self._query(), self.server.screenshot_quality, self.server.max_width
+            )
             try:
-                payload = _capture_payload(
-                    self.server.screenshot_quality,
-                    self.server.max_width,
+                payload = _capture_payload(quality, max_width)
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge screenshot unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
                 )
+                return
             except Exception as exc:
-                logger.exception("Phone bridge screenshot failed: %s", exc)
+                logger.exception(f"Phone bridge screenshot failed: {exc}")
                 self._json_response(
                     {"status": "error", "message": str(exc)},
                     status=HTTPStatus.SERVICE_UNAVAILABLE,
                 )
                 return
             payload["session"] = self._build_session_payload(session)
-            public_url = self.server.get_public_url(validate=False)
+            public_url = self.server.get_public_url(validate=True)
             payload["public_url"] = public_url
             payload["wan_url"] = _build_app_url_from_base(
                 public_url,
@@ -1256,6 +1983,245 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             )
             payload["repo_state"] = self.server.repo_tracker.snapshot()
             self._json_response(payload)
+            return
+
+        if route == "/api/frame":
+            # Long-poll, push-on-change frame stream. The request is held open
+            # until the screen differs from the client's last signature (or a
+            # short timeout), then returns a single binary JPEG. This removes the
+            # fixed polling gap and the base64 overhead of /api/screenshot.
+            session, auth_kind = self._require_viewer_session()
+            if not session:
+                return
+            query = self._query()
+            since = (query.get("since", [""])[0] or "")[:16]
+            quality, max_width = _parse_stream_params(
+                query, self.server.screenshot_quality, self.server.max_width
+            )
+
+            deadline = time.time() + 15.0
+            tick = 0.12
+            try:
+                while True:
+                    raw = None
+                    image = None
+                    try:
+                        raw = _raw_capture_serialized()
+                    except Exception as exc:
+                        _record_capture_error(exc)
+                        raise
+                    try:
+                        signature = _frame_signature(raw)
+                        if signature != since:
+                            screen_width, screen_height = raw.size
+                            _record_capture_success(screen_width, screen_height)
+                            image = _scale_to_width(_draw_cursor(raw), max_width)
+                            jpeg = _encode_jpeg(image, quality)
+                            self.send_response(HTTPStatus.OK)
+                            self.send_header("Content-Type", "image/jpeg")
+                            self.send_header("Content-Length", str(len(jpeg)))
+                            self.send_header("Cache-Control", "no-store")
+                            self.send_header("X-Frame-Sig", signature)
+                            self.send_header("X-Frame-Width", str(image.width))
+                            self.send_header("X-Frame-Height", str(image.height))
+                            self.send_header("X-Screen-Width", str(screen_width))
+                            self.send_header("X-Screen-Height", str(screen_height))
+                            self.end_headers()
+                            try:
+                                self.wfile.write(jpeg)
+                            except (BrokenPipeError, ConnectionResetError):
+                                pass
+                            return
+                        if time.time() >= deadline:
+                            self.send_response(HTTPStatus.NO_CONTENT)
+                            self.send_header("X-Frame-Sig", since)
+                            self.send_header("Cache-Control", "no-store")
+                            self.end_headers()
+                            return
+                    finally:
+                        if image is not None and image is not raw:
+                            _close_image(image)
+                        if raw is not None:
+                            _close_image(raw)
+                    time.sleep(tick)
+                    if tick < 0.4:
+                        # Back off while the screen is static to keep idle CPU low;
+                        # an active change still returns on the next capture.
+                        tick += 0.04
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge frame unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
+                )
+                return
+            except Exception as exc:
+                logger.exception(f"Phone bridge frame failed: {exc}")
+                self._json_response(
+                    {"status": "error", "message": str(exc)},
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                )
+                return
+
+        if route == "/api/stream":
+            # Persistent push stream: one connection, the server writes
+            # length-prefixed (4-byte big-endian) binary JPEG frames as the screen
+            # changes (plus a ~1/s keepalive). No per-frame round-trip, so the
+            # client sees smooth motion limited only by capture/encode + bandwidth.
+            session, auth_kind = self._require_viewer_session()
+            if not session:
+                return
+            try:
+                _raise_if_capture_deferred()
+            except CaptureUnavailable as exc:
+                _record_capture_error(exc)
+                logger.warning("Phone bridge stream unavailable: %s", _redact_capture_error(exc))
+                self._json_response(
+                    _capture_error_payload(exc),
+                    status=HTTPStatus.SERVICE_UNAVAILABLE,
+                    extra_headers=_capture_retry_headers(exc),
+                )
+                return
+            if not self.server.acquire_stream_slot():
+                record_runtime_event(
+                    "phone_bridge_stream_rejected",
+                    active_streams=self.server.active_stream_count(),
+                    max_streams=self.server.max_stream_connections,
+                )
+                self._json_response(
+                    {
+                        "status": "busy",
+                        "message": "Cok fazla aktif goruntu akisi var. Sayfayi yenileyin.",
+                    },
+                    status=HTTPStatus.TOO_MANY_REQUESTS,
+                    extra_headers={"Retry-After": "2"},
+                )
+                return
+            query = self._query()
+            quality, max_width = _parse_stream_params(
+                query, self.server.screenshot_quality, self.server.max_width
+            )
+            try:
+                self.send_response(HTTPStatus.OK)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Cache-Control", "no-store")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Connection", "close")
+                self.end_headers()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.server.release_stream_slot()
+                return
+            record_runtime_event(
+                "phone_bridge_stream_started",
+                active_streams=self.server.active_stream_count(),
+                max_streams=self.server.max_stream_connections,
+                quality=quality,
+                max_width=max_width,
+            )
+            last_sig = None
+            last_jpeg = None
+            last_send = 0.0
+            idle = 0
+            motion = 0
+            was_high_motion = False
+            capture_errors = 0
+            active_interval = 1.0 / 15.0
+            started_at = time.time()
+            frame_count = 0
+            last_gc_frame = 0
+            try:
+                while time.time() - started_at < self.server.stream_max_seconds:
+                    loop_start = time.time()
+                    raw = None
+                    image = None
+                    try:
+                        raw = _raw_capture_serialized()
+                        _record_capture_success(*raw.size)
+                        capture_errors = 0
+                    except CaptureUnavailable as exc:
+                        _record_capture_error(exc)
+                        logger.warning("Phone bridge stream stopped: %s", _redact_capture_error(exc))
+                        break
+                    except Exception as exc:
+                        _record_capture_error(exc)
+                        capture_errors += 1
+                        if capture_errors > 10:
+                            break  # let the client fall back to the long-poll
+                        time.sleep(0.3)
+                        continue
+                    try:
+                        signature = _frame_signature(raw)
+                        changed = signature != last_sig
+                        if changed:
+                            motion = min(motion + 2, 12)
+                            idle = 0
+                        else:
+                            motion = max(motion - 1, 0)
+                            idle += 1
+                        high_motion = motion >= 5
+                        just_settled = was_high_motion and not high_motion
+                        was_high_motion = high_motion
+                        now = time.time()
+                        if changed or just_settled:
+                            # While the screen is actively moving (scrolling, video), send
+                            # smaller, lower-quality frames so they don't saturate the
+                            # uplink/tunnel and stutter; restore full detail the instant it
+                            # settles. Pixels dominate bandwidth, so trim width too.
+                            if high_motion:
+                                encode_quality = max(28, quality - 24)
+                                encode_width = max(720, (max_width * 7) // 10)
+                            else:
+                                encode_quality = quality
+                                encode_width = max_width
+                            image = _scale_to_width(_draw_cursor(raw), encode_width)
+                            last_jpeg = _encode_jpeg(image, encode_quality)
+                            last_sig = signature
+                            frame_count += 1
+                            try:
+                                self.wfile.write(len(last_jpeg).to_bytes(4, "big"))
+                                self.wfile.write(last_jpeg)
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                break
+                            last_send = now
+                        elif now - last_send >= 1.0:
+                            # Tiny zero-length heartbeat keeps the connection warm and
+                            # lets the client confirm liveness without resending a frame.
+                            try:
+                                self.wfile.write((0).to_bytes(4, "big"))
+                                self.wfile.flush()
+                            except (BrokenPipeError, ConnectionResetError, OSError):
+                                break
+                            last_send = now
+                    finally:
+                        if image is not None and image is not raw:
+                            _close_image(image)
+                        if raw is not None:
+                            _close_image(raw)
+                    if (
+                        frame_count
+                        and frame_count != last_gc_frame
+                        and frame_count % self.server.stream_gc_every_frames == 0
+                    ):
+                        gc.collect()
+                        last_gc_frame = frame_count
+                    # Pace fast while the screen is moving; back off when static.
+                    interval = active_interval if idle < 12 else 0.25
+                    elapsed = time.time() - loop_start
+                    if elapsed < interval:
+                        time.sleep(interval - elapsed)
+            except Exception as exc:
+                logger.debug(f"Phone bridge stream ended: {exc}")
+            finally:
+                self.server.release_stream_slot()
+                record_runtime_event(
+                    "phone_bridge_stream_ended",
+                    active_streams=self.server.active_stream_count(),
+                    frames=frame_count,
+                    duration_seconds=round(time.time() - started_at, 2),
+                )
             return
 
         if route == "/api/session":
@@ -1268,13 +2234,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 else self.server.startup_session.get("token", "")
             )
             screen = _get_screen_metrics()
-            public_url = self.server.get_public_url(validate=False)
+            capture = _capture_health(screen)
+            public_url = self.server.get_public_url(validate=True)
             self._json_response(
                 {
                     "status": "ok",
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
                     "screen_available": screen["available"],
+                    "capture_available": capture["capture_available"],
+                    "capture_error": capture["capture_error"],
+                    "capture_retry_after": capture["capture_retry_after"],
                     "poll_ms": self.server.poll_ms,
                     "quality": self.server.screenshot_quality,
                     "max_width": self.server.max_width,
@@ -1302,8 +2272,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if payload is None:
                 return
-            raw_minutes = payload.get("minutes", self.server.default_session_minutes)
-            minutes = int(raw_minutes) if raw_minutes not in (None, "") else self.server.default_session_minutes
+            minutes = self._coerce_minutes(payload)
+            if minutes is None:
+                return
             label = str(payload.get("label", "pair-qr")).strip()[:80] or "pair-qr"
             ttl_seconds = None if minutes <= 0 else minutes * 60
             session = self.server.session_links.create(ttl_seconds, label=label)
@@ -1328,8 +2299,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             if payload is None:
                 return
-            raw_minutes = payload.get("minutes", self.server.default_session_minutes)
-            minutes = int(raw_minutes) if raw_minutes not in (None, "") else self.server.default_session_minutes
+            minutes = self._coerce_minutes(payload)
+            if minutes is None:
+                return
             label = str(payload.get("label", "phone-client")).strip()[:80] or "phone-client"
             ttl_seconds = None if minutes <= 0 else minutes * 60
             session = self.server.session_links.create(ttl_seconds, label=label)
@@ -1393,9 +2365,36 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         action_type = payload.get("type", "")
-        delay = max(0.0, min(2.0, float(payload.get("delay", 0.15))))
+        if action_type not in ("click", "scroll", "key", "type", "refresh"):
+            self._json_response(
+                {
+                    "status": "bad_request",
+                    "message": f"Unknown action: {action_type}",
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+            return
+
+        # Idempotency: a retried command carries the same request_id. If it has
+        # already been applied (the client never saw our first response), replay
+        # the stored result instead of executing the desktop action again.
+        request_id = str(payload.get("request_id", "")).strip()[:128]
+        cached_response, is_owner = self.server.action_dedup.acquire(request_id)
+        if cached_response is not None:
+            self._json_response(cached_response)
+            return
+        action_audit = _action_audit_payload(action_type, payload, request_id=request_id)
+        record_runtime_event("phone_bridge_action_received", **action_audit)
 
         try:
+            # Parse delay inside the try so the except path below releases the
+            # in-flight reservation (action_dedup.abort) on bad input; a
+            # malformed value just falls back to the default instead of leaking.
+            try:
+                delay = max(0.0, min(2.0, float(payload.get("delay", 0.15))))
+            except (TypeError, ValueError):
+                delay = 0.15
+
             if action_type == "click":
                 _perform_click(
                     payload.get("x", 0.0),
@@ -1409,20 +2408,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("delta", 0),
                 )
             elif action_type == "key":
-                _perform_keypress(payload.get("keys", ""))
+                if not _perform_keypress(payload.get("keys", "")):
+                    raise RuntimeError("Klavye kisayolu uygulanamadi. Accessibility iznini kontrol edin.")
             elif action_type == "type":
-                _perform_type(payload.get("text", ""))
+                if not _perform_type(
+                    payload.get("text", ""),
+                    sensitive=bool(payload.get("sensitive", False)),
+                    focus=payload.get("focus"),
+                ):
+                    raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
                 pass
-            else:
-                self._json_response(
-                    {
-                        "status": "bad_request",
-                        "message": f"Unknown action: {action_type}",
-                    },
-                    status=HTTPStatus.BAD_REQUEST,
-                )
-                return
 
             if delay:
                 time.sleep(delay)
@@ -1433,53 +2429,66 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
-            public_url = self.server.get_public_url(validate=False)
-            wan_url = _build_app_url_from_base(
-                public_url,
-                handoff_token,
-            )
+            public_url = self.server.get_public_url(validate=True)
+            wan_url = _build_app_url_from_base(public_url, handoff_token)
             repo_state = self.server.repo_tracker.snapshot()
+            # When the client drives a live frame stream it already shows the
+            # result, so it asks us to skip the (heavier) action screenshot.
+            skip_screenshot = bool(payload.get("no_screenshot"))
             if payload.get("screenshot", True) is False:
-                self._json_response(
-                    {
-                        "status": "ok",
-                        "action": action_type,
-                        "session": self._build_session_payload(refreshed_session),
-                        "public_url": public_url,
-                        "wan_url": wan_url,
-                        "repo_state": repo_state,
-                        "screenshot": None,
-                    }
+                skip_screenshot = True
+            if skip_screenshot:
+                screenshot_payload = None
+            else:
+                screenshot_payload = _capture_payload(
+                    self.server.screenshot_quality,
+                    self.server.max_width,
                 )
-                return
-
-            screenshot_payload = _capture_payload(
-                self.server.screenshot_quality,
-                self.server.max_width,
-            )
-            screenshot_payload["public_url"] = public_url
-            screenshot_payload["wan_url"] = wan_url
-            screenshot_payload["repo_state"] = repo_state
-            self._json_response(
-                {
-                    "status": "ok",
-                    "action": action_type,
-                    "session": self._build_session_payload(refreshed_session),
-                    "public_url": public_url,
-                    "wan_url": wan_url,
-                    "repo_state": repo_state,
-                    "screenshot": screenshot_payload,
-                }
-            )
+                screenshot_payload["public_url"] = public_url
+                screenshot_payload["wan_url"] = wan_url
+                screenshot_payload["repo_state"] = repo_state
+            response_body = {
+                "status": "ok",
+                "action": action_type,
+                "request_id": request_id,
+                "session": self._build_session_payload(refreshed_session),
+                "public_url": public_url,
+                "wan_url": wan_url,
+                "repo_state": repo_state,
+                "screenshot": screenshot_payload,
+            }
+            record_runtime_event("phone_bridge_action_succeeded", **action_audit)
         except Exception as exc:
-            logger.exception("Phone bridge action failed: %s", exc)
+            logger.exception(f"Phone bridge action failed: {exc}")
+            record_runtime_event(
+                "phone_bridge_action_failed",
+                **action_audit,
+                error=_redact_capture_error(exc),
+            )
+            if is_owner:
+                self.server.action_dedup.abort(request_id)
             self._json_response(
                 {"status": "error", "message": str(exc)},
                 status=HTTPStatus.INTERNAL_SERVER_ERROR,
             )
+            return
+
+        # Cache the result *before* writing it out so that even if the socket
+        # write fails the action is never re-applied on the client's retry.
+        if is_owner:
+            self.server.action_dedup.complete(request_id, response_body)
+        self._json_response(response_body)
 
 
 class PhoneBridgeServer(ThreadingHTTPServer):
+    def server_bind(self):
+        # HTTPServer.server_bind() calls socket.getfqdn(), which can hang on
+        # macOS mDNS reverse lookups before the bridge even starts listening.
+        TCPServer.server_bind(self)
+        host, port = self.server_address[:2]
+        self.server_name = host or LOCAL_HOST
+        self.server_port = port
+
     def __init__(
         self,
         server_address,
@@ -1501,6 +2510,13 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.session_links = SessionLinkStore()
         self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
         self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
+        self.action_dedup = ActionDedup()
+        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
+        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
+        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
+        self._stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
+        self._stream_count_lock = threading.Lock()
+        self._active_streams = 0
         self.startup_session = self.session_links.create(
             None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
             label="startup-phone",
@@ -1511,6 +2527,28 @@ class PhoneBridgeServer(ThreadingHTTPServer):
             self.server_port,
             self.startup_session["token"],
         )
+
+    def acquire_stream_slot(self):
+        acquired = self._stream_slots.acquire(blocking=False)
+        if not acquired:
+            return False
+        with self._stream_count_lock:
+            self._active_streams += 1
+        return True
+
+    def release_stream_slot(self):
+        with self._stream_count_lock:
+            if self._active_streams <= 0:
+                return
+            self._active_streams -= 1
+        try:
+            self._stream_slots.release()
+        except ValueError:
+            pass
+
+    def active_stream_count(self):
+        with self._stream_count_lock:
+            return self._active_streams
 
     def get_public_url(self, *, validate=True):
         if not self.public_tunnel:
@@ -1571,6 +2609,7 @@ def build_arg_parser():
 
 
 def run_server(bind, port, admin_token, session_minutes, quality, max_width, poll_ms, public_tunnel="auto"):
+    install_diagnostics_hooks("phone_bridge")
     server = PhoneBridgeServer(
         (bind, port),
         PhoneBridgeHandler,
@@ -1580,6 +2619,8 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         poll_ms=max(500, poll_ms),
         default_session_minutes=int(session_minutes),
     )
+    start_diagnostics_heartbeat("phone_bridge", extra_snapshot=lambda: _diagnostic_snapshot(server))
+    record_runtime_event("phone_bridge_server_created", bind=bind, port=port)
 
     lan_ips = _get_local_ipv4_candidates()
     startup_session = server.startup_session
@@ -1593,25 +2634,34 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         f"http://{LOCAL_HOST}:{port}",
         mode=public_tunnel,
     )
-    public_url = server.get_public_url(validate=False)
+    _start_keep_awake()
+    public_url = server.get_public_url(validate=True)
     wan_url = _build_app_url_from_base(public_url, startup_session["token"])
 
     logger.info("AgentCockpit phone bridge basladi")
-    logger.info(f"Phone app (LAN): {lan_url}")
+    record_runtime_event(
+        "phone_bridge_ready",
+        bind=bind,
+        port=port,
+        lan_ip_count=len(lan_ips),
+        public_tunnel_status=server.public_tunnel_snapshot(validate=False).get("status", ""),
+        capture=_diagnostic_snapshot(server).get("capture"),
+    )
+    logger.info(f"Phone app (LAN): {_redact_url_for_log(lan_url)}")
     if wan_url:
-        logger.info(f"Phone app (WAN): {wan_url}")
-    logger.info(f"Phone app (Localhost): {localhost_url}")
+        logger.info(f"Phone app (WAN): {_redact_url_for_log(wan_url)}")
+    logger.info(f"Phone app (Localhost): {_redact_url_for_log(localhost_url)}")
     logger.info(f"Phone installation id: {get_installation_id()}")
-    logger.info(f"Phone admin token: {admin_token}")
+    logger.info("Phone admin token: <redacted>")
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
     print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")
-    print(f"LAN URL ({startup_session['expires_in_text']}): {lan_url}")
+    print(f"LAN URL ({startup_session['expires_in_text']}): {_stdout_secret(lan_url)}")
     if len(lan_urls) > 1:
         for index, alt_url in enumerate(lan_urls[1:], start=2):
-            print(f"LAN URL {index} ({startup_session['expires_in_text']}): {alt_url}")
+            print(f"LAN URL {index} ({startup_session['expires_in_text']}): {_stdout_secret(alt_url)}")
     if wan_url:
-        print(f"WAN URL ({startup_session['expires_in_text']}): {wan_url}")
+        print(f"WAN URL ({startup_session['expires_in_text']}): {_stdout_secret(wan_url)}")
     else:
         tunnel_snapshot = server.public_tunnel_snapshot()
         if tunnel_snapshot.get("enabled"):
@@ -1619,22 +2669,35 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
                 "WAN URL: hazirlaniyor veya kapali "
                 f"({tunnel_snapshot.get('status', 'bilinmiyor')})"
             )
-    print(f"Local URL ({startup_session['expires_in_text']}): {localhost_url}")
+    print(f"Local URL ({startup_session['expires_in_text']}): {_stdout_secret(localhost_url)}")
     print(f"Installation id: {get_installation_id()}")
-    print(f"Admin token: {admin_token}")
+    print(f"Admin token: {_stdout_admin_token(admin_token)}")
     print(f"Token file: {get_runtime_paths()['admin_token_file']}")
     print(
         "Not: Varsayilan telefon linki sinirsizdir. Yeni link uretmek icin /api/session-links endpoint'ini admin token ile cagirabilirsin."
     )
+
+    # Translate SIGTERM (how launcher.py / runner.sh / kill stop us) into the
+    # same clean shutdown as Ctrl-C, so the public tunnel child is always
+    # stopped instead of being orphaned as a live internet-facing tunnel.
+    def _handle_sigterm(signum, frame):
+        raise KeyboardInterrupt
+    try:
+        signal.signal(signal.SIGTERM, _handle_sigterm)
+    except (ValueError, OSError):
+        # Not running in the main thread / signal unsupported on this platform.
+        pass
 
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print("\nKapatiliyor...")
     finally:
+        record_runtime_event("phone_bridge_stopping")
         if server.public_tunnel:
             server.public_tunnel.stop()
         server.server_close()
+        record_runtime_event("phone_bridge_stopped")
 
 
 def main():

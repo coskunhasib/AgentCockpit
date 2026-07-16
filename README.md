@@ -57,6 +57,60 @@ Ortam tani raporu almak icin:
 python main.py --doctor
 ```
 
+## Sistem Baslangicinda Acma
+
+AgentCockpit'i kullanici oturumu acilinca otomatik baslatmak icin:
+
+```bash
+python autostart.py register
+```
+
+Bu komut macOS'ta LaunchAgent, Windows'ta Task Scheduler, Linux'ta systemd user
+service kaydi olusturur. macOS LaunchAgent dogrudan venv Python'u calistirir;
+`screen` veya aktif terminal oturumu gerekmez. Uygulama zaten aciksa ve sadece
+sonraki oturum icin kaydetmek istiyorsan:
+
+```bash
+python autostart.py register --no-start
+```
+
+macOS'ta LaunchAgent, `Desktop`, `Documents` veya `Downloads` altindaki venv
+dosyalarini izin/TCC nedeniyle okuyamayabilir. Repo bu klasorlerdeyse uygulama
+kopyasini korumali olmayan bir dizine koyup kaydi o dizinden verin:
+
+```bash
+python autostart.py register --bot-dir "$HOME/AgentCockpit" --no-start
+```
+
+Durumu kontrol etmek veya kaydi kaldirmak icin:
+
+```bash
+python autostart.py status
+python autostart.py unregister
+```
+
+macOS'ta ekran aktarimi icin Sistem Ayarlari > Gizlilik ve Guvenlik > Ekran ve
+Sistem Sesi Kaydi altinda AgentCockpit'i baslatan uygulamaya izin verilmis
+olmasi gerekir. Elle baslatmada bu uygulama genelde terminal/Codex, otomatik
+baslatmada ise Python olabilir.
+
+Telefon bridge'i baslatilirken macOS'ta `caffeinate` keep-awake islemi de
+devreye girer. `/health` ciktisinda `keep_awake_active`, `capture_available` ve
+`capture_error` alanlarini kontrol ederek link ayakta oldugu halde goruntu
+gelmeyen durumlari ayirt edebilirsin. `screen=0x0` veya `capture_error` varsa
+macOS ekran oturumu kilitli/uykuda olabilir ya da Screen Recording izni eksik
+olabilir.
+
+Runtime diagnostikleri `logs/diagnostics/` altina yazilir:
+
+- `state_<process>_<pid>.json`: son heartbeat ve process/runtime snapshot'i.
+- `events_<pid>.jsonl`: bridge, launcher, bot restart, DNS bekleme ve crash olaylari.
+- `fault_<pid>.log`: native crash veya `SIGUSR1` thread dump ciktilari.
+- `logs/crashes/crash_*.log`: traceback, runtime snapshot, thread dump ve son log tail'i.
+
+Varsayilan heartbeat araligi 30 saniyedir. `AGENTCOCKPIT_DIAGNOSTICS_INTERVAL=0`
+ile kapatilabilir. Token ve session query degerleri loglarda otomatik redakte edilir.
+
 ## Telefon ve PWA
 
 Telefon/PWA kurulum notlari:
@@ -67,8 +121,17 @@ Telefon/PWA kurulum notlari:
 Kisa notlar:
 
 - Pairing dashboard: `http://127.0.0.1:8765/pair`
-- QR, uzak tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
+- QR, uzak Cloudflare tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
+- WAN icin varsayilan ve hedef yol Cloudflare Quick Tunnel'dir. `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
+  Cloudflare'in gercek URL uretmesi icin bekler; IP tabanli Bore fallback varsayilan kapali tutulur.
+  Bore sadece `PHONE_PUBLIC_TUNNEL_FALLBACK=auto` veya `bore` olarak bilerek acilir.
+- Cloudflare DNS/TLS hatasinda sonsuz hizli yeniden baslatma yapilmaz. Varsayilan
+  `PHONE_PUBLIC_TUNNEL_MAX_RESTARTS=5` denemeden sonra kisa bir cooloff'a girer ve
+  `/health` icinde macOS DNS/root certificate/Keychain kaynakli hata acikca gorunur.
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
+- WAN tunnelini terminal/Codex gibi eksik GUI/DNS baglamindan yeniden baslatmak
+  Cloudflare quick tunnel olusturmayi bozabilir; kalici calisma icin auto-start
+  LaunchAgent kaydi tercih edilir.
 
 ## Dokumanlar
 

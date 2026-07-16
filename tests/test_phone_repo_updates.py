@@ -201,12 +201,12 @@ class RepoUpdateTrackerTests(unittest.TestCase):
         get_source = inspect.getsource(bridge.PhoneBridgeHandler.do_GET)
         post_source = inspect.getsource(bridge.PhoneBridgeHandler.do_POST)
 
-        self.assertIn('"repo_state": self.server.repo_tracker.snapshot()', get_source)
         self.assertIn('payload["repo_state"] = self.server.repo_tracker.snapshot()', get_source)
         self.assertIn("repo_state = self.server.repo_tracker.snapshot()", post_source)
         self.assertIn('screenshot_payload["repo_state"] = repo_state', post_source)
         self.assertIn('if payload.get("screenshot", True) is False:', post_source)
-        self.assertIn('"screenshot": None', post_source)
+        self.assertIn("if skip_screenshot:", post_source)
+        self.assertIn('"repo_state": repo_state,', post_source)
         self.assertIn('if route == "/api/repo-update":', post_source)
         self.assertIn('payload.get("confirm") is not True', post_source)
 

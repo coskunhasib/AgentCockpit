@@ -4,7 +4,7 @@ import platform
 import shutil
 import sys
 
-from phone_public_tunnel import cloudflared_download_url
+from phone_public_tunnel import bore_download_url, cloudflared_download_url
 
 
 def _platform_key(platform_name=None):
@@ -95,11 +95,15 @@ def detect_runtime_compatibility(
         "Windows" if platform_key == "win32" else "Darwin" if platform_key == "darwin" else "Linux",
         machine,
     )
-    public_tunnel_supported = bool(tunnel_download)
+    fallback_tunnel_download = bore_download_url(
+        "Windows" if platform_key == "win32" else "Darwin" if platform_key == "darwin" else "Linux",
+        machine,
+    )
+    public_tunnel_supported = bool(tunnel_download or fallback_tunnel_download)
     public_tunnel_reason = ""
     if not public_tunnel_supported:
         public_tunnel_reason = (
-            f"Quick tunnel otomatik indirme bu platformda desteklenmiyor: {platform_key} {machine_key or 'unknown'}"
+            f"Public tunnel otomatik indirme bu platformda desteklenmiyor: {platform_key} {machine_key or 'unknown'}"
         )
 
     warnings = []
@@ -123,6 +127,7 @@ def detect_runtime_compatibility(
         "public_tunnel_supported": public_tunnel_supported,
         "public_tunnel_reason": public_tunnel_reason,
         "public_tunnel_download_url": tunnel_download or "",
+        "public_tunnel_fallback_download_url": fallback_tunnel_download or "",
         "warnings": warnings,
         "applied_defaults": [],
     }

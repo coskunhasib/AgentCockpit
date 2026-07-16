@@ -58,10 +58,10 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("if (wasDisconnected && !isRepoPromptVisible()) {", html)
         self.assertIn("event.target.closest('#repo-prompt')", html)
         self.assertIn("[toolbar, keyboardPanel, usageHint, installSheet, wanSheet]", html)
-        self.assertIn("const fastAction = payload.type === 'click' && payload.screenshot === false;", html)
-        self.assertIn("scheduleNextPoll(fastAction ? 70 : 240);", html)
-        self.assertIn("delay: isDouble ? 0.06 : 0.02", html)
-        self.assertIn("screenshot: false", html)
+        self.assertIn("function enqueueAction(", html)
+        self.assertIn("no_screenshot: streamMode !== 'poll'", html)
+        self.assertIn("scheduleNextPoll(streamMode === 'poll' ? 240 : 0);", html)
+        self.assertIn("delay: isDouble ? 0.24 : 0.18", html)
 
 
 if __name__ == "__main__":
