@@ -88,7 +88,7 @@
       display: flex;
       align-items: center;
       gap: 8px;
-      pointer-events: auto;
+      pointer-events: none;
     }
 
     .topbar {
@@ -102,6 +102,22 @@
       visibility: hidden;
       transform: translateY(-10px);
       pointer-events: none;
+    }
+
+    .topbar.compact {
+      position: static;
+      padding: 0;
+    }
+
+    .topbar.compact .status {
+      position: fixed;
+      top: 50%;
+      right: calc(8px + var(--safe-right));
+      transform: translateY(-50%);
+    }
+
+    .topbar.compact.hidden .status {
+      transform: translate(12px, -50%);
     }
 
     .card {
@@ -164,7 +180,7 @@
     }
 
     .status.expanded .status-details {
-      max-height: 110px;
+      max-height: 220px;
       opacity: 1;
       padding: 8px 14px 12px;
       border-top-color: var(--line);
@@ -174,6 +190,17 @@
     .status:not(.expanded) .status-text,
     .status:not(.expanded) .status-actions {
       display: none;
+    }
+
+    .status:not(.expanded) {
+      width: 26px;
+      height: 26px;
+      pointer-events: none;
+    }
+
+    .status:not(.expanded) .status-main {
+      width: 26px;
+      height: 26px;
     }
 
     .status-dot {
@@ -204,6 +231,63 @@
       color: var(--muted);
       font-size: 11px;
       line-height: 1.45;
+    }
+
+    .repo-prompt {
+      display: none;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: rgba(56, 163, 255, 0.10);
+      border: 1px solid rgba(56, 163, 255, 0.20);
+      color: var(--text);
+    }
+
+    .repo-prompt.visible {
+      display: block;
+    }
+
+    .repo-prompt-title {
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1.35;
+    }
+
+    .repo-prompt-sub {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .repo-prompt-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+
+    .repo-prompt-btn {
+      appearance: none;
+      border: 0;
+      border-radius: 999px;
+      padding: 7px 12px;
+      font-size: 11px;
+      font-weight: 800;
+      cursor: pointer;
+      touch-action: manipulation;
+      background: rgba(255,255,255,0.10);
+      color: var(--text);
+    }
+
+    .repo-prompt-btn.primary {
+      background: linear-gradient(135deg, var(--accent), #246cff);
+      color: #f8fbff;
+    }
+
+    .repo-prompt-btn[disabled] {
+      opacity: 0.62;
+      cursor: default;
     }
 
     .status-actions {
@@ -660,6 +744,14 @@
         </div>
         <div class="status-details" id="status-details">
           <div class="status-sub" id="status-sub">Ilk ekran bekleniyor</div>
+          <div class="repo-prompt" id="repo-prompt">
+            <div class="repo-prompt-title" id="repo-prompt-title">Repo guncellemesi hazir</div>
+            <div class="repo-prompt-sub" id="repo-prompt-sub">Yeni commit bulundu.</div>
+            <div class="repo-prompt-actions">
+              <button class="repo-prompt-btn primary" id="repo-prompt-update" type="button">Guncelle</button>
+              <button class="repo-prompt-btn" id="repo-prompt-dismiss" type="button">Kapat</button>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -747,6 +839,7 @@
       'use strict';
 
       const TOKEN = '{{TOKEN}}';
+      const BOOT_DEVICE_TOKEN = '{{DEVICE_TOKEN}}';
       const TELEGRAM_BOT_URL = '{{TELEGRAM_BOT_URL}}';
       let publicUrl = '{{PUBLIC_URL}}';
       let wanUrl = '{{WAN_URL}}';
@@ -761,13 +854,36 @@
         pollMode: 'ac_phone_poll_mode_v1',
         installDismissed: 'ac_phone_install_dismissed_v2',
         rotateHintDismissed: 'ac_phone_rotate_hint_dismissed_v1',
-        usageHintDismissed: 'ac_phone_usage_hint_dismissed_v1'
+        usageHintDismissed: 'ac_phone_usage_hint_dismissed_v1',
+        repoOfferDismissed: 'ac_phone_repo_offer_dismissed_v1',
+        deviceToken: 'ac_phone_device_token_v1'
       };
-      const apiPath = (path) => TOKEN ? `${path}?token=${encodeURIComponent(TOKEN)}` : path;
+      const templateValue = (value) => (
+        value && !String(value).startsWith('{{') ? String(value) : ''
+      );
+      let deviceToken = templateValue(BOOT_DEVICE_TOKEN) || localStorage.getItem(STORAGE_KEYS.deviceToken) || '';
+      if (templateValue(BOOT_DEVICE_TOKEN)) {
+        localStorage.setItem(STORAGE_KEYS.deviceToken, deviceToken);
+      }
+      const apiPath = (path) => {
+        const authParts = [];
+        if (TOKEN) {
+          authParts.push(`token=${encodeURIComponent(TOKEN)}`);
+        }
+        if (deviceToken) {
+          authParts.push(`device=${encodeURIComponent(deviceToken)}`);
+        }
+        const authParam = authParts.join('&');
+        if (!authParam) {
+          return path;
+        }
+        return `${path}${path.includes('?') ? '&' : '?'}${authParam}`;
+      };
       const API = {
         screenshot: apiPath('/api/screenshot'),
         session: apiPath('/api/session'),
-        action: apiPath('/api/action')
+        action: apiPath('/api/action'),
+        repoUpdate: apiPath('/api/repo-update')
       };
 
       const viewer = document.getElementById('viewer');
@@ -780,6 +896,11 @@
       const statusDot = document.getElementById('status-dot');
       const statusTitle = document.getElementById('status-title');
       const statusSub = document.getElementById('status-sub');
+      const repoPrompt = document.getElementById('repo-prompt');
+      const repoPromptTitle = document.getElementById('repo-prompt-title');
+      const repoPromptSub = document.getElementById('repo-prompt-sub');
+      const repoPromptUpdate = document.getElementById('repo-prompt-update');
+      const repoPromptDismiss = document.getElementById('repo-prompt-dismiss');
       const keyboardPanel = document.getElementById('keyboard-panel');
       const btnKeyboard = document.getElementById('btn-keyboard');
       const btnKeyboardClose = document.getElementById('btn-keyboard-close');
@@ -836,6 +957,28 @@
       let bannerHideTimer = null;
       let wanSheetDismissed = false;
       let appInstalled = isStandaloneMode();
+      let repoUpdateBusy = false;
+      let repoState = {
+        available: false,
+        signature: '',
+        shortSha: '',
+        branch: '',
+        subject: '',
+        updateSeq: 0,
+        updateAvailable: false,
+        canUpdate: false,
+        upstreamSha: '',
+        upstreamShortSha: '',
+        upstreamSubject: '',
+        behindCount: 0
+      };
+      let lastRepoNotifiedSignature = '';
+      let lastRepoOfferSignature = '';
+      let dismissedRepoOfferSignature = localStorage.getItem(STORAGE_KEYS.repoOfferDismissed) || '';
+      let repoPromptState = {
+        visible: false,
+        mode: 'info'
+      };
       let statusState = {
         title: 'Baglanti kuruluyor',
         extra: 'Ilk ekran bekleniyor',
@@ -936,6 +1079,219 @@
         }
       }
 
+      function maybeSendRepoSystemNotification(title, body) {
+        if (document.visibilityState !== 'hidden') {
+          return;
+        }
+        if (!('Notification' in window) || Notification.permission !== 'granted') {
+          return;
+        }
+        try {
+          const notification = new Notification(title, { body });
+          setTimeout(() => notification.close(), 4500);
+        } catch (_) {
+          // noop
+        }
+      }
+
+      function isRepoPromptVisible() {
+        return repoPromptState.visible;
+      }
+
+      function setRepoPromptMode(mode = 'info') {
+        const updateMode = mode === 'update';
+        repoPromptState.mode = mode;
+        repoPromptUpdate.hidden = !updateMode;
+        repoPromptUpdate.disabled = repoUpdateBusy || !repoState.canUpdate;
+        repoPromptUpdate.textContent = repoUpdateBusy ? 'Yukleniyor' : 'Guncelle';
+        repoPromptDismiss.textContent = updateMode ? 'Sonra' : 'Kapat';
+      }
+
+      function setDismissedRepoOffer(signature) {
+        if (dismissedRepoOfferSignature === signature) {
+          return;
+        }
+        dismissedRepoOfferSignature = signature;
+        if (signature) {
+          localStorage.setItem(STORAGE_KEYS.repoOfferDismissed, signature);
+        } else {
+          localStorage.removeItem(STORAGE_KEYS.repoOfferDismissed);
+        }
+      }
+
+      function hideRepoPrompt({ rememberOffer = false } = {}) {
+        if (rememberOffer && repoState.upstreamSha) {
+          setDismissedRepoOffer(repoState.upstreamSha);
+        }
+        repoPromptState = {
+          visible: false,
+          mode: 'info'
+        };
+        repoPrompt.classList.remove('visible');
+        updateViewerInsets();
+        if (statusState.connected) {
+          scheduleTopbarAutoHide(1200);
+        }
+      }
+
+      function showRepoPrompt(title, text, { mode = 'info', notify = false } = {}) {
+        repoPromptState = {
+          visible: true,
+          mode
+        };
+        setRepoPromptMode(mode);
+        repoPromptTitle.textContent = title;
+        repoPromptSub.textContent = text;
+        repoPrompt.classList.add('visible');
+        clearTopbarHideTimer();
+        setTopbarVisible(true);
+        setStatusExpanded(true);
+        updateViewerInsets();
+        if (notify) {
+          maybeSendRepoSystemNotification(title, text);
+        }
+      }
+
+      function restoreConnectedStatus() {
+        if (!connected) {
+          return;
+        }
+        const extra = scrollMode
+          ? 'Scroll modu acik. Ekrani yukari veya asagi surukle.'
+          : (sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir');
+        setStatus('Bagli', extra, true);
+      }
+
+      function syncRepoState(payload, { notify = false } = {}) {
+        if (!payload || typeof payload !== 'object' || !payload.repo_state || typeof payload.repo_state !== 'object') {
+          return;
+        }
+
+        const previousState = repoState;
+        const nextState = {
+          available: Boolean(payload.repo_state.available),
+          signature: payload.repo_state.signature || '',
+          shortSha: payload.repo_state.short_sha || '',
+          branch: payload.repo_state.branch || '',
+          subject: payload.repo_state.subject || '',
+          updateSeq: Number(payload.repo_state.update_seq) || 0,
+          updateAvailable: Boolean(payload.repo_state.update_available),
+          canUpdate: Boolean(payload.repo_state.can_update),
+          upstreamSha: payload.repo_state.upstream_sha || '',
+          upstreamShortSha: payload.repo_state.upstream_short_sha || '',
+          upstreamSubject: payload.repo_state.upstream_subject || '',
+          behindCount: Number(payload.repo_state.behind_count) || 0
+        };
+
+        if (!nextState.available) {
+          // Gecici git hatasi (ornegin index.lock): mevcut istem durumunu bozma.
+          return;
+        }
+
+        const changed = Boolean(
+          previousState.signature &&
+          nextState.signature &&
+          nextState.signature !== previousState.signature
+        );
+        // Ayni upstream commit icin istem bir kez gosterilir; canUpdate degisirse
+        // (ornegin yerel degisiklikler commit'lenince) teklif yeniden sunulur.
+        const offerSignature = nextState.updateAvailable && nextState.upstreamSha
+          ? `${nextState.upstreamSha}:${nextState.canUpdate ? 'auto' : 'manual'}`
+          : '';
+
+        repoState = nextState;
+
+        if (!repoState.updateAvailable) {
+          lastRepoOfferSignature = '';
+          setDismissedRepoOffer('');
+          if (isRepoPromptVisible() && repoPromptState.mode === 'update') {
+            hideRepoPrompt();
+          }
+        } else if (isRepoPromptVisible()) {
+          // Guncelleme bekliyorken gorunur istem her zaman Guncelle + Sonra sunar.
+          setRepoPromptMode('update');
+        }
+
+        if (!notify) {
+          return;
+        }
+
+        const offerChanged = Boolean(
+          offerSignature &&
+          offerSignature !== lastRepoOfferSignature &&
+          dismissedRepoOfferSignature !== nextState.upstreamSha
+        );
+
+        if (offerChanged && repoState.canUpdate) {
+          lastRepoOfferSignature = offerSignature;
+          const summary = [nextState.branch, nextState.upstreamShortSha].filter(Boolean).join(' @ ');
+          const detail = nextState.upstreamSubject
+            ? `${summary ? `${summary} - ` : ''}${nextState.upstreamSubject}`
+            : (summary || 'Yeni repo guncellemesi hazir.');
+          showRepoPrompt('Repo guncellemesi hazir', detail, { mode: 'update', notify: true });
+          return;
+        }
+
+        if (offerChanged && !repoState.canUpdate) {
+          lastRepoOfferSignature = offerSignature;
+          const reason = payload.repo_state.tracked_dirty
+            ? 'Yerel degisiklikler yuzunden otomatik cekemiyorum.'
+            : (Number(payload.repo_state.ahead_count) > 0
+              ? 'Yerel branch remote ile ayrismis. Elle birlestirme gerekiyor.'
+              : 'Bu guncelleme icin otomatik cekme uygun degil.');
+          showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });
+          return;
+        }
+
+        if (!changed || lastRepoNotifiedSignature === nextState.signature) {
+          return;
+        }
+
+        lastRepoNotifiedSignature = nextState.signature;
+        const summary = [nextState.branch, nextState.shortSha].filter(Boolean).join(' @ ');
+        const detail = nextState.subject
+          ? `${summary ? `${summary} - ` : ''}${nextState.subject}`
+          : (summary || 'Yeni commit algilandi.');
+        if (isRepoPromptVisible()) {
+          showRepoPrompt('Repo guncellendi', detail, { mode: repoState.updateAvailable ? 'update' : 'info' });
+        } else {
+          maybeSendRepoSystemNotification('Repo guncellendi', detail);
+        }
+      }
+
+      async function runRepoUpdate() {
+        if (repoUpdateBusy) {
+          return;
+        }
+        repoUpdateBusy = true;
+        setRepoPromptMode('update');
+        setStatus('Repo guncelleniyor', 'Fast-forward cekiliyor', connected);
+        try {
+          const result = await getJson(API.repoUpdate, {
+            method: 'POST',
+            body: JSON.stringify({ confirm: true })
+          });
+          syncRepoState(result);
+          lastRepoOfferSignature = '';
+          setDismissedRepoOffer('');
+          const message = (result && result.message) ? result.message : 'Fast-forward guncelleme tamamlandi.';
+          showRepoPrompt(
+            result.updated ? 'Repo guncellendi' : 'Repo zaten guncel',
+            message.replace(/\s+/g, ' ').trim(),
+            { mode: 'info' }
+          );
+          restoreConnectedStatus();
+          boostLiveWindow(7000);
+          fetchScreenshot('manual');
+        } catch (error) {
+          showRepoPrompt('Repo guncellenemedi', error.message || 'Bilinmeyen hata', { mode: 'update' });
+          restoreConnectedStatus();
+        } finally {
+          repoUpdateBusy = false;
+          setRepoPromptMode(repoState.updateAvailable ? 'update' : 'info');
+        }
+      }
+
       function setWanSheetVisible(visible, text = '') {
         if (text) {
           wanText.textContent = text;
@@ -973,10 +1329,7 @@
       function updateViewerInsets() {
         const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
         let topOffset = 0;
-        for (const element of [topbar, offlineBanner]) {
-          if (element === topbar && !statusExpanded) {
-            continue;
-          }
+        for (const element of [offlineBanner]) {
           if (!isElementOccupyingSpace(element)) {
             continue;
           }
@@ -1131,6 +1484,7 @@
       function setStatusExpanded(expanded) {
         statusExpanded = Boolean(expanded);
         statusCard.classList.toggle('expanded', statusExpanded);
+        topbar.classList.toggle('compact', !statusExpanded);
         statusToggle.setAttribute('aria-expanded', String(statusExpanded));
         statusToggle.textContent = statusExpanded ? '▴' : '▾';
         if (statusExpanded) {
@@ -1149,7 +1503,7 @@
 
       function scheduleTopbarAutoHide(delay = 2600) {
         clearTopbarHideTimer();
-        if (!statusState.connected || isKeyboardVisible()) {
+        if (!statusState.connected || isKeyboardVisible() || (isRepoPromptVisible() && statusExpanded)) {
           setTopbarVisible(true);
           return;
         }
@@ -1259,11 +1613,15 @@
 
       async function getJson(url, options = {}) {
         const startedAt = performance.now();
+        const deviceHeaders = deviceToken
+          ? { 'X-AgentCockpit-Device': deviceToken }
+          : {};
         const response = await fetch(url, {
           cache: 'no-store',
           ...options,
           headers: {
             'Content-Type': 'application/json',
+            ...deviceHeaders,
             ...(options.headers || {})
           }
         });
@@ -1292,6 +1650,7 @@
         }
         const wasDisconnected = !connected || consecutiveErrors > 0;
         syncWanLinks(payload);
+        syncRepoState(payload, { notify: true });
         syncSessionInfo(payload.session);
         lastLatencyMs = payload.__elapsed || lastLatencyMs;
         lastFrameAt = Date.now();
@@ -1299,7 +1658,7 @@
         screenInfo.height = payload.screen_height || payload.height || 0;
         screenEl.src = `data:image/jpeg;base64,${payload.image}`;
         setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir', true);
-        if (wasDisconnected) {
+        if (wasDisconnected && !isRepoPromptVisible()) {
           setStatusExpanded(false);
         }
         scheduleUsageHintAutoHide();
@@ -1346,9 +1705,12 @@
         if (busy) {
           return;
         }
+        const fastAction = payload.type === 'click' && payload.screenshot === false;
         busy = true;
         boostLiveWindow();
-        setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
+        if (!fastAction) {
+          setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
+        }
         try {
           const result = await getJson(API.action, {
             method: 'POST',
@@ -1356,12 +1718,16 @@
           });
           consecutiveErrors = 0;
           lastLatencyMs = result.__elapsed || lastLatencyMs;
+          syncWanLinks(result);
+          syncRepoState(result);
           syncSessionInfo(result.session);
-          renderScreenshot({
-            ...(result.screenshot || {}),
-            session: result.session,
-            __elapsed: result.__elapsed
-          });
+          if (result?.screenshot?.image) {
+            renderScreenshot({
+              ...(result.screenshot || {}),
+              session: result.session,
+              __elapsed: result.__elapsed
+            });
+          }
         } catch (error) {
           connected = false;
           consecutiveErrors += 1;
@@ -1370,7 +1736,7 @@
           maybeShowWanSheet();
         } finally {
           busy = false;
-          scheduleNextPoll(240);
+          scheduleNextPoll(fastAction ? 70 : 240);
         }
       }
 
@@ -1444,8 +1810,10 @@
 
       function getRatios(clientX, clientY) {
         const rect = screenEl.getBoundingClientRect();
-        const x = (clientX - rect.left) / rect.width;
-        const y = (clientY - rect.top) / rect.height;
+        const width = Math.max(1, rect.width);
+        const height = Math.max(1, rect.height);
+        const x = (clientX - rect.left) / width;
+        const y = (clientY - rect.top) / height;
         return {
           x: Math.max(0, Math.min(1, x)),
           y: Math.max(0, Math.min(1, y)),
@@ -1541,7 +1909,7 @@
           }
           const coords = getRatios(gesture.x, gesture.y);
           if (coords.inBounds) {
-            postAction({ type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 });
+            postAction({ type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.04, screenshot: false });
           }
           longPressTimer = null;
         }, 520);
@@ -1659,7 +2027,8 @@
             x: coords.x,
             y: coords.y,
             button: isDouble ? 'double' : 'left',
-            delay: isDouble ? 0.24 : 0.18
+            delay: isDouble ? 0.06 : 0.02,
+            screenshot: false
           });
           lastTapTime = now;
           lastTapX = gesture.x;
@@ -1788,6 +2157,12 @@
       offlineBannerDismiss.addEventListener('click', () => {
         setOfflineBanner(false);
       });
+      repoPromptUpdate.addEventListener('click', () => {
+        runRepoUpdate();
+      });
+      repoPromptDismiss.addEventListener('click', () => {
+        hideRepoPrompt({ rememberOffer: repoState.updateAvailable && Boolean(repoState.upstreamSha) });
+      });
       window.addEventListener('beforeinstallprompt', (event) => {
         event.preventDefault();
         deferredInstallPrompt = event;
@@ -1828,10 +2203,14 @@
         if (event.target.closest('button') || event.target.closest('input')) {
           return;
         }
+        if (event.target.closest('#repo-prompt')) {
+          return;
+        }
         setStatusExpanded(false);
       });
       updateSpeedButton();
       refreshInstallUI();
+      setRepoPromptMode('info');
       setUsageHintVisible(localStorage.getItem(STORAGE_KEYS.usageHintDismissed) !== '1');
       setStatusExpanded(false);
       updateViewerInsets();
@@ -1841,6 +2220,7 @@
         try {
           const session = await getJson(API.session);
           syncWanLinks(session);
+          syncRepoState(session);
           serverPollMs = Number(session.poll_ms) || DEFAULT_POLL_MS;
           screenInfo.width = Number(session.screen_width) || 0;
           screenInfo.height = Number(session.screen_height) || 0;

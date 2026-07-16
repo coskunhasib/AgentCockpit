@@ -391,6 +391,287 @@ def _device_label_from_user_agent(user_agent):
     return " ".join(parts) or "Guvenilir Cihaz"
 
 
+def _run_git_command(repo_root, *args, timeout=3):
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "git command failed").strip()
+        raise RuntimeError(message)
+    return completed.stdout.strip()
+
+
+def _read_repo_state(repo_root=PROJECT_ROOT, *, fetch_remote=False):
+    repo_root = Path(repo_root)
+    checked_at = int(time.time())
+
+    try:
+        top_level = _run_git_command(repo_root, "rev-parse", "--show-toplevel")
+        head_sha = _run_git_command(repo_root, "rev-parse", "HEAD")
+        short_sha = _run_git_command(repo_root, "rev-parse", "--short=7", "HEAD")
+        branch = _run_git_command(repo_root, "branch", "--show-current") or "detached"
+        tracked_changes = _run_git_command(
+            repo_root,
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+        )
+        untracked_changes = _run_git_command(
+            repo_root,
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        )
+        commit_meta = _run_git_command(
+            repo_root,
+            "log",
+            "-1",
+            "--format=%ct%n%s",
+            "HEAD",
+        )
+    except Exception as exc:
+        return {
+            "available": False,
+            "repo_root": str(repo_root),
+            "branch": "",
+            "head_sha": "",
+            "short_sha": "",
+            "subject": "",
+            "signature": "",
+            "commit_ts": 0,
+            "checked_at": checked_at,
+            "tracked_dirty": False,
+            "untracked_dirty": False,
+            "dirty": False,
+            "upstream_ref": "",
+            "upstream_sha": "",
+            "upstream_short_sha": "",
+            "upstream_subject": "",
+            "ahead_count": 0,
+            "behind_count": 0,
+            "update_available": False,
+            "can_update": False,
+            "remote_error": "",
+            "error": str(exc),
+        }
+
+    commit_lines = commit_meta.splitlines()
+    try:
+        commit_ts = int(commit_lines[0].strip()) if commit_lines else 0
+    except ValueError:
+        commit_ts = 0
+    subject = commit_lines[1].strip() if len(commit_lines) > 1 else ""
+    tracked_dirty = bool(tracked_changes.strip())
+    untracked_dirty = bool(untracked_changes.strip())
+    upstream_ref = ""
+    upstream_sha = ""
+    upstream_short_sha = ""
+    upstream_subject = ""
+    ahead_count = 0
+    behind_count = 0
+    remote_error = ""
+
+    if branch != "detached":
+        try:
+            upstream_ref = _run_git_command(
+                repo_root,
+                "rev-parse",
+                "--abbrev-ref",
+                "--symbolic-full-name",
+                "@{upstream}",
+            )
+            if fetch_remote:
+                _run_git_command(repo_root, "fetch", "--quiet", "--prune", timeout=15)
+            upstream_sha = _run_git_command(repo_root, "rev-parse", "@{upstream}")
+            upstream_short_sha = _run_git_command(
+                repo_root,
+                "rev-parse",
+                "--short=7",
+                "@{upstream}",
+            )
+            counts = _run_git_command(
+                repo_root,
+                "rev-list",
+                "--left-right",
+                "--count",
+                "HEAD...@{upstream}",
+            )
+            count_parts = counts.split()
+            if len(count_parts) >= 2:
+                ahead_count = int(count_parts[0])
+                behind_count = int(count_parts[1])
+            if upstream_sha:
+                upstream_subject = _run_git_command(
+                    repo_root,
+                    "log",
+                    "-1",
+                    "--format=%s",
+                    "@{upstream}",
+                )
+        except Exception as exc:
+            remote_error = str(exc)
+
+    return {
+        "available": True,
+        "repo_root": top_level or str(repo_root),
+        "branch": branch,
+        "head_sha": head_sha,
+        "short_sha": short_sha,
+        "subject": subject,
+        "signature": f"{branch}:{head_sha}",
+        "commit_ts": commit_ts,
+        "checked_at": checked_at,
+        "tracked_dirty": tracked_dirty,
+        "untracked_dirty": untracked_dirty,
+        "dirty": tracked_dirty or untracked_dirty,
+        "upstream_ref": upstream_ref,
+        "upstream_sha": upstream_sha,
+        "upstream_short_sha": upstream_short_sha,
+        "upstream_subject": upstream_subject,
+        "ahead_count": ahead_count,
+        "behind_count": behind_count,
+        "update_available": bool(behind_count > 0 and upstream_sha),
+        "can_update": bool(
+            branch != "detached"
+            and upstream_ref
+            and behind_count > 0
+            and ahead_count == 0
+            and not tracked_dirty
+        ),
+        "remote_error": remote_error,
+        "error": "",
+    }
+
+
+class RepoUpdateTracker:
+    # Bu kadar ardisik okuma hatasindan sonra "unavailable" durumu gercek kabul edilir.
+    MAX_TRANSIENT_READ_FAILURES = 3
+
+    def __init__(self, repo_root=PROJECT_ROOT, *, check_interval=4.0, fetch_interval=45.0):
+        self._repo_root = Path(repo_root)
+        self._check_interval = max(1.0, float(check_interval))
+        self._fetch_interval = max(self._check_interval, float(fetch_interval))
+        self._lock = threading.Lock()
+        self._last_checked_monotonic = 0.0
+        self._last_fetch_monotonic = 0.0
+        self._consecutive_read_failures = 0
+        self._snapshot = {
+            "available": False,
+            "repo_root": str(self._repo_root),
+            "branch": "",
+            "head_sha": "",
+            "short_sha": "",
+            "subject": "",
+            "signature": "",
+            "commit_ts": 0,
+            "checked_at": 0,
+            "changed_at": 0,
+            "update_seq": 0,
+            "tracked_dirty": False,
+            "untracked_dirty": False,
+            "dirty": False,
+            "upstream_ref": "",
+            "upstream_sha": "",
+            "upstream_short_sha": "",
+            "upstream_subject": "",
+            "ahead_count": 0,
+            "behind_count": 0,
+            "update_available": False,
+            "can_update": False,
+            "remote_error": "",
+            "error": "",
+        }
+
+    def _refresh_locked(self, *, force_fetch=False):
+        now_monotonic = time.monotonic()
+        fetch_remote = force_fetch or not self._snapshot.get("checked_at") or (
+            now_monotonic - self._last_fetch_monotonic
+        ) >= self._fetch_interval
+        latest = _read_repo_state(self._repo_root, fetch_remote=fetch_remote)
+        previous_signature = self._snapshot.get("signature", "")
+        previous_seq = int(self._snapshot.get("update_seq", 0) or 0)
+        changed_at = int(self._snapshot.get("changed_at", 0) or 0)
+
+        if not latest.get("available") and self._snapshot.get("available"):
+            # Gecici git hatasi (ornegin baska bir surec index.lock tutuyor):
+            # son saglikli durumu koru ki istemcide guncelleme istemi titremesin.
+            self._consecutive_read_failures += 1
+            if self._consecutive_read_failures < self.MAX_TRANSIENT_READ_FAILURES:
+                retained = dict(self._snapshot)
+                retained["checked_at"] = latest.get("checked_at", 0)
+                retained["error"] = latest.get("error", "")
+                self._snapshot = retained
+                self._last_checked_monotonic = now_monotonic
+                if fetch_remote:
+                    self._last_fetch_monotonic = now_monotonic
+                return
+
+        if latest.get("available"):
+            self._consecutive_read_failures = 0
+            signature = latest.get("signature", "")
+            if previous_signature and signature and signature != previous_signature:
+                previous_seq += 1
+                changed_at = int(time.time())
+            elif not changed_at:
+                changed_at = int(latest.get("commit_ts", 0) or latest.get("checked_at", 0) or 0)
+
+        latest["changed_at"] = changed_at
+        latest["update_seq"] = previous_seq
+        self._snapshot = latest
+        self._last_checked_monotonic = now_monotonic
+        if fetch_remote:
+            self._last_fetch_monotonic = now_monotonic
+
+    def snapshot(self, *, force=False):
+        with self._lock:
+            now = time.monotonic()
+            if force or not self._snapshot.get("checked_at") or (now - self._last_checked_monotonic) >= self._check_interval:
+                self._refresh_locked(force_fetch=force)
+            return dict(self._snapshot)
+
+    def apply_update(self):
+        with self._lock:
+            self._refresh_locked(force_fetch=True)
+            current = dict(self._snapshot)
+
+            if not current.get("available"):
+                raise RuntimeError(current.get("error") or "Repo durumu okunamadi.")
+            if current.get("branch") == "detached":
+                raise RuntimeError("Detached HEAD durumunda otomatik guncelleme yapilamaz.")
+            if not current.get("upstream_ref"):
+                raise RuntimeError(current.get("remote_error") or "Upstream branch bulunamadi.")
+            if current.get("tracked_dirty"):
+                raise RuntimeError("Yerel takip edilen degisiklikler var. Once commit veya stash yap.")
+            if current.get("behind_count", 0) <= 0:
+                return {
+                    "updated": False,
+                    "output": "Repo zaten guncel.",
+                    "repo_state": current,
+                }
+            if current.get("ahead_count", 0) > 0:
+                raise RuntimeError("Yerel branch remote'dan farkli ilerlemis. Otomatik ff-only guncelleme guvenli degil.")
+
+            output = _run_git_command(
+                self._repo_root,
+                "pull",
+                "--ff-only",
+                timeout=20,
+            )
+            self._refresh_locked(force_fetch=True)
+            return {
+                "updated": True,
+                "output": output or "Fast-forward guncelleme tamamlandi.",
+                "repo_state": dict(self._snapshot),
+            }
+
+
 class SessionLinkStore:
     def __init__(self):
         self._lock = threading.Lock()
@@ -641,9 +922,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ).strip()
 
     def _extract_device_token(self):
+        query = self._query()
         cookies = _parse_cookie_header(self.headers.get("Cookie", ""))
         return (
             cookies.get("acp_device", "")
+            or query.get("device", [""])[0]
             or self.headers.get("X-AgentCockpit-Device", "")
         ).strip()
 
@@ -799,6 +1082,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             tunnel_snapshot = self.server.public_tunnel_snapshot(validate=False)
             screen = _get_screen_metrics()
             compatibility = detect_runtime_compatibility()
+            repo_state = self.server.repo_tracker.snapshot()
             self._json_response(
                 {
                     "status": "ok",
@@ -827,6 +1111,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "public_tunnel_last_exit_code": tunnel_snapshot.get("last_exit_code"),
                     "wan_pwa_available": bool(tunnel_snapshot.get("public_url")),
                     "telegram_wan_available": bool(_telegram_bot_url()),
+                    "repo_state": repo_state,
                 }
             )
             return
@@ -858,9 +1143,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         if route == "/app":
-            session, auth_kind = self._require_viewer_session(html=True)
-            if not session:
-                return
+            session, auth_kind = self._get_viewer_session()
             html_path = PHONE_CLIENT_DIR / "index.html"
             if not html_path.exists():
                 self._text_response(
@@ -869,21 +1152,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 return
             html = html_path.read_text(encoding="utf-8")
             public_url = self.server.get_public_url(validate=False)
-            handoff_token = (
-                session.get("token", "")
-                if auth_kind == "link"
-                else self.server.startup_session.get("token", "")
-            )
-            wan_url = _build_app_url_from_base(public_url, handoff_token)
-            html = html.replace("{{TOKEN}}", session.get("token", "") if auth_kind == "link" else "")
-            html = html.replace("{{POLL_MS}}", str(self.server.poll_ms))
-            html = html.replace("{{TELEGRAM_BOT_URL}}", _telegram_bot_url())
-            html = html.replace("{{PUBLIC_URL}}", public_url)
-            html = html.replace("{{WAN_URL}}", wan_url)
-            html = html.replace(
-                "{{MANIFEST_PATH}}",
-                "/manifest.webmanifest",
-            )
+            device_token = ""
             extra_headers = None
             if auth_kind == "link":
                 trusted_device = self.server.trusted_devices.consume(self._extract_device_token())
@@ -892,9 +1161,31 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         label=_device_label_from_user_agent(self.headers.get("User-Agent", "")),
                         user_agent=self.headers.get("User-Agent", ""),
                     )
+                device_token = trusted_device.get("token", "")
                 extra_headers = {
-                    "Set-Cookie": f"acp_device={trusted_device['token']}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly"
+                    "Set-Cookie": f"acp_device={device_token}; Path=/; Max-Age=31536000; SameSite=Lax; HttpOnly"
                 }
+            elif auth_kind == "trusted" and session:
+                device_token = session.get("token", "")
+
+            handoff_token = ""
+            if session:
+                handoff_token = (
+                    session.get("token", "")
+                    if auth_kind == "link"
+                    else self.server.startup_session.get("token", "")
+                )
+            wan_url = _build_app_url_from_base(public_url, handoff_token) if handoff_token else ""
+            html = html.replace("{{TOKEN}}", session.get("token", "") if session and auth_kind == "link" else "")
+            html = html.replace("{{DEVICE_TOKEN}}", device_token)
+            html = html.replace("{{POLL_MS}}", str(self.server.poll_ms))
+            html = html.replace("{{TELEGRAM_BOT_URL}}", _telegram_bot_url())
+            html = html.replace("{{PUBLIC_URL}}", public_url)
+            html = html.replace("{{WAN_URL}}", wan_url)
+            html = html.replace(
+                "{{MANIFEST_PATH}}",
+                "/manifest.webmanifest",
+            )
             self._text_response(html, content_type="text/html; charset=utf-8", extra_headers=extra_headers)
             return
 
@@ -963,6 +1254,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 public_url,
                 handoff_token,
             )
+            payload["repo_state"] = self.server.repo_tracker.snapshot()
             self._json_response(payload)
             return
 
@@ -992,6 +1284,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         public_url,
                         handoff_token,
                     ),
+                    "repo_state": self.server.repo_tracker.snapshot(),
                     "session": self._build_session_payload(session),
                 }
             )
@@ -1048,6 +1341,45 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             )
             return
 
+        if route == "/api/repo-update":
+            session, _auth_kind = self._require_viewer_session()
+            if not session:
+                return
+
+            payload = self._read_json_body()
+            if payload is None:
+                return
+            if payload.get("confirm") is not True:
+                self._json_response(
+                    {
+                        "status": "bad_request",
+                        "message": "Repo update icin confirm=true gerekli.",
+                    },
+                    status=HTTPStatus.BAD_REQUEST,
+                )
+                return
+
+            try:
+                result = self.server.repo_tracker.apply_update()
+                self._json_response(
+                    {
+                        "status": "ok",
+                        "updated": bool(result.get("updated")),
+                        "message": result.get("output", ""),
+                        "repo_state": result.get("repo_state", self.server.repo_tracker.snapshot()),
+                    }
+                )
+            except Exception as exc:
+                self._json_response(
+                    {
+                        "status": "error",
+                        "message": str(exc),
+                        "repo_state": self.server.repo_tracker.snapshot(force=True),
+                    },
+                    status=HTTPStatus.CONFLICT,
+                )
+            return
+
         if route != "/api/action":
             self._text_response("Not found", status=HTTPStatus.NOT_FOUND)
             return
@@ -1101,26 +1433,41 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            public_url = self.server.get_public_url(validate=False)
+            wan_url = _build_app_url_from_base(
+                public_url,
+                handoff_token,
+            )
+            repo_state = self.server.repo_tracker.snapshot()
+            if payload.get("screenshot", True) is False:
+                self._json_response(
+                    {
+                        "status": "ok",
+                        "action": action_type,
+                        "session": self._build_session_payload(refreshed_session),
+                        "public_url": public_url,
+                        "wan_url": wan_url,
+                        "repo_state": repo_state,
+                        "screenshot": None,
+                    }
+                )
+                return
+
             screenshot_payload = _capture_payload(
                 self.server.screenshot_quality,
                 self.server.max_width,
             )
-            public_url = self.server.get_public_url(validate=False)
             screenshot_payload["public_url"] = public_url
-            screenshot_payload["wan_url"] = _build_app_url_from_base(
-                public_url,
-                handoff_token,
-            )
+            screenshot_payload["wan_url"] = wan_url
+            screenshot_payload["repo_state"] = repo_state
             self._json_response(
                 {
                     "status": "ok",
                     "action": action_type,
                     "session": self._build_session_payload(refreshed_session),
                     "public_url": public_url,
-                    "wan_url": _build_app_url_from_base(
-                        public_url,
-                        handoff_token,
-                    ),
+                    "wan_url": wan_url,
+                    "repo_state": repo_state,
                     "screenshot": screenshot_payload,
                 }
             )
@@ -1153,6 +1500,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.public_tunnel = None
         self.session_links = SessionLinkStore()
         self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
+        self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
         self.startup_session = self.session_links.create(
             None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
             label="startup-phone",

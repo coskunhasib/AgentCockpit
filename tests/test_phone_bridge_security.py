@@ -38,6 +38,22 @@ class PhoneBridgeSecurityTests(unittest.TestCase):
         self.assertIn('if route == "/qr":', source)
         self.assertIn('self.send_header("Location", "/pair")', source)
 
+    def test_app_shell_can_recover_with_persisted_device_token(self):
+        source = inspect.getsource(PhoneBridgeHandler)
+        get_source = inspect.getsource(PhoneBridgeHandler.do_GET)
+        app_block = get_source.split('if route == "/app":', 1)[1].split(
+            'if route == "/manifest.webmanifest":',
+            1,
+        )[0]
+
+        self.assertIn('or query.get("device", [""])[0]', source)
+        self.assertIn("session, auth_kind = self._get_viewer_session()", app_block)
+        self.assertNotIn("_require_viewer_session(html=True)", app_block)
+        self.assertIn('"{{DEVICE_TOKEN}}"', app_block)
+        self.assertIn('handoff_token = ""', app_block)
+        self.assertIn('if session:', app_block)
+        self.assertIn('wan_url = _build_app_url_from_base(public_url, handoff_token) if handoff_token else ""', app_block)
+
 
 if __name__ == "__main__":
     unittest.main()
