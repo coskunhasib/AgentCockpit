@@ -47,6 +47,7 @@ except ImportError:
     qrcode = None
 
 from core.logger import (
+    current_rss_bytes,
     get_logger,
     install_diagnostics_hooks,
     record_runtime_event,
@@ -74,6 +75,7 @@ _CAPTURE_STATE = {
     "last_height": 0,
     "failure_count": 0,
     "backoff_until": 0.0,
+    "capture_count": 0,
 }
 _CAPTURE_STATE_LOCK = threading.Lock()
 _CAPTURE_LOCK = threading.Lock()
@@ -102,6 +104,11 @@ DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC = max(
 DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", "2"))
 DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
 DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
+DEFAULT_CAPTURE_MAX_RSS_MB = max(0, get_int("PHONE_CAPTURE_MAX_RSS_MB", "512"))
+DEFAULT_SESSION_LINK_MAX_ENTRIES = max(8, get_int("PHONE_SESSION_LINK_MAX_ENTRIES", "256"))
+DEFAULT_TRUSTED_DEVICE_MAX_ENTRIES = max(8, get_int("PHONE_TRUSTED_DEVICE_MAX_ENTRIES", "64"))
+DEFAULT_TRUSTED_DEVICE_STALE_DAYS = max(1, get_int("PHONE_TRUSTED_DEVICE_STALE_DAYS", "90"))
+DEFAULT_TRUSTED_DEVICE_PERSIST_SEC = max(30, get_int("PHONE_TRUSTED_DEVICE_PERSIST_SEC", "300"))
 
 
 class CaptureUnavailable(RuntimeError):
@@ -184,6 +191,7 @@ def _record_capture_success(width, height):
         _CAPTURE_STATE["last_height"] = int(height)
         _CAPTURE_STATE["failure_count"] = 0
         _CAPTURE_STATE["backoff_until"] = 0.0
+        _CAPTURE_STATE["capture_count"] = int(_CAPTURE_STATE.get("capture_count", 0)) + 1
 
 
 def _is_capture_unavailable_error(text):
@@ -222,10 +230,31 @@ def _capture_retry_after_seconds():
 def _raise_if_capture_deferred():
     retry_after = _capture_retry_after_seconds()
     if retry_after > 0:
+        with _CAPTURE_STATE_LOCK:
+            last_error = _CAPTURE_STATE.get("last_error", "")
         raise CaptureUnavailable(
-            "Ekran yakalama gecici olarak durduruldu; macOS ekran oturumu hazir degil.",
+            "Ekran yakalama gecici olarak durduruldu"
+            + (f": {last_error}" if last_error else "."),
             retry_after=retry_after,
         )
+
+    if DEFAULT_CAPTURE_MAX_RSS_MB > 0:
+        limit_bytes = DEFAULT_CAPTURE_MAX_RSS_MB * 1024 * 1024
+        rss_bytes = current_rss_bytes(cache_seconds=2.0)
+        if rss_bytes is not None and rss_bytes > limit_bytes:
+            gc.collect()
+            rss_bytes = current_rss_bytes()
+            if rss_bytes is not None and rss_bytes > limit_bytes:
+                record_runtime_event(
+                    "capture_memory_guard_tripped",
+                    current_rss_mb=round(rss_bytes / (1024 * 1024), 1),
+                    limit_rss_mb=DEFAULT_CAPTURE_MAX_RSS_MB,
+                )
+                raise CaptureUnavailable(
+                    "Bellek emniyet siniri asildi; ekran aktarimi sistemi korumak icin durduruldu "
+                    f"({rss_bytes // (1024 * 1024)} MB > {DEFAULT_CAPTURE_MAX_RSS_MB} MB).",
+                    retry_after=30,
+                )
 
     screen = _get_screen_metrics()
     if not screen.get("available"):
@@ -268,7 +297,14 @@ def _capture_health(screen):
         "capture_last_success_at": int(state["last_success_at"]) if state["last_success_at"] else 0,
         "capture_last_width": state["last_width"],
         "capture_last_height": state["last_height"],
+        "capture_count": int(state.get("capture_count", 0)),
         "capture_retry_after": _capture_retry_after_seconds(),
+        "capture_current_rss_mb": (
+            round(rss_bytes / (1024 * 1024), 1)
+            if (rss_bytes := current_rss_bytes(cache_seconds=2.0)) is not None
+            else None
+        ),
+        "capture_max_rss_mb": DEFAULT_CAPTURE_MAX_RSS_MB,
     }
 
 
@@ -316,6 +352,7 @@ def _diagnostic_snapshot(server=None):
                 "active": server.active_stream_count(),
                 "max": server.max_stream_connections,
                 "max_seconds": int(server.stream_max_seconds),
+                "memory_limit_mb": DEFAULT_CAPTURE_MAX_RSS_MB,
             }
         except Exception:
             snapshot["stream"] = None
@@ -466,10 +503,13 @@ def _render_qr_data_url(data):
     qr.add_data(data)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    try:
+        with io.BytesIO() as buffer:
+            image.save(buffer, format="PNG")
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    finally:
+        _close_image(image)
 
 
 def _mouse_overlay_point(image_size):
@@ -519,8 +559,11 @@ def _capture_legacy():
     if _is_nearly_black_frame(screenshot):
         fallback = _capture_with_screencapture()
         if fallback and not _is_nearly_black_frame(fallback):
+            _close_image(screenshot)
             screenshot = fallback
         else:
+            _close_image(fallback)
+            _close_image(screenshot)
             raise RuntimeError(
                 "Siyah ekran algilandi. Ekran kilitli/uykuda olabilir veya Screen Recording izni eksik. "
                 "macOS'ta Terminal/iTerm icin Screen Recording iznini acip uygulamayi yeniden baslatin."
@@ -559,19 +602,29 @@ def _capture_with_quartz():
         if data is None:
             return None
         # CGDisplayCreateImage yields 32-bit little-endian BGRA; map straight to RGBA.
+        # Passing CFData directly avoids a 29+ MiB resident allocation per Retina
+        # frame on macOS/PyObjC. The RGB conversion owns its pixels, so the
+        # temporary zero-copy RGBA view can be closed before returning.
         image = Image.frombuffer(
-            "RGBA", (width, height), bytes(data), "raw", "BGRA", bytes_per_row, 1
+            "RGBA", (width, height), data, "raw", "BGRA", bytes_per_row, 1
         )
-        return image.convert("RGB")
+        try:
+            return image.convert("RGB")
+        finally:
+            _close_image(image)
     except Exception:
         return None
 
 
 def _channel_means(image):
     small = image.resize((32, 18), Image.BILINEAR)
-    pixels = list(small.getdata())
-    count = len(pixels) or 1
-    return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+    try:
+        pixels = list(small.getdata())
+        count = len(pixels) or 1
+        return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+    finally:
+        if small is not image:
+            _close_image(small)
 
 
 def _validate_quartz_once():
@@ -586,28 +639,34 @@ def _validate_quartz_once():
         return _QUARTZ_STATE["ok"]
     _QUARTZ_STATE["checked"] = True
     try:
-        if _capture_with_quartz() is None:
+        probe = _capture_with_quartz()
+        if probe is None:
             _QUARTZ_STATE["ok"] = False
             return False
+        _close_image(probe)
         best = None
         for _ in range(3):
             reference = _capture_with_screencapture()
             quartz_frame = _capture_with_quartz()
-            if reference is None:
-                # screencapture unavailable; Quartz is our only working capture path.
-                _QUARTZ_STATE["ok"] = True
-                logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
-                return True
-            if quartz_frame is None:
-                continue
-            divergence = max(
-                abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
-            )
-            best = divergence if best is None else min(best, divergence)
-            if divergence <= 45:
-                _QUARTZ_STATE["ok"] = True
-                logger.info("Hizli Quartz ekran yakalama etkin.")
-                return True
+            try:
+                if reference is None:
+                    # screencapture unavailable; Quartz is our only working capture path.
+                    _QUARTZ_STATE["ok"] = True
+                    logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
+                    return True
+                if quartz_frame is None:
+                    continue
+                divergence = max(
+                    abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
+                )
+                best = divergence if best is None else min(best, divergence)
+                if divergence <= 45:
+                    _QUARTZ_STATE["ok"] = True
+                    logger.info("Hizli Quartz ekran yakalama etkin.")
+                    return True
+            finally:
+                _close_image(reference)
+                _close_image(quartz_frame)
         _QUARTZ_STATE["ok"] = False
         logger.warning(
             "Quartz renkleri screencapture ile uyusmadi (en iyi fark=%s); screencapture kullanilacak.",
@@ -685,12 +744,20 @@ def _frame_signature(raw_image):
     cursor in means pointer-only movement still yields a fresh frame (so the
     remote cursor stays live) without re-sending an otherwise unchanged screen.
     """
+    reduced = None
+    thumb = None
     try:
         factor = max(1, raw_image.width // 96)
-        thumb = raw_image.reduce(factor).convert("L")
+        reduced = raw_image.reduce(factor)
+        thumb = reduced.convert("L")
         checksum = zlib.crc32(thumb.tobytes()) & 0xFFFFFFFF
     except Exception:
         checksum = 0
+    finally:
+        if thumb is not None and thumb is not reduced:
+            _close_image(thumb)
+        if reduced is not None and reduced is not raw_image:
+            _close_image(reduced)
     try:
         mouse_x, mouse_y = _get_pyautogui().position()
         checksum = zlib.crc32(f"|{mouse_x // 3},{mouse_y // 3}".encode(), checksum) & 0xFFFFFFFF
@@ -700,11 +767,11 @@ def _frame_signature(raw_image):
 
 
 def _encode_jpeg(image, quality):
-    buffer = io.BytesIO()
-    # optimize=False trades ~10% size for a much cheaper encode, which matters
-    # when frames are produced continuously for the live stream.
-    image.save(buffer, format="JPEG", quality=quality, optimize=False)
-    return buffer.getvalue()
+    with io.BytesIO() as buffer:
+        # optimize=False trades ~10% size for a much cheaper encode, which matters
+        # when frames are produced continuously for the live stream.
+        image.save(buffer, format="JPEG", quality=quality, optimize=False)
+        return buffer.getvalue()
 
 
 def _grab_frame(quality, max_width):
@@ -765,10 +832,15 @@ def _parse_stream_params(query, default_quality, default_width):
 
 
 def _is_nearly_black_frame(image, *, max_channel=4):
+    converted = None
     try:
-        extrema = image.convert("RGB").getextrema()
+        converted = image.convert("RGB")
+        extrema = converted.getextrema()
     except Exception:
         return False
+    finally:
+        if converted is not None and converted is not image:
+            _close_image(converted)
 
     return all(channel_max <= max_channel for _, channel_max in extrema)
 
@@ -1229,9 +1301,11 @@ class RepoUpdateTracker:
 
 
 class SessionLinkStore:
-    def __init__(self):
+    def __init__(self, max_entries=DEFAULT_SESSION_LINK_MAX_ENTRIES):
         self._lock = threading.Lock()
         self._sessions = {}
+        self._protected_tokens = set()
+        self._max_entries = max(8, int(max_entries))
 
     def _cleanup_locked(self, now):
         expired_tokens = [
@@ -1241,6 +1315,21 @@ class SessionLinkStore:
         ]
         for token in expired_tokens:
             self._sessions.pop(token, None)
+            self._protected_tokens.discard(token)
+        overflow = len(self._sessions) - self._max_entries
+        if overflow > 0:
+            oldest = sorted(
+                (
+                    item
+                    for item in self._sessions.items()
+                    if item[0] not in self._protected_tokens
+                ),
+                key=lambda item: float(
+                    item[1].get("last_seen") or item[1].get("created_at") or 0.0
+                ),
+            )
+            for token, _ in oldest[:overflow]:
+                self._sessions.pop(token, None)
 
     def _snapshot_locked(self, session, *, include_token=False, now=None):
         current = now or time.time()
@@ -1260,7 +1349,7 @@ class SessionLinkStore:
             payload["token"] = session["token"]
         return payload
 
-    def create(self, ttl_seconds, *, label="phone-client"):
+    def create(self, ttl_seconds, *, label="phone-client", protected=False):
         ttl_seconds = None if ttl_seconds in (None, 0, "", False) else max(300, int(ttl_seconds))
         duration_minutes = 0 if ttl_seconds is None else max(5, int(ttl_seconds // 60))
         now = time.time()
@@ -1276,6 +1365,9 @@ class SessionLinkStore:
         with self._lock:
             self._cleanup_locked(now)
             self._sessions[token] = session
+            if protected:
+                self._protected_tokens = {token}
+            self._cleanup_locked(now)
             return self._snapshot_locked(session, include_token=True, now=now)
 
     def consume(self, token):
@@ -1290,12 +1382,31 @@ class SessionLinkStore:
             session["last_seen"] = now
             return self._snapshot_locked(session, include_token=True, now=now)
 
+    def count(self):
+        now = time.time()
+        with self._lock:
+            self._cleanup_locked(now)
+            return len(self._sessions)
+
 
 class TrustedDeviceStore:
-    def __init__(self, storage_path):
+    def __init__(
+        self,
+        storage_path,
+        *,
+        max_entries=DEFAULT_TRUSTED_DEVICE_MAX_ENTRIES,
+        stale_days=DEFAULT_TRUSTED_DEVICE_STALE_DAYS,
+        persist_interval=DEFAULT_TRUSTED_DEVICE_PERSIST_SEC,
+    ):
         self.storage_path = Path(storage_path)
         self._lock = threading.Lock()
+        self._max_entries = max(8, int(max_entries))
+        self._stale_seconds = max(86400, int(stale_days) * 86400)
+        self._persist_interval = max(30, int(persist_interval))
         self._devices = self._load()
+        with self._lock:
+            if self._cleanup_locked(time.time()):
+                self._save_locked()
 
     def _load(self):
         try:
@@ -1308,10 +1419,37 @@ class TrustedDeviceStore:
 
     def _save_locked(self):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.storage_path.write_text(
+        temp_path = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
+        temp_path.write_text(
             json.dumps(self._devices, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        os.replace(temp_path, self.storage_path)
+
+    def _cleanup_locked(self, now):
+        changed = False
+        cutoff = now - self._stale_seconds
+        stale_tokens = [
+            token
+            for token, device in self._devices.items()
+            if float(device.get("last_seen") or device.get("created_at") or 0.0) < cutoff
+        ]
+        for token in stale_tokens:
+            self._devices.pop(token, None)
+            changed = True
+
+        overflow = len(self._devices) - self._max_entries
+        if overflow > 0:
+            oldest = sorted(
+                self._devices.items(),
+                key=lambda item: float(
+                    item[1].get("last_seen") or item[1].get("created_at") or 0.0
+                ),
+            )
+            for token, _ in oldest[:overflow]:
+                self._devices.pop(token, None)
+                changed = True
+        return changed
 
     def _snapshot_locked(self, device, *, include_token=False, now=None):
         current = now or time.time()
@@ -1332,7 +1470,10 @@ class TrustedDeviceStore:
         return payload
 
     def count(self):
+        now = time.time()
         with self._lock:
+            if self._cleanup_locked(now):
+                self._save_locked()
             return len(self._devices)
 
     def create(self, *, label="Guvenilir Cihaz", user_agent=""):
@@ -1347,6 +1488,7 @@ class TrustedDeviceStore:
         }
         with self._lock:
             self._devices[token] = device
+            self._cleanup_locked(now)
             self._save_locked()
             return self._snapshot_locked(device, include_token=True, now=now)
 
@@ -1355,11 +1497,16 @@ class TrustedDeviceStore:
             return None
         now = time.time()
         with self._lock:
+            cleaned = self._cleanup_locked(now)
             device = self._devices.get(token)
             if not device:
+                if cleaned:
+                    self._save_locked()
                 return None
+            previous_seen = float(device.get("last_seen") or 0.0)
             device["last_seen"] = now
-            self._save_locked()
+            if cleaned or now - previous_seen >= self._persist_interval:
+                self._save_locked()
             return self._snapshot_locked(device, include_token=True, now=now)
 
 
@@ -1795,7 +1942,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "capture_last_success_at": capture["capture_last_success_at"],
                     "capture_last_width": capture["capture_last_width"],
                     "capture_last_height": capture["capture_last_height"],
+                    "capture_count": capture["capture_count"],
                     "capture_retry_after": capture["capture_retry_after"],
+                    "capture_current_rss_mb": capture["capture_current_rss_mb"],
+                    "capture_max_rss_mb": capture["capture_max_rss_mb"],
                     "keep_awake_enabled": keep_awake["enabled"],
                     "keep_awake_active": keep_awake["active"],
                     "keep_awake_error": keep_awake["error"],
@@ -1810,6 +1960,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
                     "lan_ips": lan_ips,
                     "trusted_devices": self.server.trusted_devices.count(),
+                    "session_links": self.server.session_links.count(),
                     "pairing_local_only": True,
                     "public_url": tunnel_snapshot.get("public_url", ""),
                     "public_tunnel_enabled": tunnel_snapshot.get("enabled", False),
@@ -2277,7 +2428,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 return
             label = str(payload.get("label", "pair-qr")).strip()[:80] or "pair-qr"
             ttl_seconds = None if minutes <= 0 else minutes * 60
-            session = self.server.session_links.create(ttl_seconds, label=label)
+            session = self.server.session_links.create(
+                ttl_seconds,
+                label=label,
+                protected=True,
+            )
             self.server.startup_session = session
             lan_ips = _get_local_ipv4_candidates()
             self.server.startup_link = _build_app_url(
@@ -2520,6 +2675,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.startup_session = self.session_links.create(
             None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
             label="startup-phone",
+            protected=True,
         )
         startup_ips = _get_local_ipv4_candidates()
         self.startup_link = _build_app_url(

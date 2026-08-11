@@ -1,3 +1,6 @@
+import gc
+import os
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -53,6 +56,7 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
                     "last_height": 0,
                     "failure_count": 0,
                     "backoff_until": 0.0,
+                    "capture_count": 0,
                 }
             )
         bridge._QUARTZ_STATE.update({"checked": True, "ok": False})
@@ -135,6 +139,20 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
         self.assertFalse(health["capture_available"])
         self.assertIn("could not create image", health["capture_error"])
 
+    def test_capture_health_exposes_current_rss_count_and_guard_limit(self):
+        with bridge._CAPTURE_STATE_LOCK:
+            bridge._CAPTURE_STATE["capture_count"] = 42
+        with patch.object(bridge, "current_rss_bytes", return_value=128 * 1024 * 1024), patch.object(
+            bridge, "DEFAULT_CAPTURE_MAX_RSS_MB", 512
+        ):
+            health = bridge._capture_health(
+                {"available": True, "width": 1728, "height": 1117}
+            )
+
+        self.assertEqual(health["capture_count"], 42)
+        self.assertEqual(health["capture_current_rss_mb"], 128.0)
+        self.assertEqual(health["capture_max_rss_mb"], 512)
+
     def test_raw_capture_serialized_releases_lock_after_failure(self):
         with patch.object(bridge, "_raw_capture", side_effect=RuntimeError("boom")):
             with self.assertRaises(RuntimeError):
@@ -169,6 +187,102 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
         bridge._record_capture_success(1280, 720)
 
         self.assertEqual(bridge._capture_retry_after_seconds(), 0)
+
+    def test_quartz_capture_passes_cfdata_without_python_bytes_copy(self):
+        sentinel_data = object()
+
+        class FakeQuartz:
+            @staticmethod
+            def CGMainDisplayID():
+                return 1
+
+            @staticmethod
+            def CGDisplayCreateImage(display_id):
+                return object()
+
+            @staticmethod
+            def CGImageGetWidth(image_ref):
+                return 3456
+
+            @staticmethod
+            def CGImageGetHeight(image_ref):
+                return 2234
+
+            @staticmethod
+            def CGImageGetBytesPerRow(image_ref):
+                return 13824
+
+            @staticmethod
+            def CGImageGetDataProvider(image_ref):
+                return object()
+
+            @staticmethod
+            def CGDataProviderCopyData(provider):
+                return sentinel_data
+
+        class FakeRgba:
+            def __init__(self):
+                self.closed = False
+
+            def convert(self, mode):
+                self.converted_mode = mode
+                return "owned-rgb"
+
+            def close(self):
+                self.closed = True
+
+        rgba = FakeRgba()
+        with patch.object(bridge.sys, "platform", "darwin"), patch.dict(
+            sys.modules, {"Quartz": FakeQuartz}
+        ), patch.object(bridge.Image, "frombuffer", return_value=rgba) as frombuffer:
+            result = bridge._capture_with_quartz()
+
+        self.assertEqual(result, "owned-rgb")
+        self.assertIs(frombuffer.call_args.args[2], sentinel_data)
+        self.assertTrue(rgba.closed)
+
+    def test_capture_memory_guard_stops_capture_over_limit(self):
+        with bridge._CAPTURE_STATE_LOCK:
+            bridge._CAPTURE_STATE["backoff_until"] = 0.0
+            bridge._CAPTURE_STATE["last_error"] = ""
+
+        with patch.object(bridge, "DEFAULT_CAPTURE_MAX_RSS_MB", 100), patch.object(
+            bridge, "current_rss_bytes", side_effect=[200 * 1024 * 1024, 200 * 1024 * 1024]
+        ), patch.object(bridge.gc, "collect") as collect, patch.object(
+            bridge, "record_runtime_event"
+        ) as event:
+            with self.assertRaises(bridge.CaptureUnavailable) as ctx:
+                bridge._raise_if_capture_deferred()
+
+        self.assertIn("Bellek emniyet", str(ctx.exception))
+        collect.assert_called_once()
+        event.assert_called_once_with(
+            "capture_memory_guard_tripped",
+            current_rss_mb=200.0,
+            limit_rss_mb=100,
+        )
+
+    @unittest.skipUnless(
+        sys.platform == "darwin" and os.getenv("AGENTCOCKPIT_RUN_CAPTURE_MEMORY_TEST") == "1",
+        "real Quartz RSS test requires macOS Screen Recording permission",
+    )
+    def test_real_quartz_capture_rss_plateaus(self):
+        warm = bridge._capture_with_quartz()
+        self.assertIsNotNone(warm)
+        warm.close()
+        gc.collect()
+        baseline = bridge.current_rss_bytes()
+
+        for _ in range(12):
+            frame = bridge._capture_with_quartz()
+            self.assertIsNotNone(frame)
+            frame.close()
+        gc.collect()
+        final = bridge.current_rss_bytes()
+
+        self.assertIsNotNone(baseline)
+        self.assertIsNotNone(final)
+        self.assertLess(final - baseline, 96 * 1024 * 1024)
 
 
 if __name__ == "__main__":
