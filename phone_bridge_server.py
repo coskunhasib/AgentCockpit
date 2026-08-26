@@ -87,6 +87,7 @@ PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 LOCAL_HOST = get_str("AGENTCOCKPIT_LOCAL_HOST")
 DEFAULT_BIND = get_str("PHONE_BIND")
 DEFAULT_PORT = get_int("PHONE_PORT")
+DEFAULT_CONTROL_PORT = get_int("PHONE_CONTROL_PORT")
 DEFAULT_ADMIN_TOKEN = get_shared_admin_token()
 DEFAULT_QUALITY = max(20, min(95, get_int("PHONE_SCREENSHOT_QUALITY")))
 DEFAULT_MAX_WIDTH = max(640, get_int("PHONE_SCREENSHOT_MAX_WIDTH"))
@@ -1742,6 +1743,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ).strip()
 
     def _is_local_request(self):
+        if self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For"):
+            return False
         try:
             return ipaddress.ip_address(self.client_address[0]).is_loopback
         except Exception:
@@ -1808,14 +1811,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         }
 
     def _build_link_payload(self, session):
-        request_host = self.headers.get("Host") or f"{_get_local_ip()}:{self.server.server_port}"
+        request_host = self.headers.get("Host") or f"{LOCAL_HOST}:{self.server.control_port}"
         lan_ips = _get_local_ipv4_candidates()
         lan_urls = [
-            _build_app_url(ip, self.server.server_port, session["token"])
+            _build_app_url(ip, self.server.app_port, session["token"])
             for ip in lan_ips
         ]
-        lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
-        local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
+        lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.app_port, session["token"])
+        local_url = _build_app_url(LOCAL_HOST, self.server.control_port, session["token"])
         public_url = self.server.get_public_url(validate=True)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
@@ -1931,6 +1934,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "client": "phone-bridge",
                     "transport": "http",
+                    "control_port": self.server.control_port,
+                    "lan_port": self.server.app_port,
+                    "lan_available": self.server.lan_available,
+                    "lan_error": self.server.lan_error,
                     "screen": f"{screen['width']}x{screen['height']}" if screen["available"] else "unavailable",
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
@@ -2437,7 +2444,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             lan_ips = _get_local_ipv4_candidates()
             self.server.startup_link = _build_app_url(
                 lan_ips[0] if lan_ips else _get_local_ip(),
-                self.server.server_port,
+                self.server.app_port,
                 session["token"],
             )
             self._json_response(
@@ -2635,6 +2642,36 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         self._json_response(response_body)
 
 
+class PhoneBridgeState:
+    def __init__(self, *, app_port, control_port, default_session_minutes):
+        self.app_port = int(app_port)
+        self.control_port = int(control_port)
+        self.public_tunnel = None
+        self.session_links = SessionLinkStore()
+        self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
+        self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
+        self.action_dedup = ActionDedup()
+        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
+        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
+        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
+        self.stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
+        self.stream_count_lock = threading.Lock()
+        self.active_streams = 0
+        self.lan_available = False
+        self.lan_error = ""
+        self.startup_session = self.session_links.create(
+            None if default_session_minutes <= 0 else default_session_minutes * 60,
+            label="startup-phone",
+            protected=True,
+        )
+        startup_ips = _get_local_ipv4_candidates()
+        self.startup_link = _build_app_url(
+            startup_ips[0] if startup_ips else _get_local_ip(),
+            self.app_port,
+            self.startup_session["token"],
+        )
+
+
 class PhoneBridgeServer(ThreadingHTTPServer):
     def server_bind(self):
         # HTTPServer.server_bind() calls socket.getfqdn(), which can hang on
@@ -2654,6 +2691,9 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         max_width,
         poll_ms,
         default_session_minutes,
+        app_port=None,
+        control_port=None,
+        shared_state=None,
     ):
         super().__init__(server_address, handler_class)
         self.admin_token = admin_token
@@ -2661,50 +2701,67 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.max_width = max_width
         self.poll_ms = poll_ms
         self.default_session_minutes = default_session_minutes
-        self.public_tunnel = None
-        self.session_links = SessionLinkStore()
-        self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
-        self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
-        self.action_dedup = ActionDedup()
-        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
-        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
-        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
-        self._stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
-        self._stream_count_lock = threading.Lock()
-        self._active_streams = 0
-        self.startup_session = self.session_links.create(
-            None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
-            label="startup-phone",
-            protected=True,
-        )
-        startup_ips = _get_local_ipv4_candidates()
-        self.startup_link = _build_app_url(
-            startup_ips[0] if startup_ips else _get_local_ip(),
-            self.server_port,
-            self.startup_session["token"],
+        self.state = shared_state or PhoneBridgeState(
+            app_port=app_port or self.server_port,
+            control_port=control_port or self.server_port,
+            default_session_minutes=self.default_session_minutes,
         )
 
+    def __getattr__(self, name):
+        shared_names = {
+            "action_dedup",
+            "app_port",
+            "control_port",
+            "lan_available",
+            "lan_error",
+            "max_stream_connections",
+            "public_tunnel",
+            "repo_tracker",
+            "session_links",
+            "startup_link",
+            "startup_session",
+            "stream_gc_every_frames",
+            "stream_max_seconds",
+            "trusted_devices",
+        }
+        if name in shared_names and "state" in self.__dict__:
+            return getattr(self.state, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        shared_names = {
+            "lan_available",
+            "lan_error",
+            "public_tunnel",
+            "startup_link",
+            "startup_session",
+        }
+        if name in shared_names and "state" in self.__dict__:
+            setattr(self.state, name, value)
+            return
+        super().__setattr__(name, value)
+
     def acquire_stream_slot(self):
-        acquired = self._stream_slots.acquire(blocking=False)
+        acquired = self.state.stream_slots.acquire(blocking=False)
         if not acquired:
             return False
-        with self._stream_count_lock:
-            self._active_streams += 1
+        with self.state.stream_count_lock:
+            self.state.active_streams += 1
         return True
 
     def release_stream_slot(self):
-        with self._stream_count_lock:
-            if self._active_streams <= 0:
+        with self.state.stream_count_lock:
+            if self.state.active_streams <= 0:
                 return
-            self._active_streams -= 1
+            self.state.active_streams -= 1
         try:
-            self._stream_slots.release()
+            self.state.stream_slots.release()
         except ValueError:
             pass
 
     def active_stream_count(self):
-        with self._stream_count_lock:
-            return self._active_streams
+        with self.state.stream_count_lock:
+            return self.state.active_streams
 
     def get_public_url(self, *, validate=True):
         if not self.public_tunnel:
@@ -2726,6 +2783,12 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="AgentCockpit phone bridge server")
     parser.add_argument("--bind", default=DEFAULT_BIND, help="Bind address")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="HTTP port")
+    parser.add_argument(
+        "--control-port",
+        type=int,
+        default=DEFAULT_CONTROL_PORT,
+        help="Loopback-only port used by Cloudflare and internal health checks",
+    )
     parser.add_argument(
         "--admin-token",
         default=DEFAULT_ADMIN_TOKEN,
@@ -2764,19 +2827,67 @@ def build_arg_parser():
     return parser
 
 
-def run_server(bind, port, admin_token, session_minutes, quality, max_width, poll_ms, public_tunnel="auto"):
+def run_server(
+    bind,
+    port,
+    admin_token,
+    session_minutes,
+    quality,
+    max_width,
+    poll_ms,
+    public_tunnel="auto",
+    control_port=DEFAULT_CONTROL_PORT,
+):
     install_diagnostics_hooks("phone_bridge")
     server = PhoneBridgeServer(
-        (bind, port),
+        (LOCAL_HOST, control_port),
         PhoneBridgeHandler,
         admin_token=admin_token,
         screenshot_quality=max(20, min(95, quality)),
         max_width=max(640, max_width),
         poll_ms=max(500, poll_ms),
         default_session_minutes=int(session_minutes),
+        app_port=port,
+        control_port=control_port,
     )
+    lan_server = None
+    lan_thread = None
+    if bind == LOCAL_HOST and port == control_port:
+        server.lan_available = True
+    else:
+        try:
+            lan_server = PhoneBridgeServer(
+                (bind, port),
+                PhoneBridgeHandler,
+                admin_token=admin_token,
+                screenshot_quality=max(20, min(95, quality)),
+                max_width=max(640, max_width),
+                poll_ms=max(500, poll_ms),
+                default_session_minutes=int(session_minutes),
+                shared_state=server.state,
+            )
+            lan_thread = threading.Thread(
+                target=lan_server.serve_forever,
+                name="agentcockpit-lan-bridge",
+                daemon=True,
+            )
+            lan_thread.start()
+            server.lan_available = True
+        except OSError as exc:
+            server.lan_error = str(exc)
+            logger.warning(
+                "LAN portu kullanilamiyor; WAN kontrol portu calismaya devam edecek: %s",
+                exc,
+            )
     start_diagnostics_heartbeat("phone_bridge", extra_snapshot=lambda: _diagnostic_snapshot(server))
-    record_runtime_event("phone_bridge_server_created", bind=bind, port=port)
+    record_runtime_event(
+        "phone_bridge_server_created",
+        bind=bind,
+        port=port,
+        control_port=control_port,
+        lan_available=server.lan_available,
+        lan_error=server.lan_error,
+    )
 
     lan_ips = _get_local_ipv4_candidates()
     startup_session = server.startup_session
@@ -2785,9 +2896,9 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         for ip in lan_ips
     ]
     lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), port, startup_session["token"])
-    localhost_url = _build_app_url(LOCAL_HOST, port, startup_session["token"])
+    localhost_url = _build_app_url(LOCAL_HOST, control_port, startup_session["token"])
     server.public_tunnel = start_public_tunnel(
-        f"http://{LOCAL_HOST}:{port}",
+        f"http://{LOCAL_HOST}:{control_port}",
         mode=public_tunnel,
     )
     _start_keep_awake()
@@ -2811,7 +2922,7 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     logger.info("Phone admin token: <redacted>")
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
-    print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")
+    print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{control_port}/pair")
     print(f"LAN URL ({startup_session['expires_in_text']}): {_stdout_secret(lan_url)}")
     if len(lan_urls) > 1:
         for index, alt_url in enumerate(lan_urls[1:], start=2):
@@ -2852,6 +2963,11 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         record_runtime_event("phone_bridge_stopping")
         if server.public_tunnel:
             server.public_tunnel.stop()
+        if lan_server:
+            lan_server.shutdown()
+            lan_server.server_close()
+        if lan_thread:
+            lan_thread.join(timeout=2)
         server.server_close()
         record_runtime_event("phone_bridge_stopped")
 
@@ -2867,6 +2983,7 @@ def main():
         max_width=args.max_width,
         poll_ms=args.poll_ms,
         public_tunnel=args.public_tunnel,
+        control_port=args.control_port,
     )
 
 

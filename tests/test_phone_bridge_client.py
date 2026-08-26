@@ -6,6 +6,15 @@ import phone_bridge_server
 
 
 class PhoneBridgeClientTests(unittest.TestCase):
+    def test_health_rejects_a_different_service_on_the_control_port(self):
+        with patch.object(
+            phone_bridge_client,
+            "_request_json",
+            return_value={"status": "ok", "client": "other-service"},
+        ):
+            with self.assertRaises(phone_bridge_client.PhoneBridgeClientError):
+                phone_bridge_client.get_bridge_health()
+
     def test_create_phone_link_reads_admin_token_at_call_time(self):
         with patch.object(
             phone_bridge_client, "get_shared_admin_token", return_value="fresh-token"

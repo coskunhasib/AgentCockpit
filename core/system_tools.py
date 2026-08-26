@@ -130,6 +130,8 @@ class SystemOps:
         "command": "command",
         "ctrl": "command",
         "control": "command",
+        "ctrlleft": "ctrl",
+        "ctrlright": "ctrl",
         "mac_ctrl": "ctrl",
         "mac_control": "ctrl",
         "win": "command",
@@ -152,6 +154,16 @@ class SystemOps:
         "close-taskmgr",
         "task-manager-close",
     }
+    MAC_SPACE_COMBOS = {
+        ("mac_control", "left"): -1.0,
+        ("mac_ctrl", "left"): -1.0,
+        ("ctrlleft", "left"): -1.0,
+        ("ctrlright", "left"): -1.0,
+        ("mac_control", "right"): 1.0,
+        ("mac_ctrl", "right"): 1.0,
+        ("ctrlleft", "right"): 1.0,
+        ("ctrlright", "right"): 1.0,
+    }
 
     @staticmethod
     def _normalize_key_name(key_name):
@@ -169,6 +181,8 @@ class SystemOps:
             "windows": "command",
             "ctrl": "ctrl",
             "control": "ctrl",
+            "ctrlleft": "ctrl",
+            "ctrlright": "ctrl",
             "mac_ctrl": "ctrl",
             "mac_control": "ctrl",
             "alt": "option",
@@ -233,6 +247,34 @@ class SystemOps:
             return [SystemOps.MAC_KEY_ALIASES.get(key, key) for key in normalized]
 
         return [SystemOps.DESKTOP_KEY_ALIASES.get(key, key) for key in normalized]
+
+    @staticmethod
+    def _switch_macos_space(direction):
+        quartz = _get_quartz()
+        if not quartz:
+            return False
+
+        sign = -1.0 if direction < 0 else 1.0
+        try:
+            # A Dock swipe bypasses full-screen apps such as Parsec that grab Control+Arrow.
+            event = quartz.CGEventCreate(None)
+            if event is None:
+                return False
+            quartz.CGEventSetIntegerValueField(event, 55, 30)
+            quartz.CGEventSetIntegerValueField(event, 110, 23)
+            quartz.CGEventSetIntegerValueField(event, 123, 1)
+            quartz.CGEventSetDoubleValueField(event, 124, sign)
+            quartz.CGEventSetDoubleValueField(event, 129, sign * 9999.0)
+            quartz.CGEventSetIntegerValueField(event, 132, 1)
+            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
+            quartz.CGEventSetIntegerValueField(event, 132, 4)
+            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
+            logger.debug(f"macOS Space gesture: {'left' if sign < 0 else 'right'}")
+            return True
+        except Exception as exc:
+            logger.error(f"macOS Space gecis hatasi: {exc}")
+            log_crash("system_tools.switch_macos_space", str(exc))
+            return False
 
     @staticmethod
     def mouse_move(direction):
@@ -365,6 +407,11 @@ class SystemOps:
                 key in SystemOps.SPECIAL_COMMANDS for key in normalized_keys
             ):
                 return SystemOps.close_task_manager()
+
+            if sys.platform == "darwin":
+                space_direction = SystemOps.MAC_SPACE_COMBOS.get(tuple(normalized_keys))
+                if space_direction is not None:
+                    return SystemOps._switch_macos_space(space_direction)
 
             pyautogui = _get_pyautogui()
             if not pyautogui:
