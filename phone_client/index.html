@@ -1014,6 +1014,7 @@
       const MIN_STREAM_WIDTH = 1920;
       const MIN_HD_STREAM_WIDTH = 2560;
       const MAX_STREAM_WIDTH = 4096;
+      const DRAG_TARGET_STEP_PX = 24;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
       const POLL_LABELS = {
         live: 'HD',
@@ -2534,6 +2535,7 @@
         const state = {
           id: `${clientNonce}-drag-${nextRequestId()}`,
           lastPoint: startPoint,
+          lastQueuedPoint: startPoint,
           pendingPoint: null,
           finalPoint: null,
           wake: null
@@ -2544,15 +2546,15 @@
           try {
             await sendRemoteDragPhase(state, 'start', startPoint);
             for (;;) {
-              if (state.finalPoint) {
-                await sendRemoteDragPhase(state, 'end', state.finalPoint);
-                break;
-              }
               if (state.pendingPoint) {
                 const nextPoint = state.pendingPoint;
                 state.pendingPoint = null;
                 await sendRemoteDragPhase(state, 'move', nextPoint);
                 continue;
+              }
+              if (state.finalPoint) {
+                await sendRemoteDragPhase(state, 'end', state.finalPoint);
+                break;
               }
               await new Promise((resolve) => {
                 state.wake = resolve;
@@ -2574,11 +2576,27 @@
         return state;
       }
 
-      function updateRemoteDrag(point) {
+      function remoteDragDistancePx(fromPoint, toPoint) {
+        const width = Math.max(1, screenInfo.width || screenEl.naturalWidth || 1);
+        const height = Math.max(1, screenInfo.height || screenEl.naturalHeight || 1);
+        return Math.hypot(
+          (toPoint.x - fromPoint.x) * width,
+          (toPoint.y - fromPoint.y) * height
+        );
+      }
+
+      function updateRemoteDrag(point, force = false) {
         if (!remoteDrag || !point) {
           return;
         }
         remoteDrag.lastPoint = point;
+        if (
+          !force
+          && remoteDragDistancePx(remoteDrag.lastQueuedPoint, point) < DRAG_TARGET_STEP_PX
+        ) {
+          return;
+        }
+        remoteDrag.lastQueuedPoint = point;
         remoteDrag.pendingPoint = point;
         wakeRemoteDrag(remoteDrag);
       }
@@ -2588,7 +2606,7 @@
           return;
         }
         remoteDrag.lastPoint = point || remoteDrag.lastPoint;
-        remoteDrag.pendingPoint = null;
+        updateRemoteDrag(remoteDrag.lastPoint, true);
         remoteDrag.finalPoint = remoteDrag.lastPoint;
         wakeRemoteDrag(remoteDrag);
       }

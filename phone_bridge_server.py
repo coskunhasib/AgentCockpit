@@ -5,6 +5,7 @@ import importlib
 import ipaddress
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -106,6 +107,10 @@ DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", 
 DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
 DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
 DEFAULT_CAPTURE_MAX_RSS_MB = max(0, get_int("PHONE_CAPTURE_MAX_RSS_MB", "512"))
+DEFAULT_DRAG_STEP_PIXELS = max(4, min(128, get_int("PHONE_DRAG_STEP_PIXELS", "16")))
+DEFAULT_DRAG_STEP_DELAY_SEC = max(
+    0.0, min(0.05, get_float("PHONE_DRAG_STEP_DELAY_MS", "4") / 1000.0)
+)
 DEFAULT_SESSION_LINK_MAX_ENTRIES = max(8, get_int("PHONE_SESSION_LINK_MAX_ENTRIES", "256"))
 DEFAULT_TRUSTED_DEVICE_MAX_ENTRIES = max(8, get_int("PHONE_TRUSTED_DEVICE_MAX_ENTRIES", "64"))
 DEFAULT_TRUSTED_DEVICE_STALE_DAYS = max(1, get_int("PHONE_TRUSTED_DEVICE_STALE_DAYS", "90"))
@@ -949,12 +954,20 @@ def _perform_drag(start_x_ratio, start_y_ratio, end_x_ratio, end_y_ratio, durati
 class RemoteDragController:
     TIMEOUT_SECONDS = 2.5
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        step_pixels=DEFAULT_DRAG_STEP_PIXELS,
+        step_delay_seconds=DEFAULT_DRAG_STEP_DELAY_SEC,
+    ):
         self._lock = threading.Lock()
         self._active_id = ""
         self._pyautogui = None
+        self._last_point = None
         self._timer = None
         self._timeout_seq = 0
+        self._step_pixels = max(1, int(step_pixels))
+        self._step_delay_seconds = max(0.0, float(step_delay_seconds))
 
     @staticmethod
     def _screen_point(pyautogui, x_ratio, y_ratio):
@@ -976,8 +989,38 @@ class RemoteDragController:
         pyautogui = self._pyautogui
         self._active_id = ""
         self._pyautogui = None
+        self._last_point = None
         if pyautogui is not None:
             pyautogui.mouseUp(button="left")
+
+    @staticmethod
+    def _move_to(pyautogui, x, y):
+        try:
+            pyautogui.moveTo(x, y, _pause=False)
+        except TypeError:
+            # Lightweight test doubles and older pyautogui versions may not
+            # expose the private pause switch.
+            pyautogui.moveTo(x, y)
+
+    def _move_incrementally_locked(self, target_x, target_y):
+        if self._last_point is None:
+            self._move_to(self._pyautogui, target_x, target_y)
+            self._last_point = (target_x, target_y)
+            return
+
+        start_x, start_y = self._last_point
+        delta_x = target_x - start_x
+        delta_y = target_y - start_y
+        distance = math.hypot(delta_x, delta_y)
+        steps = max(1, math.ceil(distance / self._step_pixels))
+        for index in range(1, steps + 1):
+            progress = index / steps
+            next_x = round(start_x + delta_x * progress)
+            next_y = round(start_y + delta_y * progress)
+            self._move_to(self._pyautogui, next_x, next_y)
+            if self._step_delay_seconds and index < steps:
+                time.sleep(self._step_delay_seconds)
+        self._last_point = (target_x, target_y)
 
     def _expire(self, drag_id, timeout_seq):
         with self._lock:
@@ -1006,10 +1049,11 @@ class RemoteDragController:
                 self._release_locked()
             pyautogui = _require_pyautogui()
             x, y = self._screen_point(pyautogui, x_ratio, y_ratio)
-            pyautogui.moveTo(x, y)
+            self._move_to(pyautogui, x, y)
             pyautogui.mouseDown(button="left")
             self._active_id = drag_id
             self._pyautogui = pyautogui
+            self._last_point = (x, y)
             self._arm_timeout_locked(drag_id)
 
     def move(self, drag_id, x_ratio, y_ratio):
@@ -1018,7 +1062,7 @@ class RemoteDragController:
             if not self._active_id or drag_id != self._active_id:
                 raise RuntimeError("Surukleme oturumu aktif degil.")
             x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
-            self._pyautogui.moveTo(x, y)
+            self._move_incrementally_locked(x, y)
             self._arm_timeout_locked(drag_id)
 
     def end(self, drag_id, x_ratio, y_ratio):
@@ -1028,7 +1072,7 @@ class RemoteDragController:
                 return False
             try:
                 x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
-                self._pyautogui.moveTo(x, y)
+                self._move_incrementally_locked(x, y)
             finally:
                 self._release_locked()
             return True

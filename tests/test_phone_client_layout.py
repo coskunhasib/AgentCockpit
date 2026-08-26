@@ -102,8 +102,15 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("function onMouseContextMenu(event)", html)
         self.assertIn("function onMouseWheel(event)", html)
         self.assertIn("type: `drag_${phase}`", html)
+        self.assertIn("const DRAG_TARGET_STEP_PX = 24;", html)
+        self.assertIn("function remoteDragDistancePx(fromPoint, toPoint)", html)
+        self.assertIn("updateRemoteDrag(remoteDrag.lastPoint, true);", html)
+        self.assertLess(
+            html.index("if (state.pendingPoint)"),
+            html.index("if (state.finalPoint)"),
+        )
         self.assertIn("function beginRemoteDrag(startPoint)", html)
-        self.assertIn("function updateRemoteDrag(point)", html)
+        self.assertIn("function updateRemoteDrag(point, force = false)", html)
         self.assertIn("function finishRemoteDrag(point)", html)
         self.assertIn("screenEl.addEventListener('pointerdown', onMousePointerDown);", html)
         self.assertIn("screenEl.addEventListener('pointermove', onMousePointerMove);", html)

@@ -232,7 +232,10 @@ class PhoneBridgeClientTests(unittest.TestCase):
                 self.calls.append(("up", button))
 
         fake = FakePyAutoGui()
-        controller = phone_bridge_server.RemoteDragController()
+        controller = phone_bridge_server.RemoteDragController(
+            step_pixels=5000,
+            step_delay_seconds=0,
+        )
         with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
             controller.start("drag-1", 0.1, 0.2)
             controller.move("drag-1", 0.4, 0.5)
@@ -249,6 +252,38 @@ class PhoneBridgeClientTests(unittest.TestCase):
                 ("move", 900, 499),
                 ("up", "left"),
             ],
+        )
+
+    def test_live_phone_drag_interpolates_long_moves_in_fixed_pixel_steps(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.calls = []
+
+            def size(self):
+                return (1000, 500)
+
+            def moveTo(self, x, y, **_kwargs):
+                self.calls.append((x, y))
+
+            def mouseDown(self, button):
+                pass
+
+            def mouseUp(self, button):
+                pass
+
+        fake = FakePyAutoGui()
+        controller = phone_bridge_server.RemoteDragController(
+            step_pixels=100,
+            step_delay_seconds=0,
+        )
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            controller.start("drag-stepped", 0.1, 0.2)
+            controller.move("drag-stepped", 0.3, 0.2)
+            controller.end("drag-stepped", 0.5, 0.2)
+
+        self.assertEqual(
+            fake.calls,
+            [(100, 100), (200, 100), (300, 100), (400, 100), (500, 100)],
         )
 
     def test_live_phone_drag_timeout_releases_mouse(self):

@@ -61,4 +61,5 @@ Hesapsiz uzak tunnel adresi degisirse bot yeni `Uzak Ac` linkini Telegram'a otom
 Ek not:
 
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
+- Uzak surukleme hedefleri piksel esigine gore akar; bridge hedefler arasini kucuk ara hareketlerle doldurup son hedef uygulandiktan sonra mouse'u birakir.
 - Ortam tanisi icin `python main.py --doctor` komutu kullanilabilir.
