@@ -1119,6 +1119,7 @@
       let pendingScrollPayload = null;
       let lastTapTime = 0;
       let lastTapX = 0;
+      let lastTapY = 0;
       let lastTextTarget = null;
       let longPressTimer = null;
       let gesture = null;
@@ -2897,7 +2898,9 @@
 
         if (!gesture.moved && duration < 520) {
           const now = Date.now();
-          const isDouble = now - lastTapTime < 320 && Math.abs(gesture.x - lastTapX) < 30;
+          const isDouble = now - lastTapTime < 320
+            && Math.abs(gesture.x - lastTapX) < 30
+            && Math.abs(gesture.y - lastTapY) < 30;
           const marker = spawnTapMarker(gesture.x, gesture.y, isDouble ? 'double' : 'left');
           rememberTextTarget(coords);
           enqueueAction(
@@ -2912,6 +2915,7 @@
           );
           lastTapTime = now;
           lastTapX = gesture.x;
+          lastTapY = gesture.y;
         }
         gesture = null;
       }
@@ -2922,6 +2926,68 @@
         }
         clearLongPressTimer();
         gesture = null;
+      }
+
+      function onMousePointerUp(event) {
+        if (event.pointerType !== 'mouse' || event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+
+        const now = Date.now();
+        const isDouble = now - lastTapTime < 320
+          && Math.abs(event.clientX - lastTapX) < 30
+          && Math.abs(event.clientY - lastTapY) < 30;
+        const marker = spawnTapMarker(event.clientX, event.clientY, isDouble ? 'double' : 'left');
+        rememberTextTarget(coords);
+        enqueueAction(
+          {
+            type: 'click',
+            x: coords.x,
+            y: coords.y,
+            button: isDouble ? 'double' : 'left',
+            delay: isDouble ? 0.24 : 0.18
+          },
+          { marker }
+        );
+        lastTapTime = now;
+        lastTapX = event.clientX;
+        lastTapY = event.clientY;
+      }
+
+      function onMouseContextMenu(event) {
+        event.preventDefault();
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        const marker = spawnTapMarker(event.clientX, event.clientY, 'right');
+        enqueueAction(
+          { type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 },
+          { marker }
+        );
+      }
+
+      function onMouseWheel(event) {
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        event.preventDefault();
+        let distance = event.deltaY;
+        if (event.deltaMode === 1) {
+          distance *= 40;
+        } else if (event.deltaMode === 2) {
+          distance *= Math.max(120, viewer.clientHeight);
+        }
+        const delta = Math.max(-1200, Math.min(1200, Math.round(-distance)));
+        if (delta) {
+          postScrollAction({ type: 'scroll', x: coords.x, y: coords.y, delta, delay: 0.02 });
+        }
       }
 
       btnRefresh.addEventListener('click', () => {
@@ -3065,6 +3131,9 @@
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
       screenEl.addEventListener('touchcancel', onTouchCancel, { passive: false });
+      screenEl.addEventListener('pointerup', onMousePointerUp);
+      screenEl.addEventListener('contextmenu', onMouseContextMenu);
+      screenEl.addEventListener('wheel', onMouseWheel, { passive: false });
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) {

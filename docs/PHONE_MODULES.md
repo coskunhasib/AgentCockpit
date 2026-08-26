@@ -18,6 +18,7 @@ Telefon/PWA modulleri proje kokundedir. Ana calistirma kokteki `main.py` uzerind
 - admin token ile yeni link uretebilme
 - uyarlanabilir polling (`Live / Normal / Eco`)
 - dokunma, scroll ve klavye odakli mobil kontrol
+- masaustu tarayicilarinda sol/cift/sag tik ve fare tekerlegiyle kontrol
 - Telegram hattindan `Telefon` dugmesiyle yeni link mint etme
 - service worker destekli app shell
 - ana ekrana eklenebilir PWA akisi

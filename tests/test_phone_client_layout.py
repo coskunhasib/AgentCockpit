@@ -90,6 +90,13 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("no_screenshot: streamMode !== 'poll'", html)
         self.assertIn("scheduleNextPoll(streamMode === 'poll' ? 240 : 0);", html)
         self.assertIn("delay: isDouble ? 0.24 : 0.18", html)
+        self.assertIn("function onMousePointerUp(event)", html)
+        self.assertIn("event.pointerType !== 'mouse'", html)
+        self.assertIn("function onMouseContextMenu(event)", html)
+        self.assertIn("function onMouseWheel(event)", html)
+        self.assertIn("screenEl.addEventListener('pointerup', onMousePointerUp);", html)
+        self.assertIn("screenEl.addEventListener('contextmenu', onMouseContextMenu);", html)
+        self.assertIn("screenEl.addEventListener('wheel', onMouseWheel, { passive: false });", html)
 
 
 if __name__ == "__main__":
