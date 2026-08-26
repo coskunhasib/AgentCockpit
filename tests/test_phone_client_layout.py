@@ -75,11 +75,14 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("function hideRepoPrompt(", html)
         self.assertIn("repoOfferDismissed: 'ac_phone_repo_offer_dismissed_v1'", html)
         self.assertIn("function setDismissedRepoOffer(", html)
-        self.assertIn("const offerSignature = nextState.updateAvailable && nextState.upstreamSha", html)
+        self.assertIn(
+            "const offerSignature = nextState.updateAvailable && nextState.canUpdate && nextState.upstreamSha",
+            html,
+        )
         self.assertIn("rememberOffer: repoState.updateAvailable && Boolean(repoState.upstreamSha)", html)
         self.assertNotIn("!previousState.updateAvailable ||", html)
-        self.assertIn("showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });", html)
-        self.assertIn("Yerel branch remote ile ayrismis", html)
+        self.assertNotIn("showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });", html)
+        self.assertIn("!repoState.updateAvailable || !repoState.canUpdate", html)
         self.assertIn("if (wasDisconnected && !isRepoPromptVisible()) {", html)
         self.assertIn("event.target.closest('#repo-prompt')", html)
         self.assertIn("[toolbar, keyboardPanel, usageHint, installSheet, wanSheet]", html)

@@ -1399,13 +1399,13 @@
         );
         // Ayni upstream commit icin istem bir kez gosterilir; canUpdate degisirse
         // (ornegin yerel degisiklikler commit'lenince) teklif yeniden sunulur.
-        const offerSignature = nextState.updateAvailable && nextState.upstreamSha
-          ? `${nextState.upstreamSha}:${nextState.canUpdate ? 'auto' : 'manual'}`
+        const offerSignature = nextState.updateAvailable && nextState.canUpdate && nextState.upstreamSha
+          ? `${nextState.upstreamSha}:auto`
           : '';
 
         repoState = nextState;
 
-        if (!repoState.updateAvailable) {
+        if (!repoState.updateAvailable || !repoState.canUpdate) {
           lastRepoOfferSignature = '';
           setDismissedRepoOffer('');
           if (isRepoPromptVisible() && repoPromptState.mode === 'update') {
@@ -1433,17 +1433,6 @@
             ? `${summary ? `${summary} - ` : ''}${nextState.upstreamSubject}`
             : (summary || 'Yeni repo guncellemesi hazir.');
           showRepoPrompt('Repo guncellemesi hazir', detail, { mode: 'update', notify: true });
-          return;
-        }
-
-        if (offerChanged && !repoState.canUpdate) {
-          lastRepoOfferSignature = offerSignature;
-          const reason = payload.repo_state.tracked_dirty
-            ? 'Yerel degisiklikler yuzunden otomatik cekemiyorum.'
-            : (Number(payload.repo_state.ahead_count) > 0
-              ? 'Yerel branch remote ile ayrismis. Elle birlestirme gerekiyor.'
-              : 'Bu guncelleme icin otomatik cekme uygun degil.');
-          showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });
           return;
         }
 
