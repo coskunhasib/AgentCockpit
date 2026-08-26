@@ -111,6 +111,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_KEEP_AWAKE=1`
 - `PHONE_KEEP_AWAKE_FLAGS=-dims`
 - `PHONE_CAPTURE_LOCK_TIMEOUT_SEC=3.0`
+- `PHONE_DRAG_STEP_PIXELS=16`
+- `PHONE_DRAG_STEP_DELAY_MS=4`
 - `PHONE_STREAM_MAX_CONNECTIONS=2`
 - `PHONE_STREAM_MAX_SECONDS=600`
 - `PHONE_STREAM_GC_EVERY_FRAMES=120`
@@ -118,10 +120,13 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
+Tarayici istemcisindeki kalite dugmesi hedef ekran boyutuna gore otomatik olcekler. `Hizli` ve `Normal` en az 1920 piksel genislik kullanir; `HD` gercek bir detay artisi icin en az 2560 piksel ve JPEG `q90` ister.
+
 ## Ekran ve Isaretci Notu
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
+- Surukleme hedefleri tarayicida her 24 uzak ekran pikselinde uretilir. Bridge iki hedef arasini `PHONE_DRAG_STEP_PIXELS` araligiyla doldurur ve bekleyen son hareketi mouse birakilmadan once uygular.
 - `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at`, `active_streams`, `max_streams` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
 - `screen=unavailable` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.

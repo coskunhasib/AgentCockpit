@@ -104,7 +104,7 @@ class LauncherTests(unittest.TestCase):
         text = runner.read_text(encoding="utf-8")
         self.assertIn('PYTHON_BIN="$PROJECT_ROOT/venv/bin/python3"', text)
         self.assertIn(
-            'AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart',
+            'AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/macos_autostart_guard.py" "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart',
             text,
         )
 

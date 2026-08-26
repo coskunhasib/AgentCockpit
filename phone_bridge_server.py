@@ -5,6 +5,7 @@ import importlib
 import ipaddress
 import io
 import json
+import math
 import os
 import re
 import secrets
@@ -38,7 +39,7 @@ try:
 except Exception:
     pass
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from core.app_config import get_float, get_int, get_str
 from dotenv import load_dotenv
 try:
@@ -47,6 +48,7 @@ except ImportError:
     qrcode = None
 
 from core.logger import (
+    current_rss_bytes,
     get_logger,
     install_diagnostics_hooks,
     record_runtime_event,
@@ -74,6 +76,7 @@ _CAPTURE_STATE = {
     "last_height": 0,
     "failure_count": 0,
     "backoff_until": 0.0,
+    "capture_count": 0,
 }
 _CAPTURE_STATE_LOCK = threading.Lock()
 _CAPTURE_LOCK = threading.Lock()
@@ -85,6 +88,7 @@ PHONE_CLIENT_DIR = ROOT_DIR / "phone_client"
 LOCAL_HOST = get_str("AGENTCOCKPIT_LOCAL_HOST")
 DEFAULT_BIND = get_str("PHONE_BIND")
 DEFAULT_PORT = get_int("PHONE_PORT")
+DEFAULT_CONTROL_PORT = get_int("PHONE_CONTROL_PORT")
 DEFAULT_ADMIN_TOKEN = get_shared_admin_token()
 DEFAULT_QUALITY = max(20, min(95, get_int("PHONE_SCREENSHOT_QUALITY")))
 DEFAULT_MAX_WIDTH = max(640, get_int("PHONE_SCREENSHOT_MAX_WIDTH"))
@@ -102,6 +106,15 @@ DEFAULT_CAPTURE_UNAVAILABLE_RETRY_SEC = max(
 DEFAULT_STREAM_MAX_CONNECTIONS = max(1, get_int("PHONE_STREAM_MAX_CONNECTIONS", "2"))
 DEFAULT_STREAM_MAX_SECONDS = max(60.0, get_float("PHONE_STREAM_MAX_SECONDS", "600"))
 DEFAULT_STREAM_GC_EVERY_FRAMES = max(30, get_int("PHONE_STREAM_GC_EVERY_FRAMES", "120"))
+DEFAULT_CAPTURE_MAX_RSS_MB = max(0, get_int("PHONE_CAPTURE_MAX_RSS_MB", "512"))
+DEFAULT_DRAG_STEP_PIXELS = max(4, min(128, get_int("PHONE_DRAG_STEP_PIXELS", "16")))
+DEFAULT_DRAG_STEP_DELAY_SEC = max(
+    0.0, min(0.05, get_float("PHONE_DRAG_STEP_DELAY_MS", "4") / 1000.0)
+)
+DEFAULT_SESSION_LINK_MAX_ENTRIES = max(8, get_int("PHONE_SESSION_LINK_MAX_ENTRIES", "256"))
+DEFAULT_TRUSTED_DEVICE_MAX_ENTRIES = max(8, get_int("PHONE_TRUSTED_DEVICE_MAX_ENTRIES", "64"))
+DEFAULT_TRUSTED_DEVICE_STALE_DAYS = max(1, get_int("PHONE_TRUSTED_DEVICE_STALE_DAYS", "90"))
+DEFAULT_TRUSTED_DEVICE_PERSIST_SEC = max(30, get_int("PHONE_TRUSTED_DEVICE_PERSIST_SEC", "300"))
 
 
 class CaptureUnavailable(RuntimeError):
@@ -184,6 +197,7 @@ def _record_capture_success(width, height):
         _CAPTURE_STATE["last_height"] = int(height)
         _CAPTURE_STATE["failure_count"] = 0
         _CAPTURE_STATE["backoff_until"] = 0.0
+        _CAPTURE_STATE["capture_count"] = int(_CAPTURE_STATE.get("capture_count", 0)) + 1
 
 
 def _is_capture_unavailable_error(text):
@@ -222,10 +236,31 @@ def _capture_retry_after_seconds():
 def _raise_if_capture_deferred():
     retry_after = _capture_retry_after_seconds()
     if retry_after > 0:
+        with _CAPTURE_STATE_LOCK:
+            last_error = _CAPTURE_STATE.get("last_error", "")
         raise CaptureUnavailable(
-            "Ekran yakalama gecici olarak durduruldu; macOS ekran oturumu hazir degil.",
+            "Ekran yakalama gecici olarak durduruldu"
+            + (f": {last_error}" if last_error else "."),
             retry_after=retry_after,
         )
+
+    if DEFAULT_CAPTURE_MAX_RSS_MB > 0:
+        limit_bytes = DEFAULT_CAPTURE_MAX_RSS_MB * 1024 * 1024
+        rss_bytes = current_rss_bytes(cache_seconds=2.0)
+        if rss_bytes is not None and rss_bytes > limit_bytes:
+            gc.collect()
+            rss_bytes = current_rss_bytes()
+            if rss_bytes is not None and rss_bytes > limit_bytes:
+                record_runtime_event(
+                    "capture_memory_guard_tripped",
+                    current_rss_mb=round(rss_bytes / (1024 * 1024), 1),
+                    limit_rss_mb=DEFAULT_CAPTURE_MAX_RSS_MB,
+                )
+                raise CaptureUnavailable(
+                    "Bellek emniyet siniri asildi; ekran aktarimi sistemi korumak icin durduruldu "
+                    f"({rss_bytes // (1024 * 1024)} MB > {DEFAULT_CAPTURE_MAX_RSS_MB} MB).",
+                    retry_after=30,
+                )
 
     screen = _get_screen_metrics()
     if not screen.get("available"):
@@ -268,7 +303,14 @@ def _capture_health(screen):
         "capture_last_success_at": int(state["last_success_at"]) if state["last_success_at"] else 0,
         "capture_last_width": state["last_width"],
         "capture_last_height": state["last_height"],
+        "capture_count": int(state.get("capture_count", 0)),
         "capture_retry_after": _capture_retry_after_seconds(),
+        "capture_current_rss_mb": (
+            round(rss_bytes / (1024 * 1024), 1)
+            if (rss_bytes := current_rss_bytes(cache_seconds=2.0)) is not None
+            else None
+        ),
+        "capture_max_rss_mb": DEFAULT_CAPTURE_MAX_RSS_MB,
     }
 
 
@@ -316,6 +358,7 @@ def _diagnostic_snapshot(server=None):
                 "active": server.active_stream_count(),
                 "max": server.max_stream_connections,
                 "max_seconds": int(server.stream_max_seconds),
+                "memory_limit_mb": DEFAULT_CAPTURE_MAX_RSS_MB,
             }
         except Exception:
             snapshot["stream"] = None
@@ -466,10 +509,13 @@ def _render_qr_data_url(data):
     qr.add_data(data)
     qr.make(fit=True)
     image = qr.make_image(fill_color="black", back_color="white")
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
-    encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return f"data:image/png;base64,{encoded}"
+    try:
+        with io.BytesIO() as buffer:
+            image.save(buffer, format="PNG")
+            encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        return f"data:image/png;base64,{encoded}"
+    finally:
+        _close_image(image)
 
 
 def _mouse_overlay_point(image_size):
@@ -519,8 +565,11 @@ def _capture_legacy():
     if _is_nearly_black_frame(screenshot):
         fallback = _capture_with_screencapture()
         if fallback and not _is_nearly_black_frame(fallback):
+            _close_image(screenshot)
             screenshot = fallback
         else:
+            _close_image(fallback)
+            _close_image(screenshot)
             raise RuntimeError(
                 "Siyah ekran algilandi. Ekran kilitli/uykuda olabilir veya Screen Recording izni eksik. "
                 "macOS'ta Terminal/iTerm icin Screen Recording iznini acip uygulamayi yeniden baslatin."
@@ -559,19 +608,29 @@ def _capture_with_quartz():
         if data is None:
             return None
         # CGDisplayCreateImage yields 32-bit little-endian BGRA; map straight to RGBA.
+        # Passing CFData directly avoids a 29+ MiB resident allocation per Retina
+        # frame on macOS/PyObjC. The RGB conversion owns its pixels, so the
+        # temporary zero-copy RGBA view can be closed before returning.
         image = Image.frombuffer(
-            "RGBA", (width, height), bytes(data), "raw", "BGRA", bytes_per_row, 1
+            "RGBA", (width, height), data, "raw", "BGRA", bytes_per_row, 1
         )
-        return image.convert("RGB")
+        try:
+            return image.convert("RGB")
+        finally:
+            _close_image(image)
     except Exception:
         return None
 
 
 def _channel_means(image):
     small = image.resize((32, 18), Image.BILINEAR)
-    pixels = list(small.getdata())
-    count = len(pixels) or 1
-    return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+    try:
+        pixels = list(small.getdata())
+        count = len(pixels) or 1
+        return tuple(sum(pixel[i] for pixel in pixels) / count for i in range(3))
+    finally:
+        if small is not image:
+            _close_image(small)
 
 
 def _validate_quartz_once():
@@ -586,28 +645,34 @@ def _validate_quartz_once():
         return _QUARTZ_STATE["ok"]
     _QUARTZ_STATE["checked"] = True
     try:
-        if _capture_with_quartz() is None:
+        probe = _capture_with_quartz()
+        if probe is None:
             _QUARTZ_STATE["ok"] = False
             return False
+        _close_image(probe)
         best = None
         for _ in range(3):
             reference = _capture_with_screencapture()
             quartz_frame = _capture_with_quartz()
-            if reference is None:
-                # screencapture unavailable; Quartz is our only working capture path.
-                _QUARTZ_STATE["ok"] = True
-                logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
-                return True
-            if quartz_frame is None:
-                continue
-            divergence = max(
-                abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
-            )
-            best = divergence if best is None else min(best, divergence)
-            if divergence <= 45:
-                _QUARTZ_STATE["ok"] = True
-                logger.info("Hizli Quartz ekran yakalama etkin.")
-                return True
+            try:
+                if reference is None:
+                    # screencapture unavailable; Quartz is our only working capture path.
+                    _QUARTZ_STATE["ok"] = True
+                    logger.info("Hizli Quartz ekran yakalama etkin (screencapture dogrulamasi atlandi).")
+                    return True
+                if quartz_frame is None:
+                    continue
+                divergence = max(
+                    abs(q - r) for q, r in zip(_channel_means(quartz_frame), _channel_means(reference))
+                )
+                best = divergence if best is None else min(best, divergence)
+                if divergence <= 45:
+                    _QUARTZ_STATE["ok"] = True
+                    logger.info("Hizli Quartz ekran yakalama etkin.")
+                    return True
+            finally:
+                _close_image(reference)
+                _close_image(quartz_frame)
         _QUARTZ_STATE["ok"] = False
         logger.warning(
             "Quartz renkleri screencapture ile uyusmadi (en iyi fark=%s); screencapture kullanilacak.",
@@ -668,13 +733,21 @@ def _draw_cursor(image):
     return image
 
 
-def _scale_to_width(image, max_width):
+def _scale_to_width(image, max_width, *, sharpen=False):
     if image.width > max_width:
         ratio = max_width / image.width
-        image = image.resize(
+        resampling = getattr(Image, "Resampling", Image)
+        resized = image.resize(
             (max_width, int(image.height * ratio)),
-            Image.BILINEAR,
+            resampling.LANCZOS,
         )
+        if sharpen:
+            image = resized.filter(
+                ImageFilter.UnsharpMask(radius=1.0, percent=140, threshold=2)
+            )
+            _close_image(resized)
+        else:
+            image = resized
     return image
 
 
@@ -685,12 +758,20 @@ def _frame_signature(raw_image):
     cursor in means pointer-only movement still yields a fresh frame (so the
     remote cursor stays live) without re-sending an otherwise unchanged screen.
     """
+    reduced = None
+    thumb = None
     try:
         factor = max(1, raw_image.width // 96)
-        thumb = raw_image.reduce(factor).convert("L")
+        reduced = raw_image.reduce(factor)
+        thumb = reduced.convert("L")
         checksum = zlib.crc32(thumb.tobytes()) & 0xFFFFFFFF
     except Exception:
         checksum = 0
+    finally:
+        if thumb is not None and thumb is not reduced:
+            _close_image(thumb)
+        if reduced is not None and reduced is not raw_image:
+            _close_image(reduced)
     try:
         mouse_x, mouse_y = _get_pyautogui().position()
         checksum = zlib.crc32(f"|{mouse_x // 3},{mouse_y // 3}".encode(), checksum) & 0xFFFFFFFF
@@ -700,14 +781,23 @@ def _frame_signature(raw_image):
 
 
 def _encode_jpeg(image, quality):
-    buffer = io.BytesIO()
-    # optimize=False trades ~10% size for a much cheaper encode, which matters
-    # when frames are produced continuously for the live stream.
-    image.save(buffer, format="JPEG", quality=quality, optimize=False)
-    return buffer.getvalue()
+    with io.BytesIO() as buffer:
+        # optimize=False trades ~10% size for a much cheaper encode, which matters
+        # when frames are produced continuously for the live stream.
+        options = {
+            "format": "JPEG",
+            "quality": quality,
+            "optimize": False,
+        }
+        if quality >= 80:
+            # 4:4:4 keeps colored text edges crisp; Pillow's JPEG default uses
+            # chroma subsampling, which visibly softens small UI text.
+            options["subsampling"] = 0
+        image.save(buffer, **options)
+        return buffer.getvalue()
 
 
-def _grab_frame(quality, max_width):
+def _grab_frame(quality, max_width, *, sharpen=False):
     """Capture one finished frame.
 
     Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
@@ -719,7 +809,7 @@ def _grab_frame(quality, max_width):
         screen_width, screen_height = raw.size
         _record_capture_success(screen_width, screen_height)
         signature = _frame_signature(raw)
-        image = _scale_to_width(_draw_cursor(raw), max_width)
+        image = _scale_to_width(_draw_cursor(raw), max_width, sharpen=sharpen)
         jpeg = _encode_jpeg(image, quality)
         return jpeg, signature, image.width, image.height, screen_width, screen_height
     except Exception as exc:
@@ -732,8 +822,12 @@ def _grab_frame(quality, max_width):
             _close_image(raw)
 
 
-def _capture_payload(quality, max_width):
-    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(quality, max_width)
+def _capture_payload(quality, max_width, *, sharpen=False):
+    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(
+        quality,
+        max_width,
+        sharpen=sharpen,
+    )
     return {
         "image": base64.b64encode(jpeg).decode("ascii"),
         "signature": signature,
@@ -748,8 +842,7 @@ def _capture_payload(quality, max_width):
 def _parse_stream_params(query, default_quality, default_width):
     """Parse optional ?q=<jpeg quality>&w=<max width> for the frame/stream endpoints.
 
-    Width is capped at 2560 so an 'HD' client mode can ask for more detail than
-    the default while still staying well under the native Retina width.
+    Width is capped at 4096 so an 'HD' client can retain native Retina detail.
     """
     try:
         requested_quality = int(query.get("q", [""])[0])
@@ -760,15 +853,24 @@ def _parse_stream_params(query, default_quality, default_width):
         requested_width = int(query.get("w", [""])[0])
     except (TypeError, ValueError):
         requested_width = default_width
-    max_width = max(640, min(2560, requested_width))
+    max_width = max(640, min(4096, requested_width))
     return quality, max_width
 
 
+def _parse_sharpen_param(query):
+    return str(query.get("sharp", [""])[0]).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _is_nearly_black_frame(image, *, max_channel=4):
+    converted = None
     try:
-        extrema = image.convert("RGB").getextrema()
+        converted = image.convert("RGB")
+        extrema = converted.getextrema()
     except Exception:
         return False
+    finally:
+        if converted is not None and converted is not image:
+            _close_image(converted)
 
     return all(channel_max <= max_channel for _, channel_max in extrema)
 
@@ -822,6 +924,167 @@ def _perform_click(x_ratio, y_ratio, button="left"):
         pyautogui.click(x, y)
 
 
+def _perform_drag(start_x_ratio, start_y_ratio, end_x_ratio, end_y_ratio, duration=0.35):
+    pyautogui = _require_pyautogui()
+    screen_width, screen_height = pyautogui.size()
+
+    def screen_point(x_ratio, y_ratio):
+        x = int(_clamp_ratio(x_ratio) * screen_width)
+        y = int(_clamp_ratio(y_ratio) * screen_height)
+        return (
+            max(0, min(x, screen_width - 1)),
+            max(0, min(y, screen_height - 1)),
+        )
+
+    start_x, start_y = screen_point(start_x_ratio, start_y_ratio)
+    end_x, end_y = screen_point(end_x_ratio, end_y_ratio)
+    try:
+        drag_duration = max(0.08, min(2.0, float(duration)))
+    except (TypeError, ValueError):
+        drag_duration = 0.35
+
+    pyautogui.moveTo(start_x, start_y)
+    pyautogui.mouseDown(button="left")
+    try:
+        pyautogui.moveTo(end_x, end_y, duration=drag_duration)
+    finally:
+        pyautogui.mouseUp(button="left")
+
+
+class RemoteDragController:
+    TIMEOUT_SECONDS = 2.5
+
+    def __init__(
+        self,
+        *,
+        step_pixels=DEFAULT_DRAG_STEP_PIXELS,
+        step_delay_seconds=DEFAULT_DRAG_STEP_DELAY_SEC,
+    ):
+        self._lock = threading.Lock()
+        self._active_id = ""
+        self._pyautogui = None
+        self._last_point = None
+        self._timer = None
+        self._timeout_seq = 0
+        self._step_pixels = max(1, int(step_pixels))
+        self._step_delay_seconds = max(0.0, float(step_delay_seconds))
+
+    @staticmethod
+    def _screen_point(pyautogui, x_ratio, y_ratio):
+        screen_width, screen_height = pyautogui.size()
+        x = int(_clamp_ratio(x_ratio) * screen_width)
+        y = int(_clamp_ratio(y_ratio) * screen_height)
+        return (
+            max(0, min(x, screen_width - 1)),
+            max(0, min(y, screen_height - 1)),
+        )
+
+    def _cancel_timer_locked(self):
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _release_locked(self):
+        self._cancel_timer_locked()
+        pyautogui = self._pyautogui
+        self._active_id = ""
+        self._pyautogui = None
+        self._last_point = None
+        if pyautogui is not None:
+            pyautogui.mouseUp(button="left")
+
+    @staticmethod
+    def _move_to(pyautogui, x, y):
+        try:
+            pyautogui.moveTo(x, y, _pause=False)
+        except TypeError:
+            # Lightweight test doubles and older pyautogui versions may not
+            # expose the private pause switch.
+            pyautogui.moveTo(x, y)
+
+    def _move_incrementally_locked(self, target_x, target_y):
+        if self._last_point is None:
+            self._move_to(self._pyautogui, target_x, target_y)
+            self._last_point = (target_x, target_y)
+            return
+
+        start_x, start_y = self._last_point
+        delta_x = target_x - start_x
+        delta_y = target_y - start_y
+        distance = math.hypot(delta_x, delta_y)
+        steps = max(1, math.ceil(distance / self._step_pixels))
+        for index in range(1, steps + 1):
+            progress = index / steps
+            next_x = round(start_x + delta_x * progress)
+            next_y = round(start_y + delta_y * progress)
+            self._move_to(self._pyautogui, next_x, next_y)
+            if self._step_delay_seconds and index < steps:
+                time.sleep(self._step_delay_seconds)
+        self._last_point = (target_x, target_y)
+
+    def _expire(self, drag_id, timeout_seq):
+        with self._lock:
+            if drag_id != self._active_id or timeout_seq != self._timeout_seq:
+                return
+            logger.warning("Uzak surukleme zaman asimina ugradi; fare otomatik birakiliyor.")
+            self._release_locked()
+
+    def _arm_timeout_locked(self, drag_id):
+        self._cancel_timer_locked()
+        self._timeout_seq += 1
+        self._timer = threading.Timer(
+            self.TIMEOUT_SECONDS,
+            self._expire,
+            args=(drag_id, self._timeout_seq),
+        )
+        self._timer.daemon = True
+        self._timer.start()
+
+    def start(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        if not drag_id:
+            raise ValueError("Surukleme kimligi gerekli.")
+        with self._lock:
+            if self._active_id:
+                self._release_locked()
+            pyautogui = _require_pyautogui()
+            x, y = self._screen_point(pyautogui, x_ratio, y_ratio)
+            self._move_to(pyautogui, x, y)
+            pyautogui.mouseDown(button="left")
+            self._active_id = drag_id
+            self._pyautogui = pyautogui
+            self._last_point = (x, y)
+            self._arm_timeout_locked(drag_id)
+
+    def move(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        with self._lock:
+            if not self._active_id or drag_id != self._active_id:
+                raise RuntimeError("Surukleme oturumu aktif degil.")
+            x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
+            self._move_incrementally_locked(x, y)
+            self._arm_timeout_locked(drag_id)
+
+    def end(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        with self._lock:
+            if not self._active_id or drag_id != self._active_id:
+                return False
+            try:
+                x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
+                self._move_incrementally_locked(x, y)
+            finally:
+                self._release_locked()
+            return True
+
+    def close(self):
+        with self._lock:
+            if self._active_id:
+                self._release_locked()
+            else:
+                self._cancel_timer_locked()
+
+
 def _perform_scroll(x_ratio, y_ratio, delta):
     pyautogui = _require_pyautogui()
     screen_width, screen_height = pyautogui.size()
@@ -856,6 +1119,15 @@ def _action_audit_payload(action_type, payload, *, request_id=""):
         body["has_focus"] = isinstance(payload.get("focus"), dict)
     elif action_type == "click":
         body["button"] = str(payload.get("button", "left"))[:24]
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
+    elif action_type == "drag":
+        body["start_x"] = round(_clamp_ratio(payload.get("start_x", 0.0)), 4)
+        body["start_y"] = round(_clamp_ratio(payload.get("start_y", 0.0)), 4)
+        body["end_x"] = round(_clamp_ratio(payload.get("end_x", 0.0)), 4)
+        body["end_y"] = round(_clamp_ratio(payload.get("end_y", 0.0)), 4)
+    elif action_type in ("drag_start", "drag_move", "drag_end"):
+        body["drag_id"] = str(payload.get("drag_id", ""))[:128]
         body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
         body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
     elif action_type == "scroll":
@@ -1229,9 +1501,11 @@ class RepoUpdateTracker:
 
 
 class SessionLinkStore:
-    def __init__(self):
+    def __init__(self, max_entries=DEFAULT_SESSION_LINK_MAX_ENTRIES):
         self._lock = threading.Lock()
         self._sessions = {}
+        self._protected_tokens = set()
+        self._max_entries = max(8, int(max_entries))
 
     def _cleanup_locked(self, now):
         expired_tokens = [
@@ -1241,6 +1515,21 @@ class SessionLinkStore:
         ]
         for token in expired_tokens:
             self._sessions.pop(token, None)
+            self._protected_tokens.discard(token)
+        overflow = len(self._sessions) - self._max_entries
+        if overflow > 0:
+            oldest = sorted(
+                (
+                    item
+                    for item in self._sessions.items()
+                    if item[0] not in self._protected_tokens
+                ),
+                key=lambda item: float(
+                    item[1].get("last_seen") or item[1].get("created_at") or 0.0
+                ),
+            )
+            for token, _ in oldest[:overflow]:
+                self._sessions.pop(token, None)
 
     def _snapshot_locked(self, session, *, include_token=False, now=None):
         current = now or time.time()
@@ -1260,7 +1549,7 @@ class SessionLinkStore:
             payload["token"] = session["token"]
         return payload
 
-    def create(self, ttl_seconds, *, label="phone-client"):
+    def create(self, ttl_seconds, *, label="phone-client", protected=False):
         ttl_seconds = None if ttl_seconds in (None, 0, "", False) else max(300, int(ttl_seconds))
         duration_minutes = 0 if ttl_seconds is None else max(5, int(ttl_seconds // 60))
         now = time.time()
@@ -1276,6 +1565,9 @@ class SessionLinkStore:
         with self._lock:
             self._cleanup_locked(now)
             self._sessions[token] = session
+            if protected:
+                self._protected_tokens = {token}
+            self._cleanup_locked(now)
             return self._snapshot_locked(session, include_token=True, now=now)
 
     def consume(self, token):
@@ -1290,12 +1582,31 @@ class SessionLinkStore:
             session["last_seen"] = now
             return self._snapshot_locked(session, include_token=True, now=now)
 
+    def count(self):
+        now = time.time()
+        with self._lock:
+            self._cleanup_locked(now)
+            return len(self._sessions)
+
 
 class TrustedDeviceStore:
-    def __init__(self, storage_path):
+    def __init__(
+        self,
+        storage_path,
+        *,
+        max_entries=DEFAULT_TRUSTED_DEVICE_MAX_ENTRIES,
+        stale_days=DEFAULT_TRUSTED_DEVICE_STALE_DAYS,
+        persist_interval=DEFAULT_TRUSTED_DEVICE_PERSIST_SEC,
+    ):
         self.storage_path = Path(storage_path)
         self._lock = threading.Lock()
+        self._max_entries = max(8, int(max_entries))
+        self._stale_seconds = max(86400, int(stale_days) * 86400)
+        self._persist_interval = max(30, int(persist_interval))
         self._devices = self._load()
+        with self._lock:
+            if self._cleanup_locked(time.time()):
+                self._save_locked()
 
     def _load(self):
         try:
@@ -1308,10 +1619,37 @@ class TrustedDeviceStore:
 
     def _save_locked(self):
         self.storage_path.parent.mkdir(parents=True, exist_ok=True)
-        self.storage_path.write_text(
+        temp_path = self.storage_path.with_suffix(self.storage_path.suffix + ".tmp")
+        temp_path.write_text(
             json.dumps(self._devices, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        os.replace(temp_path, self.storage_path)
+
+    def _cleanup_locked(self, now):
+        changed = False
+        cutoff = now - self._stale_seconds
+        stale_tokens = [
+            token
+            for token, device in self._devices.items()
+            if float(device.get("last_seen") or device.get("created_at") or 0.0) < cutoff
+        ]
+        for token in stale_tokens:
+            self._devices.pop(token, None)
+            changed = True
+
+        overflow = len(self._devices) - self._max_entries
+        if overflow > 0:
+            oldest = sorted(
+                self._devices.items(),
+                key=lambda item: float(
+                    item[1].get("last_seen") or item[1].get("created_at") or 0.0
+                ),
+            )
+            for token, _ in oldest[:overflow]:
+                self._devices.pop(token, None)
+                changed = True
+        return changed
 
     def _snapshot_locked(self, device, *, include_token=False, now=None):
         current = now or time.time()
@@ -1332,7 +1670,10 @@ class TrustedDeviceStore:
         return payload
 
     def count(self):
+        now = time.time()
         with self._lock:
+            if self._cleanup_locked(now):
+                self._save_locked()
             return len(self._devices)
 
     def create(self, *, label="Guvenilir Cihaz", user_agent=""):
@@ -1347,6 +1688,7 @@ class TrustedDeviceStore:
         }
         with self._lock:
             self._devices[token] = device
+            self._cleanup_locked(now)
             self._save_locked()
             return self._snapshot_locked(device, include_token=True, now=now)
 
@@ -1355,11 +1697,16 @@ class TrustedDeviceStore:
             return None
         now = time.time()
         with self._lock:
+            cleaned = self._cleanup_locked(now)
             device = self._devices.get(token)
             if not device:
+                if cleaned:
+                    self._save_locked()
                 return None
+            previous_seen = float(device.get("last_seen") or 0.0)
             device["last_seen"] = now
-            self._save_locked()
+            if cleaned or now - previous_seen >= self._persist_interval:
+                self._save_locked()
             return self._snapshot_locked(device, include_token=True, now=now)
 
 
@@ -1595,6 +1942,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         ).strip()
 
     def _is_local_request(self):
+        if self.headers.get("CF-Connecting-IP") or self.headers.get("X-Forwarded-For"):
+            return False
         try:
             return ipaddress.ip_address(self.client_address[0]).is_loopback
         except Exception:
@@ -1661,14 +2010,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         }
 
     def _build_link_payload(self, session):
-        request_host = self.headers.get("Host") or f"{_get_local_ip()}:{self.server.server_port}"
+        request_host = self.headers.get("Host") or f"{LOCAL_HOST}:{self.server.control_port}"
         lan_ips = _get_local_ipv4_candidates()
         lan_urls = [
-            _build_app_url(ip, self.server.server_port, session["token"])
+            _build_app_url(ip, self.server.app_port, session["token"])
             for ip in lan_ips
         ]
-        lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.server_port, session["token"])
-        local_url = _build_app_url(LOCAL_HOST, self.server.server_port, session["token"])
+        lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), self.server.app_port, session["token"])
+        local_url = _build_app_url(LOCAL_HOST, self.server.control_port, session["token"])
         public_url = self.server.get_public_url(validate=True)
         wan_url = _build_app_url_from_base(public_url, session["token"])
         return {
@@ -1784,6 +2133,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "status": "ok",
                     "client": "phone-bridge",
                     "transport": "http",
+                    "control_port": self.server.control_port,
+                    "lan_port": self.server.app_port,
+                    "lan_available": self.server.lan_available,
+                    "lan_error": self.server.lan_error,
                     "screen": f"{screen['width']}x{screen['height']}" if screen["available"] else "unavailable",
                     "screen_width": screen["width"],
                     "screen_height": screen["height"],
@@ -1795,7 +2148,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "capture_last_success_at": capture["capture_last_success_at"],
                     "capture_last_width": capture["capture_last_width"],
                     "capture_last_height": capture["capture_last_height"],
+                    "capture_count": capture["capture_count"],
                     "capture_retry_after": capture["capture_retry_after"],
+                    "capture_current_rss_mb": capture["capture_current_rss_mb"],
+                    "capture_max_rss_mb": capture["capture_max_rss_mb"],
                     "keep_awake_enabled": keep_awake["enabled"],
                     "keep_awake_active": keep_awake["active"],
                     "keep_awake_error": keep_awake["error"],
@@ -1810,6 +2166,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     "default_duration_text": "Sinirsiz" if self.server.default_session_minutes <= 0 else _format_ttl(self.server.default_session_minutes * 60),
                     "lan_ips": lan_ips,
                     "trusted_devices": self.server.trusted_devices.count(),
+                    "session_links": self.server.session_links.count(),
                     "pairing_local_only": True,
                     "public_url": tunnel_snapshot.get("public_url", ""),
                     "public_tunnel_enabled": tunnel_snapshot.get("enabled", False),
@@ -1953,11 +2310,13 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            query = self._query()
             quality, max_width = _parse_stream_params(
-                self._query(), self.server.screenshot_quality, self.server.max_width
+                query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
             try:
-                payload = _capture_payload(quality, max_width)
+                payload = _capture_payload(quality, max_width, sharpen=sharpen)
             except CaptureUnavailable as exc:
                 _record_capture_error(exc)
                 logger.warning("Phone bridge screenshot unavailable: %s", _redact_capture_error(exc))
@@ -1998,6 +2357,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             quality, max_width = _parse_stream_params(
                 query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
 
             deadline = time.time() + 15.0
             tick = 0.12
@@ -2015,7 +2375,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         if signature != since:
                             screen_width, screen_height = raw.size
                             _record_capture_success(screen_width, screen_height)
-                            image = _scale_to_width(_draw_cursor(raw), max_width)
+                            image = _scale_to_width(
+                                _draw_cursor(raw),
+                                max_width,
+                                sharpen=sharpen,
+                            )
                             jpeg = _encode_jpeg(image, quality)
                             self.send_response(HTTPStatus.OK)
                             self.send_header("Content-Type", "image/jpeg")
@@ -2103,6 +2467,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             quality, max_width = _parse_stream_params(
                 query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
             try:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/octet-stream")
@@ -2169,13 +2534,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                             # smaller, lower-quality frames so they don't saturate the
                             # uplink/tunnel and stutter; restore full detail the instant it
                             # settles. Pixels dominate bandwidth, so trim width too.
-                            if high_motion:
+                            if high_motion and not sharpen:
                                 encode_quality = max(28, quality - 24)
                                 encode_width = max(720, (max_width * 7) // 10)
                             else:
                                 encode_quality = quality
                                 encode_width = max_width
-                            image = _scale_to_width(_draw_cursor(raw), encode_width)
+                            image = _scale_to_width(
+                                _draw_cursor(raw),
+                                encode_width,
+                                sharpen=sharpen,
+                            )
                             last_jpeg = _encode_jpeg(image, encode_quality)
                             last_sig = signature
                             frame_count += 1
@@ -2277,12 +2646,16 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 return
             label = str(payload.get("label", "pair-qr")).strip()[:80] or "pair-qr"
             ttl_seconds = None if minutes <= 0 else minutes * 60
-            session = self.server.session_links.create(ttl_seconds, label=label)
+            session = self.server.session_links.create(
+                ttl_seconds,
+                label=label,
+                protected=True,
+            )
             self.server.startup_session = session
             lan_ips = _get_local_ipv4_candidates()
             self.server.startup_link = _build_app_url(
                 lan_ips[0] if lan_ips else _get_local_ip(),
-                self.server.server_port,
+                self.server.app_port,
                 session["token"],
             )
             self._json_response(
@@ -2365,7 +2738,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         action_type = payload.get("type", "")
-        if action_type not in ("click", "scroll", "key", "type", "refresh"):
+        if action_type not in (
+            "click",
+            "drag",
+            "drag_start",
+            "drag_move",
+            "drag_end",
+            "scroll",
+            "key",
+            "type",
+            "refresh",
+        ):
             self._json_response(
                 {
                     "status": "bad_request",
@@ -2384,7 +2767,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             self._json_response(cached_response)
             return
         action_audit = _action_audit_payload(action_type, payload, request_id=request_id)
-        record_runtime_event("phone_bridge_action_received", **action_audit)
+        log_action = action_type != "drag_move"
+        if log_action:
+            record_runtime_event("phone_bridge_action_received", **action_audit)
 
         try:
             # Parse delay inside the try so the except path below releases the
@@ -2400,6 +2785,32 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("x", 0.0),
                     payload.get("y", 0.0),
                     payload.get("button", "left"),
+                )
+            elif action_type == "drag":
+                _perform_drag(
+                    payload.get("start_x", 0.0),
+                    payload.get("start_y", 0.0),
+                    payload.get("end_x", 0.0),
+                    payload.get("end_y", 0.0),
+                    payload.get("duration", 0.35),
+                )
+            elif action_type == "drag_start":
+                self.server.drag_controller.start(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
+                )
+            elif action_type == "drag_move":
+                self.server.drag_controller.move(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
+                )
+            elif action_type == "drag_end":
+                self.server.drag_controller.end(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
                 )
             elif action_type == "scroll":
                 _perform_scroll(
@@ -2422,6 +2833,20 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
 
             if delay:
                 time.sleep(delay)
+
+            if action_type in ("drag_start", "drag_move", "drag_end"):
+                response_body = {
+                    "status": "ok",
+                    "action": action_type,
+                    "request_id": request_id,
+                    "screenshot": None,
+                }
+                if log_action:
+                    record_runtime_event("phone_bridge_action_succeeded", **action_audit)
+                if is_owner:
+                    self.server.action_dedup.complete(request_id, response_body)
+                self._json_response(response_body)
+                return
 
             refreshed_session = self.server.session_links.consume(session["token"]) or session
             handoff_token = (
@@ -2457,7 +2882,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 "repo_state": repo_state,
                 "screenshot": screenshot_payload,
             }
-            record_runtime_event("phone_bridge_action_succeeded", **action_audit)
+            if log_action:
+                record_runtime_event("phone_bridge_action_succeeded", **action_audit)
         except Exception as exc:
             logger.exception(f"Phone bridge action failed: {exc}")
             record_runtime_event(
@@ -2480,6 +2906,37 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
         self._json_response(response_body)
 
 
+class PhoneBridgeState:
+    def __init__(self, *, app_port, control_port, default_session_minutes):
+        self.app_port = int(app_port)
+        self.control_port = int(control_port)
+        self.public_tunnel = None
+        self.session_links = SessionLinkStore()
+        self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
+        self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
+        self.action_dedup = ActionDedup()
+        self.drag_controller = RemoteDragController()
+        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
+        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
+        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
+        self.stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
+        self.stream_count_lock = threading.Lock()
+        self.active_streams = 0
+        self.lan_available = False
+        self.lan_error = ""
+        self.startup_session = self.session_links.create(
+            None if default_session_minutes <= 0 else default_session_minutes * 60,
+            label="startup-phone",
+            protected=True,
+        )
+        startup_ips = _get_local_ipv4_candidates()
+        self.startup_link = _build_app_url(
+            startup_ips[0] if startup_ips else _get_local_ip(),
+            self.app_port,
+            self.startup_session["token"],
+        )
+
+
 class PhoneBridgeServer(ThreadingHTTPServer):
     def server_bind(self):
         # HTTPServer.server_bind() calls socket.getfqdn(), which can hang on
@@ -2499,6 +2956,9 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         max_width,
         poll_ms,
         default_session_minutes,
+        app_port=None,
+        control_port=None,
+        shared_state=None,
     ):
         super().__init__(server_address, handler_class)
         self.admin_token = admin_token
@@ -2506,49 +2966,75 @@ class PhoneBridgeServer(ThreadingHTTPServer):
         self.max_width = max_width
         self.poll_ms = poll_ms
         self.default_session_minutes = default_session_minutes
-        self.public_tunnel = None
-        self.session_links = SessionLinkStore()
-        self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
-        self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
-        self.action_dedup = ActionDedup()
-        self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
-        self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
-        self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
-        self._stream_slots = threading.BoundedSemaphore(self.max_stream_connections)
-        self._stream_count_lock = threading.Lock()
-        self._active_streams = 0
-        self.startup_session = self.session_links.create(
-            None if self.default_session_minutes <= 0 else self.default_session_minutes * 60,
-            label="startup-phone",
-        )
-        startup_ips = _get_local_ipv4_candidates()
-        self.startup_link = _build_app_url(
-            startup_ips[0] if startup_ips else _get_local_ip(),
-            self.server_port,
-            self.startup_session["token"],
+        self.state = shared_state or PhoneBridgeState(
+            app_port=app_port or self.server_port,
+            control_port=control_port or self.server_port,
+            default_session_minutes=self.default_session_minutes,
         )
 
+    def __getattr__(self, name):
+        shared_names = {
+            "action_dedup",
+            "app_port",
+            "control_port",
+            "drag_controller",
+            "lan_available",
+            "lan_error",
+            "max_stream_connections",
+            "public_tunnel",
+            "repo_tracker",
+            "session_links",
+            "startup_link",
+            "startup_session",
+            "stream_gc_every_frames",
+            "stream_max_seconds",
+            "trusted_devices",
+        }
+        if name in shared_names and "state" in self.__dict__:
+            return getattr(self.state, name)
+        raise AttributeError(name)
+
+    def __setattr__(self, name, value):
+        shared_names = {
+            "lan_available",
+            "lan_error",
+            "public_tunnel",
+            "startup_link",
+            "startup_session",
+        }
+        if name in shared_names and "state" in self.__dict__:
+            setattr(self.state, name, value)
+            return
+        super().__setattr__(name, value)
+
     def acquire_stream_slot(self):
-        acquired = self._stream_slots.acquire(blocking=False)
+        acquired = self.state.stream_slots.acquire(blocking=False)
         if not acquired:
             return False
-        with self._stream_count_lock:
-            self._active_streams += 1
+        with self.state.stream_count_lock:
+            self.state.active_streams += 1
         return True
 
     def release_stream_slot(self):
-        with self._stream_count_lock:
-            if self._active_streams <= 0:
+        with self.state.stream_count_lock:
+            if self.state.active_streams <= 0:
                 return
-            self._active_streams -= 1
+            self.state.active_streams -= 1
         try:
-            self._stream_slots.release()
+            self.state.stream_slots.release()
         except ValueError:
             pass
 
     def active_stream_count(self):
-        with self._stream_count_lock:
-            return self._active_streams
+        with self.state.stream_count_lock:
+            return self.state.active_streams
+
+    def server_close(self):
+        try:
+            if "state" in self.__dict__:
+                self.state.drag_controller.close()
+        finally:
+            super().server_close()
 
     def get_public_url(self, *, validate=True):
         if not self.public_tunnel:
@@ -2570,6 +3056,12 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(description="AgentCockpit phone bridge server")
     parser.add_argument("--bind", default=DEFAULT_BIND, help="Bind address")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help="HTTP port")
+    parser.add_argument(
+        "--control-port",
+        type=int,
+        default=DEFAULT_CONTROL_PORT,
+        help="Loopback-only port used by Cloudflare and internal health checks",
+    )
     parser.add_argument(
         "--admin-token",
         default=DEFAULT_ADMIN_TOKEN,
@@ -2608,19 +3100,67 @@ def build_arg_parser():
     return parser
 
 
-def run_server(bind, port, admin_token, session_minutes, quality, max_width, poll_ms, public_tunnel="auto"):
+def run_server(
+    bind,
+    port,
+    admin_token,
+    session_minutes,
+    quality,
+    max_width,
+    poll_ms,
+    public_tunnel="auto",
+    control_port=DEFAULT_CONTROL_PORT,
+):
     install_diagnostics_hooks("phone_bridge")
     server = PhoneBridgeServer(
-        (bind, port),
+        (LOCAL_HOST, control_port),
         PhoneBridgeHandler,
         admin_token=admin_token,
         screenshot_quality=max(20, min(95, quality)),
         max_width=max(640, max_width),
         poll_ms=max(500, poll_ms),
         default_session_minutes=int(session_minutes),
+        app_port=port,
+        control_port=control_port,
     )
+    lan_server = None
+    lan_thread = None
+    if bind == LOCAL_HOST and port == control_port:
+        server.lan_available = True
+    else:
+        try:
+            lan_server = PhoneBridgeServer(
+                (bind, port),
+                PhoneBridgeHandler,
+                admin_token=admin_token,
+                screenshot_quality=max(20, min(95, quality)),
+                max_width=max(640, max_width),
+                poll_ms=max(500, poll_ms),
+                default_session_minutes=int(session_minutes),
+                shared_state=server.state,
+            )
+            lan_thread = threading.Thread(
+                target=lan_server.serve_forever,
+                name="agentcockpit-lan-bridge",
+                daemon=True,
+            )
+            lan_thread.start()
+            server.lan_available = True
+        except OSError as exc:
+            server.lan_error = str(exc)
+            logger.warning(
+                "LAN portu kullanilamiyor; WAN kontrol portu calismaya devam edecek: %s",
+                exc,
+            )
     start_diagnostics_heartbeat("phone_bridge", extra_snapshot=lambda: _diagnostic_snapshot(server))
-    record_runtime_event("phone_bridge_server_created", bind=bind, port=port)
+    record_runtime_event(
+        "phone_bridge_server_created",
+        bind=bind,
+        port=port,
+        control_port=control_port,
+        lan_available=server.lan_available,
+        lan_error=server.lan_error,
+    )
 
     lan_ips = _get_local_ipv4_candidates()
     startup_session = server.startup_session
@@ -2629,9 +3169,9 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         for ip in lan_ips
     ]
     lan_url = lan_urls[0] if lan_urls else _build_app_url(_get_local_ip(), port, startup_session["token"])
-    localhost_url = _build_app_url(LOCAL_HOST, port, startup_session["token"])
+    localhost_url = _build_app_url(LOCAL_HOST, control_port, startup_session["token"])
     server.public_tunnel = start_public_tunnel(
-        f"http://{LOCAL_HOST}:{port}",
+        f"http://{LOCAL_HOST}:{control_port}",
         mode=public_tunnel,
     )
     _start_keep_awake()
@@ -2655,7 +3195,7 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
     logger.info("Phone admin token: <redacted>")
     logger.info(f"Phone runtime token file: {get_runtime_paths()['admin_token_file']}")
     print("AgentCockpit phone bridge hazir.")
-    print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{port}/pair")
+    print(f"Pairing Dashboard (this PC): http://{LOCAL_HOST}:{control_port}/pair")
     print(f"LAN URL ({startup_session['expires_in_text']}): {_stdout_secret(lan_url)}")
     if len(lan_urls) > 1:
         for index, alt_url in enumerate(lan_urls[1:], start=2):
@@ -2696,6 +3236,11 @@ def run_server(bind, port, admin_token, session_minutes, quality, max_width, pol
         record_runtime_event("phone_bridge_stopping")
         if server.public_tunnel:
             server.public_tunnel.stop()
+        if lan_server:
+            lan_server.shutdown()
+            lan_server.server_close()
+        if lan_thread:
+            lan_thread.join(timeout=2)
         server.server_close()
         record_runtime_event("phone_bridge_stopped")
 
@@ -2711,6 +3256,7 @@ def main():
         max_width=args.max_width,
         poll_ms=args.poll_ms,
         public_tunnel=args.public_tunnel,
+        control_port=args.control_port,
     )
 
 

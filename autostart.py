@@ -138,7 +138,8 @@ def _mac_screen_executable() -> Path | None:
 
 
 def _mac_program_arguments(python_exe: Path, main_py: Path):
-    return [str(python_exe), str(main_py), "--autostart"]
+    guard_py = main_py.parent / "macos_autostart_guard.py"
+    return [str(python_exe), str(guard_py), str(python_exe), str(main_py), "--autostart"]
 
 
 def _quit_mac_screen_session():

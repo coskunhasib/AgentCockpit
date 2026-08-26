@@ -71,7 +71,6 @@
       display: block;
       touch-action: none;
       transform-origin: center center;
-      will-change: transform;
     }
 
     /* Capture beklemedeyken donmus son kare canli goruntu sanilmasin. */
@@ -959,8 +958,8 @@
       <button class="key-btn" data-key="winleft+d">Desktop</button>
     </div>
     <div class="key-row">
-      <button class="key-btn" data-key="ctrlleft+left">Ekran Sol</button>
-      <button class="key-btn" data-key="ctrlleft+right">Ekran Sag</button>
+      <button class="key-btn" data-key="mac_control+left">Ekran Sol</button>
+      <button class="key-btn" data-key="mac_control+right">Ekran Sag</button>
     </div>
   </div>
 
@@ -1012,6 +1011,10 @@
       let publicUrl = '{{PUBLIC_URL}}';
       let wanUrl = '{{WAN_URL}}';
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
+      const MIN_STREAM_WIDTH = 1920;
+      const MIN_HD_STREAM_WIDTH = 2560;
+      const MAX_STREAM_WIDTH = 4096;
+      const DRAG_TARGET_STEP_PX = 24;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
       const POLL_LABELS = {
         live: 'HD',
@@ -1111,15 +1114,19 @@
       let serverPollMs = DEFAULT_POLL_MS;
       let pollMode = localStorage.getItem(STORAGE_KEYS.pollMode) || 'balanced';
       let pollTimer = null;
+      let autoFitResizeTimer = null;
       let usageHintTimer = null;
       let topbarHideTimer = null;
       let scrollRequestInFlight = false;
       let pendingScrollPayload = null;
       let lastTapTime = 0;
       let lastTapX = 0;
+      let lastTapY = 0;
       let lastTextTarget = null;
       let longPressTimer = null;
       let gesture = null;
+      let mouseGesture = null;
+      let remoteDrag = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
       let statusExpanded = true;
       let sensitiveTyping = false;
@@ -1397,13 +1404,13 @@
         );
         // Ayni upstream commit icin istem bir kez gosterilir; canUpdate degisirse
         // (ornegin yerel degisiklikler commit'lenince) teklif yeniden sunulur.
-        const offerSignature = nextState.updateAvailable && nextState.upstreamSha
-          ? `${nextState.upstreamSha}:${nextState.canUpdate ? 'auto' : 'manual'}`
+        const offerSignature = nextState.updateAvailable && nextState.canUpdate && nextState.upstreamSha
+          ? `${nextState.upstreamSha}:auto`
           : '';
 
         repoState = nextState;
 
-        if (!repoState.updateAvailable) {
+        if (!repoState.updateAvailable || !repoState.canUpdate) {
           lastRepoOfferSignature = '';
           setDismissedRepoOffer('');
           if (isRepoPromptVisible() && repoPromptState.mode === 'update') {
@@ -1431,17 +1438,6 @@
             ? `${summary ? `${summary} - ` : ''}${nextState.upstreamSubject}`
             : (summary || 'Yeni repo guncellemesi hazir.');
           showRepoPrompt('Repo guncellemesi hazir', detail, { mode: 'update', notify: true });
-          return;
-        }
-
-        if (offerChanged && !repoState.canUpdate) {
-          lastRepoOfferSignature = offerSignature;
-          const reason = payload.repo_state.tracked_dirty
-            ? 'Yerel degisiklikler yuzunden otomatik cekemiyorum.'
-            : (Number(payload.repo_state.ahead_count) > 0
-              ? 'Yerel branch remote ile ayrismis. Elle birlestirme gerekiyor.'
-              : 'Bu guncelleme icin otomatik cekme uygun degil.');
-          showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });
           return;
         }
 
@@ -1577,6 +1573,9 @@
 
       function updateSpeedButton() {
         btnSpeed.textContent = POLL_LABELS[pollMode];
+        const profile = qualityProfile();
+        btnSpeed.title = `Aktif kalite: ${POLL_LABELS[pollMode]} (${profile.width}px, q${profile.quality})`;
+        btnSpeed.setAttribute('aria-label', `${btnSpeed.title}. Degistirmek icin tikla.`);
         btnSpeed.classList.toggle('active', pollMode !== 'balanced');
       }
 
@@ -1649,6 +1648,9 @@
         }
         if (frameWidth) {
           parts.push(`Kare: ${frameWidth}px`);
+        }
+        if (screenTransform.scale > 1.02) {
+          parts.push(`Zoom: ${screenTransform.scale.toFixed(1)}x`);
         }
         parts.push(`Mod: ${POLL_LABELS[pollMode]}`);
         parts.push(isWanOrigin() ? 'Uzak' : 'Yerel');
@@ -2039,14 +2041,23 @@
         }
       }
 
-      function qualityQuery() {
+      function qualityProfile() {
         if (pollMode === 'eco') {
-          return ['q=40', 'w=960'];      // smallest/fastest for slow or mobile links
+          return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };
         }
         if (pollMode === 'live') {
-          return ['q=62', 'w=2560'];     // HD: keeps detail when zooming (heavier)
+          return {
+            quality: 90,
+            width: Math.max(MIN_HD_STREAM_WIDTH, autoFitWidth(1.5)),
+            sharp: 1
+          };
         }
-        return [];                        // balanced -> server default (1600)
+        return { quality: 75, width: autoFitWidth(1), sharp: 1 };
+      }
+
+      function qualityQuery() {
+        const profile = qualityProfile();
+        return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];
       }
 
       function withParams(base, parts) {
@@ -2494,6 +2505,112 @@
         }
       }
 
+      function wakeRemoteDrag(state) {
+        if (state && state.wake) {
+          const wake = state.wake;
+          state.wake = null;
+          wake();
+        }
+      }
+
+      async function sendRemoteDragPhase(state, phase, point) {
+        return sendActionRequest(
+          {
+            type: `drag_${phase}`,
+            drag_id: state.id,
+            x: point.x,
+            y: point.y,
+            request_id: nextRequestId(),
+            no_screenshot: true,
+            delay: 0
+          },
+          { timeoutMs: 5000, retries: 1 }
+        );
+      }
+
+      function beginRemoteDrag(startPoint) {
+        if (remoteDrag) {
+          finishRemoteDrag(remoteDrag.lastPoint);
+        }
+        const state = {
+          id: `${clientNonce}-drag-${nextRequestId()}`,
+          lastPoint: startPoint,
+          lastQueuedPoint: startPoint,
+          pendingPoint: null,
+          finalPoint: null,
+          wake: null
+        };
+        remoteDrag = state;
+        boostLiveWindow(5000);
+        state.task = (async () => {
+          try {
+            await sendRemoteDragPhase(state, 'start', startPoint);
+            for (;;) {
+              if (state.pendingPoint) {
+                const nextPoint = state.pendingPoint;
+                state.pendingPoint = null;
+                await sendRemoteDragPhase(state, 'move', nextPoint);
+                continue;
+              }
+              if (state.finalPoint) {
+                await sendRemoteDragPhase(state, 'end', state.finalPoint);
+                break;
+              }
+              await new Promise((resolve) => {
+                state.wake = resolve;
+              });
+            }
+          } catch (error) {
+            try {
+              await sendRemoteDragPhase(state, 'end', state.finalPoint || state.lastPoint);
+            } catch (_) {
+              // The server-side timeout is the final safety net for a lost link.
+            }
+            showToast(`Surukleme tamamlanamadi · ${error.message || 'baglanti hatasi'}`, 'err');
+          } finally {
+            if (remoteDrag === state) {
+              remoteDrag = null;
+            }
+          }
+        })();
+        return state;
+      }
+
+      function remoteDragDistancePx(fromPoint, toPoint) {
+        const width = Math.max(1, screenInfo.width || screenEl.naturalWidth || 1);
+        const height = Math.max(1, screenInfo.height || screenEl.naturalHeight || 1);
+        return Math.hypot(
+          (toPoint.x - fromPoint.x) * width,
+          (toPoint.y - fromPoint.y) * height
+        );
+      }
+
+      function updateRemoteDrag(point, force = false) {
+        if (!remoteDrag || !point) {
+          return;
+        }
+        remoteDrag.lastPoint = point;
+        if (
+          !force
+          && remoteDragDistancePx(remoteDrag.lastQueuedPoint, point) < DRAG_TARGET_STEP_PX
+        ) {
+          return;
+        }
+        remoteDrag.lastQueuedPoint = point;
+        remoteDrag.pendingPoint = point;
+        wakeRemoteDrag(remoteDrag);
+      }
+
+      function finishRemoteDrag(point) {
+        if (!remoteDrag) {
+          return;
+        }
+        remoteDrag.lastPoint = point || remoteDrag.lastPoint;
+        updateRemoteDrag(remoteDrag.lastPoint, true);
+        remoteDrag.finalPoint = remoteDrag.lastPoint;
+        wakeRemoteDrag(remoteDrag);
+      }
+
       async function runAction(job) {
         const { payload, feedback } = job;
         boostLiveWindow();
@@ -2552,7 +2669,12 @@
         }, true);
         document.addEventListener('pointerup', clearPressed, true);
         document.addEventListener('pointercancel', clearPressed, true);
-        window.addEventListener('blur', clearPressed);
+        window.addEventListener('blur', () => {
+          clearPressed();
+          if (remoteDrag) {
+            finishRemoteDrag(remoteDrag.lastPoint);
+          }
+        });
       }
 
       async function postScrollAction(payload) {
@@ -2671,13 +2793,39 @@
         return Math.max(min, Math.min(max, value));
       }
 
+      function containedScreenSize() {
+        const viewerRect = viewer.getBoundingClientRect();
+        const viewerWidth = Math.max(1, viewerRect.width);
+        const viewerHeight = Math.max(1, viewerRect.height);
+        const sourceWidth = screenEl.naturalWidth || screenInfo.width || viewerWidth;
+        const sourceHeight = screenEl.naturalHeight || screenInfo.height || viewerHeight;
+        const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
+        const viewerRatio = viewerWidth / viewerHeight;
+        if (sourceRatio >= viewerRatio) {
+          return {
+            width: viewerWidth,
+            height: viewerWidth / sourceRatio
+          };
+        }
+        return {
+          width: viewerHeight * sourceRatio,
+          height: viewerHeight
+        };
+      }
+
+      function autoFitWidth(multiplier = 1) {
+        const base = containedScreenSize();
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const targetPhysicalWidth = base.width * dpr * multiplier;
+        return Math.round(clamp(targetPhysicalWidth, MIN_STREAM_WIDTH, MAX_STREAM_WIDTH));
+      }
+
       function clampScreenTransform(transform = screenTransform) {
         const scale = clamp(transform.scale || 1, 1, 4);
         const viewerRect = viewer.getBoundingClientRect();
-        const baseWidth = screenEl.offsetWidth || viewerRect.width || 1;
-        const baseHeight = screenEl.offsetHeight || viewerRect.height || 1;
-        const maxPanX = Math.max(0, (baseWidth * scale - viewerRect.width) / 2);
-        const maxPanY = Math.max(0, (baseHeight * scale - viewerRect.height) / 2);
+        const base = containedScreenSize();
+        const maxPanX = Math.max(0, (base.width * scale - viewerRect.width) / 2);
+        const maxPanY = Math.max(0, (base.height * scale - viewerRect.height) / 2);
         return {
           scale,
           panX: scale <= 1 ? 0 : clamp(transform.panX || 0, -maxPanX, maxPanX),
@@ -2687,7 +2835,12 @@
 
       function applyScreenTransform(nextTransform = screenTransform) {
         screenTransform = clampScreenTransform(nextTransform);
-        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0) scale(${screenTransform.scale})`;
+        const base = containedScreenSize();
+        screenEl.style.maxWidth = 'none';
+        screenEl.style.maxHeight = 'none';
+        screenEl.style.width = `${base.width * screenTransform.scale}px`;
+        screenEl.style.height = `${base.height * screenTransform.scale}px`;
+        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;
       }
 
       function isScreenZoomed() {
@@ -2743,8 +2896,13 @@
           type: 'touch',
           x: touch.clientX,
           y: touch.clientY,
+          currentX: touch.clientX,
+          currentY: touch.clientY,
           startedAt: Date.now(),
           moved: false,
+          localPan: false,
+          actionSent: false,
+          remoteStarted: false,
           lastScrollX: touch.clientX,
           lastScrollY: touch.clientY
         };
@@ -2760,6 +2918,7 @@
               { type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 },
               { marker }
             );
+            gesture.actionSent = true;
           }
           longPressTimer = null;
         }, 520);
@@ -2791,6 +2950,8 @@
         }
 
         const touch = event.touches[0];
+        gesture.currentX = touch.clientX;
+        gesture.currentY = touch.clientY;
         const dx = Math.abs(touch.clientX - gesture.x);
         const dy = Math.abs(touch.clientY - gesture.y);
         if (dx > 10 || dy > 10) {
@@ -2799,6 +2960,7 @@
         }
 
         if (!scrollMode && isScreenZoomed()) {
+          gesture.localPan = true;
           const stepX = touch.clientX - gesture.lastScrollX;
           const stepY = touch.clientY - gesture.lastScrollY;
           applyScreenTransform({
@@ -2812,6 +2974,14 @@
         }
 
         if (!scrollMode) {
+          if (gesture.moved && !gesture.actionSent) {
+            const coords = getRatios(touch.clientX, touch.clientY);
+            if (!gesture.remoteStarted) {
+              beginRemoteDrag(getRatios(gesture.x, gesture.y));
+              gesture.remoteStarted = true;
+            }
+            updateRemoteDrag(coords);
+          }
           return;
         }
 
@@ -2847,8 +3017,13 @@
               type: 'touch',
               x: touch.clientX,
               y: touch.clientY,
+              currentX: touch.clientX,
+              currentY: touch.clientY,
               startedAt: Date.now(),
               moved: true,
+              localPan: true,
+              actionSent: false,
+              remoteStarted: false,
               lastScrollX: touch.clientX,
               lastScrollY: touch.clientY
             };
@@ -2870,9 +3045,23 @@
           return;
         }
 
-        if (!gesture.moved && duration < 520) {
+        if (gesture.moved && !gesture.localPan && !gesture.actionSent) {
+          const changedTouch = event.changedTouches && event.changedTouches[0];
+          const endX = changedTouch ? changedTouch.clientX : gesture.currentX;
+          const endY = changedTouch ? changedTouch.clientY : gesture.currentY;
+          const endCoords = getRatios(endX, endY);
+          const marker = spawnTapMarker(endX, endY, 'left');
+          if (!gesture.remoteStarted) {
+            beginRemoteDrag(coords);
+          }
+          updateRemoteDrag(endCoords);
+          finishRemoteDrag(endCoords);
+          setMarkerState(marker, 'ok');
+        } else if (!gesture.moved && !gesture.actionSent && duration < 520) {
           const now = Date.now();
-          const isDouble = now - lastTapTime < 320 && Math.abs(gesture.x - lastTapX) < 30;
+          const isDouble = now - lastTapTime < 320
+            && Math.abs(gesture.x - lastTapX) < 30
+            && Math.abs(gesture.y - lastTapY) < 30;
           const marker = spawnTapMarker(gesture.x, gesture.y, isDouble ? 'double' : 'left');
           rememberTextTarget(coords);
           enqueueAction(
@@ -2887,6 +3076,7 @@
           );
           lastTapTime = now;
           lastTapX = gesture.x;
+          lastTapY = gesture.y;
         }
         gesture = null;
       }
@@ -2894,9 +3084,152 @@
       function onTouchCancel(event) {
         if (gesture) {
           event.preventDefault();
+          if (gesture.remoteStarted) {
+            finishRemoteDrag(getRatios(gesture.currentX, gesture.currentY));
+          }
         }
         clearLongPressTimer();
         gesture = null;
+      }
+
+      function onMousePointerDown(event) {
+        if (event.pointerType !== 'mouse' || event.button !== 0) {
+          return;
+        }
+        event.preventDefault();
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        mouseGesture = {
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          currentX: event.clientX,
+          currentY: event.clientY,
+          startCoords: coords,
+          startedAt: Date.now(),
+          moved: false,
+          remoteStarted: false
+        };
+        try {
+          screenEl.setPointerCapture(event.pointerId);
+        } catch (_) {
+          // Pointer capture is optional; in-window drags still work without it.
+        }
+      }
+
+      function onMousePointerMove(event) {
+        if (!mouseGesture || event.pointerType !== 'mouse' || event.pointerId !== mouseGesture.pointerId) {
+          return;
+        }
+        event.preventDefault();
+        mouseGesture.currentX = event.clientX;
+        mouseGesture.currentY = event.clientY;
+        if (
+          Math.abs(event.clientX - mouseGesture.x) > 5
+          || Math.abs(event.clientY - mouseGesture.y) > 5
+        ) {
+          mouseGesture.moved = true;
+        }
+        if (mouseGesture.moved) {
+          const coords = getRatios(event.clientX, event.clientY);
+          if (!mouseGesture.remoteStarted) {
+            beginRemoteDrag(mouseGesture.startCoords);
+            mouseGesture.remoteStarted = true;
+          }
+          updateRemoteDrag(coords);
+        }
+      }
+
+      function onMousePointerUp(event) {
+        if (!mouseGesture || event.pointerType !== 'mouse' || event.pointerId !== mouseGesture.pointerId) {
+          return;
+        }
+        event.preventDefault();
+        const activeGesture = mouseGesture;
+        mouseGesture = null;
+        try {
+          screenEl.releasePointerCapture(event.pointerId);
+        } catch (_) {
+          // The browser can release capture automatically before this handler.
+        }
+
+        const coords = getRatios(event.clientX, event.clientY);
+        if (activeGesture.moved) {
+          const marker = spawnTapMarker(event.clientX, event.clientY, 'left');
+          if (!activeGesture.remoteStarted) {
+            beginRemoteDrag(activeGesture.startCoords);
+          }
+          updateRemoteDrag(coords);
+          finishRemoteDrag(coords);
+          setMarkerState(marker, 'ok');
+          return;
+        }
+
+        if (!coords.inBounds) {
+          return;
+        }
+
+        const now = Date.now();
+        const isDouble = now - lastTapTime < 320
+          && Math.abs(event.clientX - lastTapX) < 30
+          && Math.abs(event.clientY - lastTapY) < 30;
+        const marker = spawnTapMarker(event.clientX, event.clientY, isDouble ? 'double' : 'left');
+        rememberTextTarget(coords);
+        enqueueAction(
+          {
+            type: 'click',
+            x: coords.x,
+            y: coords.y,
+            button: isDouble ? 'double' : 'left',
+            delay: isDouble ? 0.24 : 0.18
+          },
+          { marker }
+        );
+        lastTapTime = now;
+        lastTapX = event.clientX;
+        lastTapY = event.clientY;
+      }
+
+      function onMousePointerCancel(event) {
+        if (mouseGesture && event.pointerId === mouseGesture.pointerId) {
+          if (mouseGesture.remoteStarted) {
+            finishRemoteDrag(getRatios(mouseGesture.currentX, mouseGesture.currentY));
+          }
+          mouseGesture = null;
+        }
+      }
+
+      function onMouseContextMenu(event) {
+        event.preventDefault();
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        const marker = spawnTapMarker(event.clientX, event.clientY, 'right');
+        enqueueAction(
+          { type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 },
+          { marker }
+        );
+      }
+
+      function onMouseWheel(event) {
+        const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        event.preventDefault();
+        let distance = event.deltaY;
+        if (event.deltaMode === 1) {
+          distance *= 40;
+        } else if (event.deltaMode === 2) {
+          distance *= Math.max(120, viewer.clientHeight);
+        }
+        const delta = Math.max(-1200, Math.min(1200, Math.round(-distance)));
+        if (delta) {
+          postScrollAction({ type: 'scroll', x: coords.x, y: coords.y, delta, delay: 0.02 });
+        }
       }
 
       btnRefresh.addEventListener('click', () => {
@@ -2930,7 +3263,11 @@
         pollMode = POLL_ORDER[(currentIndex + 1) % POLL_ORDER.length];
         localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
         updateSpeedButton();
-        setStatus('Baglanti hizi guncellendi', `Yeni mod: ${POLL_LABELS[pollMode]}`, connected);
+        applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
+        const profile = qualityProfile();
+        const profileText = `${POLL_LABELS[pollMode]} - ${profile.width}px, q${profile.quality}`;
+        setStatus('Goruntu kalitesi guncellendi', `Yeni mod: ${profileText}`, connected);
+        showToast(`Kalite: ${profileText}`);
         if (streamMode === 'stream') {
           restartPushStream();   // reconnect so the new quality/resolution applies
         } else if (streamMode === 'frame') {
@@ -3033,14 +3370,24 @@
         if (screenEl.naturalWidth) {
           frameWidth = screenEl.naturalWidth;
         }
+        applyScreenTransform();
       });
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
       screenEl.addEventListener('touchcancel', onTouchCancel, { passive: false });
+      screenEl.addEventListener('pointerdown', onMousePointerDown);
+      screenEl.addEventListener('pointermove', onMousePointerMove);
+      screenEl.addEventListener('pointerup', onMousePointerUp);
+      screenEl.addEventListener('pointercancel', onMousePointerCancel);
+      screenEl.addEventListener('contextmenu', onMouseContextMenu);
+      screenEl.addEventListener('wheel', onMouseWheel, { passive: false });
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
+          if (remoteDrag) {
+            finishRemoteDrag(remoteDrag.lastPoint);
+          }
           if (streamMode === 'stream' && streamAbort) {
             // Stop streaming while backgrounded to save battery/data.
             streamGeneration += 1;
@@ -3056,6 +3403,17 @@
       window.addEventListener('resize', () => {
         updateRotateHint();
         updateViewerInsets();
+        clearTimeout(autoFitResizeTimer);
+        autoFitResizeTimer = setTimeout(() => {
+          applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
+          if (streamMode === 'stream') {
+            restartPushStream();
+          } else if (streamMode === 'frame') {
+            forceFreshFramePoll();
+          } else {
+            scheduleNextPoll(0);
+          }
+        }, 250);
       });
       window.addEventListener('online', () => {
         setOfflineBanner(false);

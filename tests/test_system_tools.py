@@ -6,6 +6,40 @@ from core.system_tools import SystemOps
 
 
 class SystemToolsHotkeyTests(unittest.TestCase):
+    def test_mac_space_shortcut_uses_dock_gesture_instead_of_pyautogui(self):
+        class FakeQuartz:
+            kCGSessionEventTap = 1
+
+            def __init__(self):
+                self.integer_fields = []
+                self.double_fields = []
+                self.posts = []
+
+            def CGEventCreate(self, _):
+                return object()
+
+            def CGEventSetIntegerValueField(self, event, field, value):
+                self.integer_fields.append((event, field, value))
+
+            def CGEventSetDoubleValueField(self, event, field, value):
+                self.double_fields.append((event, field, value))
+
+            def CGEventPost(self, tap, event):
+                self.posts.append((tap, event))
+
+        fake_quartz = FakeQuartz()
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools, "_get_quartz", return_value=fake_quartz
+        ), patch.object(
+            system_tools, "_get_pyautogui", side_effect=AssertionError("pyautogui must not be used")
+        ):
+            self.assertTrue(SystemOps.execute_hotkey(["mac_control", "left"]))
+
+        self.assertIn((fake_quartz.integer_fields[0][0], 132, 1), fake_quartz.integer_fields)
+        self.assertIn((fake_quartz.integer_fields[0][0], 132, 4), fake_quartz.integer_fields)
+        self.assertIn((fake_quartz.double_fields[0][0], 124, -1.0), fake_quartz.double_fields)
+        self.assertEqual(len(fake_quartz.posts), 2)
+
     def test_mac_maps_windows_style_shortcuts_to_macos_intent(self):
         with patch.object(system_tools.sys, "platform", "darwin"):
             self.assertEqual(SystemOps.normalize_hotkey(["ctrl", "c"]), ["command", "c"])
@@ -14,6 +48,8 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["winleft", "d"]), ["command", "f3"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "right"]), ["ctrl", "right"])
+            self.assertEqual(SystemOps.normalize_hotkey(["ctrlleft", "left"]), ["ctrl", "left"])
+            self.assertEqual(SystemOps.normalize_hotkey(["ctrlright", "right"]), ["ctrl", "right"])
             self.assertEqual(
                 SystemOps.normalize_hotkey(["ctrl", "shift", "esc"]),
                 ["command", "option", "esc"],

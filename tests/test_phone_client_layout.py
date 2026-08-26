@@ -3,6 +3,35 @@ from pathlib import Path
 
 
 class PhoneClientLayoutTests(unittest.TestCase):
+    def test_hd_mode_requests_native_retina_detail(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("const MIN_HD_STREAM_WIDTH = 2560;", html)
+        self.assertIn("quality: 90,", html)
+        self.assertIn("width: Math.max(MIN_HD_STREAM_WIDTH, autoFitWidth(1.5))", html)
+        self.assertIn("return { quality: 75, width: autoFitWidth(1), sharp: 1 };", html)
+        self.assertIn("return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };", html)
+        self.assertIn("return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];", html)
+        self.assertIn("showToast(`Kalite: ${profileText}`);", html)
+
+    def test_sharp_fit_keeps_the_whole_screen_and_uses_device_pixels(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+
+        self.assertNotIn('id="btn-fit-sharp"', html)
+        self.assertIn("function autoFitWidth(multiplier = 1)", html)
+        self.assertIn("window.devicePixelRatio", html)
+        self.assertIn("const MIN_STREAM_WIDTH = 1920;", html)
+        self.assertIn("const MAX_STREAM_WIDTH = 4096;", html)
+        self.assertIn("const targetPhysicalWidth = base.width * dpr * multiplier;", html)
+        self.assertIn("clamp(targetPhysicalWidth, MIN_STREAM_WIDTH, MAX_STREAM_WIDTH)", html)
+        self.assertIn("applyScreenTransform({ scale: 1, panX: 0, panY: 0 });", html)
+        self.assertIn("autoFitResizeTimer = setTimeout", html)
+        self.assertIn("screenEl.style.width = `${base.width * screenTransform.scale}px`;", html)
+        self.assertIn("screenEl.style.height = `${base.height * screenTransform.scale}px`;", html)
+        self.assertIn("screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;", html)
+        self.assertNotIn("will-change: transform;", html)
+        self.assertNotIn("scale(${screenTransform.scale})", html)
+
     def test_viewer_uses_dynamic_offsets_and_status_dropdown(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
@@ -50,11 +79,14 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("function hideRepoPrompt(", html)
         self.assertIn("repoOfferDismissed: 'ac_phone_repo_offer_dismissed_v1'", html)
         self.assertIn("function setDismissedRepoOffer(", html)
-        self.assertIn("const offerSignature = nextState.updateAvailable && nextState.upstreamSha", html)
+        self.assertIn(
+            "const offerSignature = nextState.updateAvailable && nextState.canUpdate && nextState.upstreamSha",
+            html,
+        )
         self.assertIn("rememberOffer: repoState.updateAvailable && Boolean(repoState.upstreamSha)", html)
         self.assertNotIn("!previousState.updateAvailable ||", html)
-        self.assertIn("showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });", html)
-        self.assertIn("Yerel branch remote ile ayrismis", html)
+        self.assertNotIn("showRepoPrompt('Repo guncellemesi var', reason, { mode: 'update', notify: true });", html)
+        self.assertIn("!repoState.updateAvailable || !repoState.canUpdate", html)
         self.assertIn("if (wasDisconnected && !isRepoPromptVisible()) {", html)
         self.assertIn("event.target.closest('#repo-prompt')", html)
         self.assertIn("[toolbar, keyboardPanel, usageHint, installSheet, wanSheet]", html)
@@ -62,6 +94,30 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertIn("no_screenshot: streamMode !== 'poll'", html)
         self.assertIn("scheduleNextPoll(streamMode === 'poll' ? 240 : 0);", html)
         self.assertIn("delay: isDouble ? 0.24 : 0.18", html)
+        self.assertIn("function onMousePointerDown(event)", html)
+        self.assertIn("function onMousePointerMove(event)", html)
+        self.assertIn("function onMousePointerUp(event)", html)
+        self.assertIn("function onMousePointerCancel(event)", html)
+        self.assertIn("event.pointerType !== 'mouse'", html)
+        self.assertIn("function onMouseContextMenu(event)", html)
+        self.assertIn("function onMouseWheel(event)", html)
+        self.assertIn("type: `drag_${phase}`", html)
+        self.assertIn("const DRAG_TARGET_STEP_PX = 24;", html)
+        self.assertIn("function remoteDragDistancePx(fromPoint, toPoint)", html)
+        self.assertIn("updateRemoteDrag(remoteDrag.lastPoint, true);", html)
+        self.assertLess(
+            html.index("if (state.pendingPoint)"),
+            html.index("if (state.finalPoint)"),
+        )
+        self.assertIn("function beginRemoteDrag(startPoint)", html)
+        self.assertIn("function updateRemoteDrag(point, force = false)", html)
+        self.assertIn("function finishRemoteDrag(point)", html)
+        self.assertIn("screenEl.addEventListener('pointerdown', onMousePointerDown);", html)
+        self.assertIn("screenEl.addEventListener('pointermove', onMousePointerMove);", html)
+        self.assertIn("screenEl.addEventListener('pointerup', onMousePointerUp);", html)
+        self.assertIn("screenEl.addEventListener('pointercancel', onMousePointerCancel);", html)
+        self.assertIn("screenEl.addEventListener('contextmenu', onMouseContextMenu);", html)
+        self.assertIn("screenEl.addEventListener('wheel', onMouseWheel, { passive: false });", html)
 
 
 if __name__ == "__main__":

@@ -10,8 +10,8 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn('data-key="taskmgr-close"', html)
         self.assertIn('data-key="alt+f4"', html)
         self.assertIn('data-key="winleft+d"', html)
-        self.assertIn('data-key="ctrlleft+left"', html)
-        self.assertIn('data-key="ctrlleft+right"', html)
+        self.assertIn('data-key="mac_control+left"', html)
+        self.assertIn('data-key="mac_control+right"', html)
 
     def test_keyboard_defaults_to_visible_text_with_password_toggle(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
