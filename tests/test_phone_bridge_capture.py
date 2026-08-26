@@ -1,10 +1,11 @@
 import gc
+import io
 import os
 import sys
 import unittest
 from unittest.mock import patch
 
-from PIL import Image
+from PIL import Image, JpegImagePlugin
 
 import phone_bridge_server as bridge
 
@@ -44,6 +45,23 @@ class _ZeroSizePyAutoGui:
 
 
 class PhoneBridgeCaptureTests(unittest.TestCase):
+    def test_hd_jpeg_uses_full_chroma_for_crisp_text(self):
+        source = Image.new("RGB", (64, 64), "#102030")
+        encoded = bridge._encode_jpeg(source, quality=85)
+        decoded = Image.open(io.BytesIO(encoded))
+
+        self.assertEqual(JpegImagePlugin.get_sampling(decoded), 0)
+
+    def test_hd_stream_width_allows_native_retina_capture(self):
+        quality, width = bridge._parse_stream_params(
+            {"q": ["85"], "w": ["4096"]},
+            default_quality=55,
+            default_width=1600,
+        )
+
+        self.assertEqual(quality, 85)
+        self.assertEqual(width, 4096)
+
     def setUp(self):
         bridge._PYAUTOGUI = _CursorOnlyPyAutoGui()
         with bridge._CAPTURE_STATE_LOCK:

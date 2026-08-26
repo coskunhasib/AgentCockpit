@@ -3,6 +3,11 @@ from pathlib import Path
 
 
 class PhoneClientLayoutTests(unittest.TestCase):
+    def test_hd_mode_requests_native_retina_detail(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+
+        self.assertIn("return ['q=85', 'w=4096'];", html)
+
     def test_viewer_uses_dynamic_offsets_and_status_dropdown(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 

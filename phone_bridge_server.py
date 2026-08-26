@@ -731,9 +731,10 @@ def _draw_cursor(image):
 def _scale_to_width(image, max_width):
     if image.width > max_width:
         ratio = max_width / image.width
+        resampling = getattr(Image, "Resampling", Image)
         image = image.resize(
             (max_width, int(image.height * ratio)),
-            Image.BILINEAR,
+            resampling.LANCZOS,
         )
     return image
 
@@ -771,7 +772,16 @@ def _encode_jpeg(image, quality):
     with io.BytesIO() as buffer:
         # optimize=False trades ~10% size for a much cheaper encode, which matters
         # when frames are produced continuously for the live stream.
-        image.save(buffer, format="JPEG", quality=quality, optimize=False)
+        options = {
+            "format": "JPEG",
+            "quality": quality,
+            "optimize": False,
+        }
+        if quality >= 80:
+            # 4:4:4 keeps colored text edges crisp; Pillow's JPEG default uses
+            # chroma subsampling, which visibly softens small UI text.
+            options["subsampling"] = 0
+        image.save(buffer, **options)
         return buffer.getvalue()
 
 
@@ -816,8 +826,7 @@ def _capture_payload(quality, max_width):
 def _parse_stream_params(query, default_quality, default_width):
     """Parse optional ?q=<jpeg quality>&w=<max width> for the frame/stream endpoints.
 
-    Width is capped at 2560 so an 'HD' client mode can ask for more detail than
-    the default while still staying well under the native Retina width.
+    Width is capped at 4096 so an 'HD' client can retain native Retina detail.
     """
     try:
         requested_quality = int(query.get("q", [""])[0])
@@ -828,7 +837,7 @@ def _parse_stream_params(query, default_quality, default_width):
         requested_width = int(query.get("w", [""])[0])
     except (TypeError, ValueError):
         requested_width = default_width
-    max_width = max(640, min(2560, requested_width))
+    max_width = max(640, min(4096, requested_width))
     return quality, max_width
 
 
