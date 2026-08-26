@@ -919,7 +919,7 @@
       <button class="tool-btn" id="btn-refresh">Sync</button>
       <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
       <button class="tool-btn" id="btn-speed">Normal</button>
-      <button class="tool-btn" id="btn-pixel-zoom">Net 1:1</button>
+      <button class="tool-btn" id="btn-fit-sharp">Net Sigdir</button>
       <button class="tool-btn" id="btn-scroll">Scroll</button>
       <button class="tool-btn" id="btn-keyboard">Keyboard</button>
     </div>
@@ -1076,7 +1076,7 @@
       const btnKeyboardClose = document.getElementById('btn-keyboard-close');
       const btnRefresh = document.getElementById('btn-refresh');
       const btnSpeed = document.getElementById('btn-speed');
-      const btnPixelZoom = document.getElementById('btn-pixel-zoom');
+      const btnFitSharp = document.getElementById('btn-fit-sharp');
       const btnScroll = document.getElementById('btn-scroll');
       const btnTelegram = document.getElementById('btn-telegram');
       const btnInstall = document.getElementById('btn-install');
@@ -2048,7 +2048,7 @@
           return ['q=40', 'w=960'];      // smallest/fastest for slow or mobile links
         }
         if (pollMode === 'live') {
-          return ['q=85', 'w=4096'];     // HD: native Retina detail with crisp text
+          return ['q=85', `w=${sharpFitWidth()}`, 'sharp=1'];
         }
         return [];                        // balanced -> server default (1600)
       }
@@ -2695,11 +2695,12 @@
         };
       }
 
-      function nativePixelScale() {
+      function sharpFitWidth() {
         const base = containedScreenSize();
         const dpr = Math.max(1, window.devicePixelRatio || 1);
-        const sourceWidth = screenEl.naturalWidth || screenInfo.width || base.width;
-        return clamp(sourceWidth / Math.max(1, base.width * dpr), 1, 4);
+        // A modest supersample gives the browser a clean final downscale while
+        // the server performs the large Retina reduction and text sharpening.
+        return Math.round(clamp(base.width * dpr * 1.25, 960, 3072));
       }
 
       function clampScreenTransform(transform = screenTransform) {
@@ -2723,11 +2724,6 @@
         screenEl.style.width = `${base.width * screenTransform.scale}px`;
         screenEl.style.height = `${base.height * screenTransform.scale}px`;
         screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;
-        const nativeScale = nativePixelScale();
-        btnPixelZoom.classList.toggle(
-          'active',
-          nativeScale > 1.02 && Math.abs(screenTransform.scale - nativeScale) < 0.08
-        );
       }
 
       function isScreenZoomed() {
@@ -2970,6 +2966,9 @@
         pollMode = POLL_ORDER[(currentIndex + 1) % POLL_ORDER.length];
         localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
         updateSpeedButton();
+        if (pollMode === 'live') {
+          applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
+        }
         setStatus('Baglanti hizi guncellendi', `Yeni mod: ${POLL_LABELS[pollMode]}`, connected);
         if (streamMode === 'stream') {
           restartPushStream();   // reconnect so the new quality/resolution applies
@@ -2980,19 +2979,19 @@
           scheduleNextPoll(180);
         }
       });
-      btnPixelZoom.addEventListener('click', () => {
-        const targetScale = nativePixelScale();
-        const alreadyNative = targetScale > 1.02 && Math.abs(screenTransform.scale - targetScale) < 0.08;
-        applyScreenTransform({
-          scale: alreadyNative ? 1 : targetScale,
-          panX: 0,
-          panY: 0
-        });
-        setStatus(
-          'Bagli',
-          alreadyNative ? 'Tum ekran gorunumu' : 'Gercek piksel gorunumu; surukleyerek gezinebilirsin.',
-          connected
-        );
+      btnFitSharp.addEventListener('click', () => {
+        pollMode = 'live';
+        localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
+        updateSpeedButton();
+        applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
+        setStatus('Bagli', 'Keskinlestirilmis tam ekran gorunumu.', connected);
+        if (streamMode === 'stream') {
+          restartPushStream();
+        } else if (streamMode === 'frame') {
+          forceFreshFramePoll();
+        } else {
+          scheduleNextPoll(0);
+        }
       });
       btnScroll.addEventListener('click', () => {
         scrollMode = !scrollMode;

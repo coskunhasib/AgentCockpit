@@ -62,6 +62,26 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
         self.assertEqual(quality, 85)
         self.assertEqual(width, 4096)
 
+    def test_sharp_fit_downscales_and_applies_unsharp_mask(self):
+        source = Image.new("RGB", (200, 100), "white")
+        for x in range(80, 120):
+            for y in range(30, 70):
+                source.putpixel((x, y), (20, 40, 80))
+
+        regular = bridge._scale_to_width(source, 100, sharpen=False)
+        sharpened = bridge._scale_to_width(source, 100, sharpen=True)
+
+        try:
+            self.assertEqual(sharpened.size, (100, 50))
+            self.assertNotEqual(regular.tobytes(), sharpened.tobytes())
+        finally:
+            regular.close()
+            sharpened.close()
+
+    def test_sharpen_query_is_explicit(self):
+        self.assertTrue(bridge._parse_sharpen_param({"sharp": ["1"]}))
+        self.assertFalse(bridge._parse_sharpen_param({}))
+
     def setUp(self):
         bridge._PYAUTOGUI = _CursorOnlyPyAutoGui()
         with bridge._CAPTURE_STATE_LOCK:

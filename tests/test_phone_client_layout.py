@@ -6,14 +6,16 @@ class PhoneClientLayoutTests(unittest.TestCase):
     def test_hd_mode_requests_native_retina_detail(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
-        self.assertIn("return ['q=85', 'w=4096'];", html)
+        self.assertIn("return ['q=85', `w=${sharpFitWidth()}`, 'sharp=1'];", html)
 
-    def test_native_pixel_zoom_rerenders_instead_of_scaling_a_gpu_layer(self):
+    def test_sharp_fit_keeps_the_whole_screen_and_uses_device_pixels(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
-        self.assertIn('id="btn-pixel-zoom"', html)
-        self.assertIn("function nativePixelScale()", html)
+        self.assertIn('id="btn-fit-sharp"', html)
+        self.assertIn("function sharpFitWidth()", html)
         self.assertIn("window.devicePixelRatio", html)
+        self.assertIn("base.width * dpr * 1.25", html)
+        self.assertIn("applyScreenTransform({ scale: 1, panX: 0, panY: 0 });", html)
         self.assertIn("screenEl.style.width = `${base.width * screenTransform.scale}px`;", html)
         self.assertIn("screenEl.style.height = `${base.height * screenTransform.scale}px`;", html)
         self.assertIn("screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;", html)

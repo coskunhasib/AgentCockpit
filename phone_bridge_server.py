@@ -38,7 +38,7 @@ try:
 except Exception:
     pass
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 from core.app_config import get_float, get_int, get_str
 from dotenv import load_dotenv
 try:
@@ -728,14 +728,21 @@ def _draw_cursor(image):
     return image
 
 
-def _scale_to_width(image, max_width):
+def _scale_to_width(image, max_width, *, sharpen=False):
     if image.width > max_width:
         ratio = max_width / image.width
         resampling = getattr(Image, "Resampling", Image)
-        image = image.resize(
+        resized = image.resize(
             (max_width, int(image.height * ratio)),
             resampling.LANCZOS,
         )
+        if sharpen:
+            image = resized.filter(
+                ImageFilter.UnsharpMask(radius=1.0, percent=140, threshold=2)
+            )
+            _close_image(resized)
+        else:
+            image = resized
     return image
 
 
@@ -785,7 +792,7 @@ def _encode_jpeg(image, quality):
         return buffer.getvalue()
 
 
-def _grab_frame(quality, max_width):
+def _grab_frame(quality, max_width, *, sharpen=False):
     """Capture one finished frame.
 
     Returns (jpeg_bytes, signature, frame_w, frame_h, screen_w, screen_h).
@@ -797,7 +804,7 @@ def _grab_frame(quality, max_width):
         screen_width, screen_height = raw.size
         _record_capture_success(screen_width, screen_height)
         signature = _frame_signature(raw)
-        image = _scale_to_width(_draw_cursor(raw), max_width)
+        image = _scale_to_width(_draw_cursor(raw), max_width, sharpen=sharpen)
         jpeg = _encode_jpeg(image, quality)
         return jpeg, signature, image.width, image.height, screen_width, screen_height
     except Exception as exc:
@@ -810,8 +817,12 @@ def _grab_frame(quality, max_width):
             _close_image(raw)
 
 
-def _capture_payload(quality, max_width):
-    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(quality, max_width)
+def _capture_payload(quality, max_width, *, sharpen=False):
+    jpeg, signature, frame_w, frame_h, screen_w, screen_h = _grab_frame(
+        quality,
+        max_width,
+        sharpen=sharpen,
+    )
     return {
         "image": base64.b64encode(jpeg).decode("ascii"),
         "signature": signature,
@@ -839,6 +850,10 @@ def _parse_stream_params(query, default_quality, default_width):
         requested_width = default_width
     max_width = max(640, min(4096, requested_width))
     return quality, max_width
+
+
+def _parse_sharpen_param(query):
+    return str(query.get("sharp", [""])[0]).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _is_nearly_black_frame(image, *, max_channel=4):
@@ -2120,11 +2135,13 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 if auth_kind == "link"
                 else self.server.startup_session.get("token", "")
             )
+            query = self._query()
             quality, max_width = _parse_stream_params(
-                self._query(), self.server.screenshot_quality, self.server.max_width
+                query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
             try:
-                payload = _capture_payload(quality, max_width)
+                payload = _capture_payload(quality, max_width, sharpen=sharpen)
             except CaptureUnavailable as exc:
                 _record_capture_error(exc)
                 logger.warning("Phone bridge screenshot unavailable: %s", _redact_capture_error(exc))
@@ -2165,6 +2182,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             quality, max_width = _parse_stream_params(
                 query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
 
             deadline = time.time() + 15.0
             tick = 0.12
@@ -2182,7 +2200,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         if signature != since:
                             screen_width, screen_height = raw.size
                             _record_capture_success(screen_width, screen_height)
-                            image = _scale_to_width(_draw_cursor(raw), max_width)
+                            image = _scale_to_width(
+                                _draw_cursor(raw),
+                                max_width,
+                                sharpen=sharpen,
+                            )
                             jpeg = _encode_jpeg(image, quality)
                             self.send_response(HTTPStatus.OK)
                             self.send_header("Content-Type", "image/jpeg")
@@ -2270,6 +2292,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             quality, max_width = _parse_stream_params(
                 query, self.server.screenshot_quality, self.server.max_width
             )
+            sharpen = _parse_sharpen_param(query)
             try:
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "application/octet-stream")
@@ -2336,13 +2359,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                             # smaller, lower-quality frames so they don't saturate the
                             # uplink/tunnel and stutter; restore full detail the instant it
                             # settles. Pixels dominate bandwidth, so trim width too.
-                            if high_motion:
+                            if high_motion and not sharpen:
                                 encode_quality = max(28, quality - 24)
                                 encode_width = max(720, (max_width * 7) // 10)
                             else:
                                 encode_quality = quality
                                 encode_width = max_width
-                            image = _scale_to_width(_draw_cursor(raw), encode_width)
+                            image = _scale_to_width(
+                                _draw_cursor(raw),
+                                encode_width,
+                                sharpen=sharpen,
+                            )
                             last_jpeg = _encode_jpeg(image, encode_quality)
                             last_sig = signature
                             frame_count += 1
