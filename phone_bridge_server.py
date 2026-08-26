@@ -919,6 +919,33 @@ def _perform_click(x_ratio, y_ratio, button="left"):
         pyautogui.click(x, y)
 
 
+def _perform_drag(start_x_ratio, start_y_ratio, end_x_ratio, end_y_ratio, duration=0.35):
+    pyautogui = _require_pyautogui()
+    screen_width, screen_height = pyautogui.size()
+
+    def screen_point(x_ratio, y_ratio):
+        x = int(_clamp_ratio(x_ratio) * screen_width)
+        y = int(_clamp_ratio(y_ratio) * screen_height)
+        return (
+            max(0, min(x, screen_width - 1)),
+            max(0, min(y, screen_height - 1)),
+        )
+
+    start_x, start_y = screen_point(start_x_ratio, start_y_ratio)
+    end_x, end_y = screen_point(end_x_ratio, end_y_ratio)
+    try:
+        drag_duration = max(0.08, min(2.0, float(duration)))
+    except (TypeError, ValueError):
+        drag_duration = 0.35
+
+    pyautogui.moveTo(start_x, start_y)
+    pyautogui.mouseDown(button="left")
+    try:
+        pyautogui.moveTo(end_x, end_y, duration=drag_duration)
+    finally:
+        pyautogui.mouseUp(button="left")
+
+
 def _perform_scroll(x_ratio, y_ratio, delta):
     pyautogui = _require_pyautogui()
     screen_width, screen_height = pyautogui.size()
@@ -955,6 +982,11 @@ def _action_audit_payload(action_type, payload, *, request_id=""):
         body["button"] = str(payload.get("button", "left"))[:24]
         body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
         body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
+    elif action_type == "drag":
+        body["start_x"] = round(_clamp_ratio(payload.get("start_x", 0.0)), 4)
+        body["start_y"] = round(_clamp_ratio(payload.get("start_y", 0.0)), 4)
+        body["end_x"] = round(_clamp_ratio(payload.get("end_x", 0.0)), 4)
+        body["end_y"] = round(_clamp_ratio(payload.get("end_y", 0.0)), 4)
     elif action_type == "scroll":
         try:
             body["delta"] = int(payload.get("delta", 0) or 0)
@@ -2563,7 +2595,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         action_type = payload.get("type", "")
-        if action_type not in ("click", "scroll", "key", "type", "refresh"):
+        if action_type not in ("click", "drag", "scroll", "key", "type", "refresh"):
             self._json_response(
                 {
                     "status": "bad_request",
@@ -2598,6 +2630,14 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("x", 0.0),
                     payload.get("y", 0.0),
                     payload.get("button", "left"),
+                )
+            elif action_type == "drag":
+                _perform_drag(
+                    payload.get("start_x", 0.0),
+                    payload.get("start_y", 0.0),
+                    payload.get("end_x", 0.0),
+                    payload.get("end_y", 0.0),
+                    payload.get("duration", 0.35),
                 )
             elif action_type == "scroll":
                 _perform_scroll(

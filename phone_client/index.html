@@ -1123,6 +1123,7 @@
       let lastTextTarget = null;
       let longPressTimer = null;
       let gesture = null;
+      let mouseGesture = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
       let statusExpanded = true;
       let sensitiveTyping = false;
@@ -2769,8 +2770,12 @@
           type: 'touch',
           x: touch.clientX,
           y: touch.clientY,
+          currentX: touch.clientX,
+          currentY: touch.clientY,
           startedAt: Date.now(),
           moved: false,
+          localPan: false,
+          actionSent: false,
           lastScrollX: touch.clientX,
           lastScrollY: touch.clientY
         };
@@ -2786,6 +2791,7 @@
               { type: 'click', x: coords.x, y: coords.y, button: 'right', delay: 0.22 },
               { marker }
             );
+            gesture.actionSent = true;
           }
           longPressTimer = null;
         }, 520);
@@ -2817,6 +2823,8 @@
         }
 
         const touch = event.touches[0];
+        gesture.currentX = touch.clientX;
+        gesture.currentY = touch.clientY;
         const dx = Math.abs(touch.clientX - gesture.x);
         const dy = Math.abs(touch.clientY - gesture.y);
         if (dx > 10 || dy > 10) {
@@ -2825,6 +2833,7 @@
         }
 
         if (!scrollMode && isScreenZoomed()) {
+          gesture.localPan = true;
           const stepX = touch.clientX - gesture.lastScrollX;
           const stepY = touch.clientY - gesture.lastScrollY;
           applyScreenTransform({
@@ -2873,8 +2882,12 @@
               type: 'touch',
               x: touch.clientX,
               y: touch.clientY,
+              currentX: touch.clientX,
+              currentY: touch.clientY,
               startedAt: Date.now(),
               moved: true,
+              localPan: true,
+              actionSent: false,
               lastScrollX: touch.clientX,
               lastScrollY: touch.clientY
             };
@@ -2896,7 +2909,25 @@
           return;
         }
 
-        if (!gesture.moved && duration < 520) {
+        if (gesture.moved && !gesture.localPan && !gesture.actionSent) {
+          const changedTouch = event.changedTouches && event.changedTouches[0];
+          const endX = changedTouch ? changedTouch.clientX : gesture.currentX;
+          const endY = changedTouch ? changedTouch.clientY : gesture.currentY;
+          const endCoords = getRatios(endX, endY);
+          const marker = spawnTapMarker(endX, endY, 'left');
+          enqueueAction(
+            {
+              type: 'drag',
+              start_x: coords.x,
+              start_y: coords.y,
+              end_x: endCoords.x,
+              end_y: endCoords.y,
+              duration: clamp(duration / 1000, 0.12, 1.2),
+              delay: 0.12
+            },
+            { marker }
+          );
+        } else if (!gesture.moved && !gesture.actionSent && duration < 520) {
           const now = Date.now();
           const isDouble = now - lastTapTime < 320
             && Math.abs(gesture.x - lastTapX) < 30
@@ -2928,12 +2959,74 @@
         gesture = null;
       }
 
-      function onMousePointerUp(event) {
+      function onMousePointerDown(event) {
         if (event.pointerType !== 'mouse' || event.button !== 0) {
           return;
         }
         event.preventDefault();
         const coords = getRatios(event.clientX, event.clientY);
+        if (!coords.inBounds) {
+          return;
+        }
+        mouseGesture = {
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          startCoords: coords,
+          startedAt: Date.now(),
+          moved: false
+        };
+        try {
+          screenEl.setPointerCapture(event.pointerId);
+        } catch (_) {
+          // Pointer capture is optional; in-window drags still work without it.
+        }
+      }
+
+      function onMousePointerMove(event) {
+        if (!mouseGesture || event.pointerType !== 'mouse' || event.pointerId !== mouseGesture.pointerId) {
+          return;
+        }
+        event.preventDefault();
+        if (
+          Math.abs(event.clientX - mouseGesture.x) > 5
+          || Math.abs(event.clientY - mouseGesture.y) > 5
+        ) {
+          mouseGesture.moved = true;
+        }
+      }
+
+      function onMousePointerUp(event) {
+        if (!mouseGesture || event.pointerType !== 'mouse' || event.pointerId !== mouseGesture.pointerId) {
+          return;
+        }
+        event.preventDefault();
+        const activeGesture = mouseGesture;
+        mouseGesture = null;
+        try {
+          screenEl.releasePointerCapture(event.pointerId);
+        } catch (_) {
+          // The browser can release capture automatically before this handler.
+        }
+
+        const coords = getRatios(event.clientX, event.clientY);
+        if (activeGesture.moved) {
+          const marker = spawnTapMarker(event.clientX, event.clientY, 'left');
+          enqueueAction(
+            {
+              type: 'drag',
+              start_x: activeGesture.startCoords.x,
+              start_y: activeGesture.startCoords.y,
+              end_x: coords.x,
+              end_y: coords.y,
+              duration: clamp((Date.now() - activeGesture.startedAt) / 1000, 0.12, 1.2),
+              delay: 0.12
+            },
+            { marker }
+          );
+          return;
+        }
+
         if (!coords.inBounds) {
           return;
         }
@@ -2957,6 +3050,12 @@
         lastTapTime = now;
         lastTapX = event.clientX;
         lastTapY = event.clientY;
+      }
+
+      function onMousePointerCancel(event) {
+        if (mouseGesture && event.pointerId === mouseGesture.pointerId) {
+          mouseGesture = null;
+        }
       }
 
       function onMouseContextMenu(event) {
@@ -3131,7 +3230,10 @@
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
       screenEl.addEventListener('touchcancel', onTouchCancel, { passive: false });
+      screenEl.addEventListener('pointerdown', onMousePointerDown);
+      screenEl.addEventListener('pointermove', onMousePointerMove);
       screenEl.addEventListener('pointerup', onMousePointerUp);
+      screenEl.addEventListener('pointercancel', onMousePointerCancel);
       screenEl.addEventListener('contextmenu', onMouseContextMenu);
       screenEl.addEventListener('wheel', onMouseWheel, { passive: false });
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());

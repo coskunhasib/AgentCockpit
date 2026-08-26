@@ -156,6 +156,64 @@ class PhoneBridgeClientTests(unittest.TestCase):
         click.assert_called_once_with(0.25, 0.75, "left")
         paste_text.assert_called_once_with("normal text", restore_clipboard=False)
 
+    def test_phone_drag_holds_moves_and_always_releases_mouse(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.calls = []
+
+            def size(self):
+                return (1000, 500)
+
+            def moveTo(self, x, y, duration=None):
+                self.calls.append(("move", x, y, duration))
+
+            def mouseDown(self, button):
+                self.calls.append(("down", button))
+
+            def mouseUp(self, button):
+                self.calls.append(("up", button))
+
+        fake = FakePyAutoGui()
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            phone_bridge_server._perform_drag(0.1, 0.2, 0.8, 0.9, duration=0.4)
+
+        self.assertEqual(
+            fake.calls,
+            [
+                ("move", 100, 100, None),
+                ("down", "left"),
+                ("move", 800, 450, 0.4),
+                ("up", "left"),
+            ],
+        )
+
+    def test_phone_drag_releases_mouse_when_movement_fails(self):
+        class FailingPyAutoGui:
+            def __init__(self):
+                self.move_count = 0
+                self.released = False
+
+            def size(self):
+                return (1000, 500)
+
+            def moveTo(self, _x, _y, duration=None):
+                self.move_count += 1
+                if duration is not None:
+                    raise RuntimeError("movement failed")
+
+            def mouseDown(self, button):
+                self.button = button
+
+            def mouseUp(self, button):
+                self.released = button == self.button
+
+        fake = FailingPyAutoGui()
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            with self.assertRaisesRegex(RuntimeError, "movement failed"):
+                phone_bridge_server._perform_drag(0.1, 0.2, 0.8, 0.9)
+
+        self.assertTrue(fake.released)
+
     def test_normal_phone_typing_uses_clipboard_paste_for_ascii(self):
         with patch.object(
             phone_bridge_server.SystemOps,
