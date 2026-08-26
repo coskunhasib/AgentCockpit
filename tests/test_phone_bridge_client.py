@@ -214,6 +214,67 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         self.assertTrue(fake.released)
 
+    def test_live_phone_drag_tracks_moves_until_release(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.calls = []
+
+            def size(self):
+                return (1000, 500)
+
+            def moveTo(self, x, y):
+                self.calls.append(("move", x, y))
+
+            def mouseDown(self, button):
+                self.calls.append(("down", button))
+
+            def mouseUp(self, button):
+                self.calls.append(("up", button))
+
+        fake = FakePyAutoGui()
+        controller = phone_bridge_server.RemoteDragController()
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            controller.start("drag-1", 0.1, 0.2)
+            controller.move("drag-1", 0.4, 0.5)
+            controller.move("drag-1", 0.7, 0.8)
+            self.assertTrue(controller.end("drag-1", 0.9, 1.0))
+
+        self.assertEqual(
+            fake.calls,
+            [
+                ("move", 100, 100),
+                ("down", "left"),
+                ("move", 400, 250),
+                ("move", 700, 400),
+                ("move", 900, 499),
+                ("up", "left"),
+            ],
+        )
+
+    def test_live_phone_drag_timeout_releases_mouse(self):
+        class FakePyAutoGui:
+            def size(self):
+                return (100, 100)
+
+            def moveTo(self, _x, _y):
+                pass
+
+            def mouseDown(self, button):
+                self.button = button
+
+            def mouseUp(self, button):
+                self.released = button == self.button
+
+        fake = FakePyAutoGui()
+        fake.released = False
+        controller = phone_bridge_server.RemoteDragController()
+        with patch.object(phone_bridge_server, "_require_pyautogui", return_value=fake):
+            controller.start("drag-timeout", 0.1, 0.1)
+            timeout_seq = controller._timeout_seq
+            controller._expire("drag-timeout", timeout_seq)
+
+        self.assertTrue(fake.released)
+
     def test_normal_phone_typing_uses_clipboard_paste_for_ascii(self):
         with patch.object(
             phone_bridge_server.SystemOps,

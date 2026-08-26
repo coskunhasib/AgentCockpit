@@ -1124,6 +1124,7 @@
       let longPressTimer = null;
       let gesture = null;
       let mouseGesture = null;
+      let remoteDrag = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
       let statusExpanded = true;
       let sensitiveTyping = false;
@@ -2490,6 +2491,95 @@
         }
       }
 
+      function wakeRemoteDrag(state) {
+        if (state && state.wake) {
+          const wake = state.wake;
+          state.wake = null;
+          wake();
+        }
+      }
+
+      async function sendRemoteDragPhase(state, phase, point) {
+        return sendActionRequest(
+          {
+            type: `drag_${phase}`,
+            drag_id: state.id,
+            x: point.x,
+            y: point.y,
+            request_id: nextRequestId(),
+            no_screenshot: true,
+            delay: 0
+          },
+          { timeoutMs: 5000, retries: 1 }
+        );
+      }
+
+      function beginRemoteDrag(startPoint) {
+        if (remoteDrag) {
+          finishRemoteDrag(remoteDrag.lastPoint);
+        }
+        const state = {
+          id: `${clientNonce}-drag-${nextRequestId()}`,
+          lastPoint: startPoint,
+          pendingPoint: null,
+          finalPoint: null,
+          wake: null
+        };
+        remoteDrag = state;
+        boostLiveWindow(5000);
+        state.task = (async () => {
+          try {
+            await sendRemoteDragPhase(state, 'start', startPoint);
+            for (;;) {
+              if (state.finalPoint) {
+                await sendRemoteDragPhase(state, 'end', state.finalPoint);
+                break;
+              }
+              if (state.pendingPoint) {
+                const nextPoint = state.pendingPoint;
+                state.pendingPoint = null;
+                await sendRemoteDragPhase(state, 'move', nextPoint);
+                continue;
+              }
+              await new Promise((resolve) => {
+                state.wake = resolve;
+              });
+            }
+          } catch (error) {
+            try {
+              await sendRemoteDragPhase(state, 'end', state.finalPoint || state.lastPoint);
+            } catch (_) {
+              // The server-side timeout is the final safety net for a lost link.
+            }
+            showToast(`Surukleme tamamlanamadi · ${error.message || 'baglanti hatasi'}`, 'err');
+          } finally {
+            if (remoteDrag === state) {
+              remoteDrag = null;
+            }
+          }
+        })();
+        return state;
+      }
+
+      function updateRemoteDrag(point) {
+        if (!remoteDrag || !point) {
+          return;
+        }
+        remoteDrag.lastPoint = point;
+        remoteDrag.pendingPoint = point;
+        wakeRemoteDrag(remoteDrag);
+      }
+
+      function finishRemoteDrag(point) {
+        if (!remoteDrag) {
+          return;
+        }
+        remoteDrag.lastPoint = point || remoteDrag.lastPoint;
+        remoteDrag.pendingPoint = null;
+        remoteDrag.finalPoint = remoteDrag.lastPoint;
+        wakeRemoteDrag(remoteDrag);
+      }
+
       async function runAction(job) {
         const { payload, feedback } = job;
         boostLiveWindow();
@@ -2548,7 +2638,12 @@
         }, true);
         document.addEventListener('pointerup', clearPressed, true);
         document.addEventListener('pointercancel', clearPressed, true);
-        window.addEventListener('blur', clearPressed);
+        window.addEventListener('blur', () => {
+          clearPressed();
+          if (remoteDrag) {
+            finishRemoteDrag(remoteDrag.lastPoint);
+          }
+        });
       }
 
       async function postScrollAction(payload) {
@@ -2776,6 +2871,7 @@
           moved: false,
           localPan: false,
           actionSent: false,
+          remoteStarted: false,
           lastScrollX: touch.clientX,
           lastScrollY: touch.clientY
         };
@@ -2847,6 +2943,14 @@
         }
 
         if (!scrollMode) {
+          if (gesture.moved && !gesture.actionSent) {
+            const coords = getRatios(touch.clientX, touch.clientY);
+            if (!gesture.remoteStarted) {
+              beginRemoteDrag(getRatios(gesture.x, gesture.y));
+              gesture.remoteStarted = true;
+            }
+            updateRemoteDrag(coords);
+          }
           return;
         }
 
@@ -2888,6 +2992,7 @@
               moved: true,
               localPan: true,
               actionSent: false,
+              remoteStarted: false,
               lastScrollX: touch.clientX,
               lastScrollY: touch.clientY
             };
@@ -2915,18 +3020,12 @@
           const endY = changedTouch ? changedTouch.clientY : gesture.currentY;
           const endCoords = getRatios(endX, endY);
           const marker = spawnTapMarker(endX, endY, 'left');
-          enqueueAction(
-            {
-              type: 'drag',
-              start_x: coords.x,
-              start_y: coords.y,
-              end_x: endCoords.x,
-              end_y: endCoords.y,
-              duration: clamp(duration / 1000, 0.12, 1.2),
-              delay: 0.12
-            },
-            { marker }
-          );
+          if (!gesture.remoteStarted) {
+            beginRemoteDrag(coords);
+          }
+          updateRemoteDrag(endCoords);
+          finishRemoteDrag(endCoords);
+          setMarkerState(marker, 'ok');
         } else if (!gesture.moved && !gesture.actionSent && duration < 520) {
           const now = Date.now();
           const isDouble = now - lastTapTime < 320
@@ -2954,6 +3053,9 @@
       function onTouchCancel(event) {
         if (gesture) {
           event.preventDefault();
+          if (gesture.remoteStarted) {
+            finishRemoteDrag(getRatios(gesture.currentX, gesture.currentY));
+          }
         }
         clearLongPressTimer();
         gesture = null;
@@ -2972,9 +3074,12 @@
           pointerId: event.pointerId,
           x: event.clientX,
           y: event.clientY,
+          currentX: event.clientX,
+          currentY: event.clientY,
           startCoords: coords,
           startedAt: Date.now(),
-          moved: false
+          moved: false,
+          remoteStarted: false
         };
         try {
           screenEl.setPointerCapture(event.pointerId);
@@ -2988,11 +3093,21 @@
           return;
         }
         event.preventDefault();
+        mouseGesture.currentX = event.clientX;
+        mouseGesture.currentY = event.clientY;
         if (
           Math.abs(event.clientX - mouseGesture.x) > 5
           || Math.abs(event.clientY - mouseGesture.y) > 5
         ) {
           mouseGesture.moved = true;
+        }
+        if (mouseGesture.moved) {
+          const coords = getRatios(event.clientX, event.clientY);
+          if (!mouseGesture.remoteStarted) {
+            beginRemoteDrag(mouseGesture.startCoords);
+            mouseGesture.remoteStarted = true;
+          }
+          updateRemoteDrag(coords);
         }
       }
 
@@ -3012,18 +3127,12 @@
         const coords = getRatios(event.clientX, event.clientY);
         if (activeGesture.moved) {
           const marker = spawnTapMarker(event.clientX, event.clientY, 'left');
-          enqueueAction(
-            {
-              type: 'drag',
-              start_x: activeGesture.startCoords.x,
-              start_y: activeGesture.startCoords.y,
-              end_x: coords.x,
-              end_y: coords.y,
-              duration: clamp((Date.now() - activeGesture.startedAt) / 1000, 0.12, 1.2),
-              delay: 0.12
-            },
-            { marker }
-          );
+          if (!activeGesture.remoteStarted) {
+            beginRemoteDrag(activeGesture.startCoords);
+          }
+          updateRemoteDrag(coords);
+          finishRemoteDrag(coords);
+          setMarkerState(marker, 'ok');
           return;
         }
 
@@ -3054,6 +3163,9 @@
 
       function onMousePointerCancel(event) {
         if (mouseGesture && event.pointerId === mouseGesture.pointerId) {
+          if (mouseGesture.remoteStarted) {
+            finishRemoteDrag(getRatios(mouseGesture.currentX, mouseGesture.currentY));
+          }
           mouseGesture = null;
         }
       }
@@ -3239,6 +3351,9 @@
       screenEl.addEventListener('dragstart', (event) => event.preventDefault());
       document.addEventListener('visibilitychange', () => {
         if (document.hidden) {
+          if (remoteDrag) {
+            finishRemoteDrag(remoteDrag.lastPoint);
+          }
           if (streamMode === 'stream' && streamAbort) {
             // Stop streaming while backgrounded to save battery/data.
             streamGeneration += 1;

@@ -946,6 +946,101 @@ def _perform_drag(start_x_ratio, start_y_ratio, end_x_ratio, end_y_ratio, durati
         pyautogui.mouseUp(button="left")
 
 
+class RemoteDragController:
+    TIMEOUT_SECONDS = 2.5
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._active_id = ""
+        self._pyautogui = None
+        self._timer = None
+        self._timeout_seq = 0
+
+    @staticmethod
+    def _screen_point(pyautogui, x_ratio, y_ratio):
+        screen_width, screen_height = pyautogui.size()
+        x = int(_clamp_ratio(x_ratio) * screen_width)
+        y = int(_clamp_ratio(y_ratio) * screen_height)
+        return (
+            max(0, min(x, screen_width - 1)),
+            max(0, min(y, screen_height - 1)),
+        )
+
+    def _cancel_timer_locked(self):
+        if self._timer is not None:
+            self._timer.cancel()
+            self._timer = None
+
+    def _release_locked(self):
+        self._cancel_timer_locked()
+        pyautogui = self._pyautogui
+        self._active_id = ""
+        self._pyautogui = None
+        if pyautogui is not None:
+            pyautogui.mouseUp(button="left")
+
+    def _expire(self, drag_id, timeout_seq):
+        with self._lock:
+            if drag_id != self._active_id or timeout_seq != self._timeout_seq:
+                return
+            logger.warning("Uzak surukleme zaman asimina ugradi; fare otomatik birakiliyor.")
+            self._release_locked()
+
+    def _arm_timeout_locked(self, drag_id):
+        self._cancel_timer_locked()
+        self._timeout_seq += 1
+        self._timer = threading.Timer(
+            self.TIMEOUT_SECONDS,
+            self._expire,
+            args=(drag_id, self._timeout_seq),
+        )
+        self._timer.daemon = True
+        self._timer.start()
+
+    def start(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        if not drag_id:
+            raise ValueError("Surukleme kimligi gerekli.")
+        with self._lock:
+            if self._active_id:
+                self._release_locked()
+            pyautogui = _require_pyautogui()
+            x, y = self._screen_point(pyautogui, x_ratio, y_ratio)
+            pyautogui.moveTo(x, y)
+            pyautogui.mouseDown(button="left")
+            self._active_id = drag_id
+            self._pyautogui = pyautogui
+            self._arm_timeout_locked(drag_id)
+
+    def move(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        with self._lock:
+            if not self._active_id or drag_id != self._active_id:
+                raise RuntimeError("Surukleme oturumu aktif degil.")
+            x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
+            self._pyautogui.moveTo(x, y)
+            self._arm_timeout_locked(drag_id)
+
+    def end(self, drag_id, x_ratio, y_ratio):
+        drag_id = str(drag_id or "").strip()[:128]
+        with self._lock:
+            if not self._active_id or drag_id != self._active_id:
+                return False
+            try:
+                x, y = self._screen_point(self._pyautogui, x_ratio, y_ratio)
+                self._pyautogui.moveTo(x, y)
+            finally:
+                self._release_locked()
+            return True
+
+    def close(self):
+        with self._lock:
+            if self._active_id:
+                self._release_locked()
+            else:
+                self._cancel_timer_locked()
+
+
 def _perform_scroll(x_ratio, y_ratio, delta):
     pyautogui = _require_pyautogui()
     screen_width, screen_height = pyautogui.size()
@@ -987,6 +1082,10 @@ def _action_audit_payload(action_type, payload, *, request_id=""):
         body["start_y"] = round(_clamp_ratio(payload.get("start_y", 0.0)), 4)
         body["end_x"] = round(_clamp_ratio(payload.get("end_x", 0.0)), 4)
         body["end_y"] = round(_clamp_ratio(payload.get("end_y", 0.0)), 4)
+    elif action_type in ("drag_start", "drag_move", "drag_end"):
+        body["drag_id"] = str(payload.get("drag_id", ""))[:128]
+        body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
+        body["y"] = round(_clamp_ratio(payload.get("y", 0.0)), 4)
     elif action_type == "scroll":
         try:
             body["delta"] = int(payload.get("delta", 0) or 0)
@@ -2595,7 +2694,17 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             return
 
         action_type = payload.get("type", "")
-        if action_type not in ("click", "drag", "scroll", "key", "type", "refresh"):
+        if action_type not in (
+            "click",
+            "drag",
+            "drag_start",
+            "drag_move",
+            "drag_end",
+            "scroll",
+            "key",
+            "type",
+            "refresh",
+        ):
             self._json_response(
                 {
                     "status": "bad_request",
@@ -2614,7 +2723,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             self._json_response(cached_response)
             return
         action_audit = _action_audit_payload(action_type, payload, request_id=request_id)
-        record_runtime_event("phone_bridge_action_received", **action_audit)
+        log_action = action_type != "drag_move"
+        if log_action:
+            record_runtime_event("phone_bridge_action_received", **action_audit)
 
         try:
             # Parse delay inside the try so the except path below releases the
@@ -2639,6 +2750,24 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("end_y", 0.0),
                     payload.get("duration", 0.35),
                 )
+            elif action_type == "drag_start":
+                self.server.drag_controller.start(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
+                )
+            elif action_type == "drag_move":
+                self.server.drag_controller.move(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
+                )
+            elif action_type == "drag_end":
+                self.server.drag_controller.end(
+                    payload.get("drag_id", ""),
+                    payload.get("x", 0.0),
+                    payload.get("y", 0.0),
+                )
             elif action_type == "scroll":
                 _perform_scroll(
                     payload.get("x", 0.5),
@@ -2660,6 +2789,20 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
 
             if delay:
                 time.sleep(delay)
+
+            if action_type in ("drag_start", "drag_move", "drag_end"):
+                response_body = {
+                    "status": "ok",
+                    "action": action_type,
+                    "request_id": request_id,
+                    "screenshot": None,
+                }
+                if log_action:
+                    record_runtime_event("phone_bridge_action_succeeded", **action_audit)
+                if is_owner:
+                    self.server.action_dedup.complete(request_id, response_body)
+                self._json_response(response_body)
+                return
 
             refreshed_session = self.server.session_links.consume(session["token"]) or session
             handoff_token = (
@@ -2695,7 +2838,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 "repo_state": repo_state,
                 "screenshot": screenshot_payload,
             }
-            record_runtime_event("phone_bridge_action_succeeded", **action_audit)
+            if log_action:
+                record_runtime_event("phone_bridge_action_succeeded", **action_audit)
         except Exception as exc:
             logger.exception(f"Phone bridge action failed: {exc}")
             record_runtime_event(
@@ -2727,6 +2871,7 @@ class PhoneBridgeState:
         self.trusted_devices = TrustedDeviceStore(TRUSTED_DEVICES_FILE)
         self.repo_tracker = RepoUpdateTracker(PROJECT_ROOT)
         self.action_dedup = ActionDedup()
+        self.drag_controller = RemoteDragController()
         self.max_stream_connections = DEFAULT_STREAM_MAX_CONNECTIONS
         self.stream_max_seconds = DEFAULT_STREAM_MAX_SECONDS
         self.stream_gc_every_frames = DEFAULT_STREAM_GC_EVERY_FRAMES
@@ -2788,6 +2933,7 @@ class PhoneBridgeServer(ThreadingHTTPServer):
             "action_dedup",
             "app_port",
             "control_port",
+            "drag_controller",
             "lan_available",
             "lan_error",
             "max_stream_connections",
@@ -2838,6 +2984,13 @@ class PhoneBridgeServer(ThreadingHTTPServer):
     def active_stream_count(self):
         with self.state.stream_count_lock:
             return self.state.active_streams
+
+    def server_close(self):
+        try:
+            if "state" in self.__dict__:
+                self.state.drag_controller.close()
+        finally:
+            super().server_close()
 
     def get_public_url(self, *, validate=True):
         if not self.public_tunnel:
