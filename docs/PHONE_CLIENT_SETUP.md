@@ -118,6 +118,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
+Tarayici istemcisindeki kalite dugmesi hedef ekran boyutuna gore otomatik olcekler. `Hizli` ve `Normal` en az 1920 piksel genislik kullanir; `HD` gercek bir detay artisi icin en az 2560 piksel ve JPEG `q90` ister.
+
 ## Ekran ve Isaretci Notu
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.

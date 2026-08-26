@@ -1012,6 +1012,7 @@
       let wanUrl = '{{WAN_URL}}';
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
       const MIN_STREAM_WIDTH = 1920;
+      const MIN_HD_STREAM_WIDTH = 2560;
       const MAX_STREAM_WIDTH = 4096;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
       const POLL_LABELS = {
@@ -1571,6 +1572,9 @@
 
       function updateSpeedButton() {
         btnSpeed.textContent = POLL_LABELS[pollMode];
+        const profile = qualityProfile();
+        btnSpeed.title = `Aktif kalite: ${POLL_LABELS[pollMode]} (${profile.width}px, q${profile.quality})`;
+        btnSpeed.setAttribute('aria-label', `${btnSpeed.title}. Degistirmek icin tikla.`);
         btnSpeed.classList.toggle('active', pollMode !== 'balanced');
       }
 
@@ -2036,14 +2040,23 @@
         }
       }
 
-      function qualityQuery() {
+      function qualityProfile() {
         if (pollMode === 'eco') {
-          return ['q=50', `w=${autoFitWidth(0.75)}`, 'sharp=1'];
+          return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };
         }
         if (pollMode === 'live') {
-          return ['q=85', `w=${autoFitWidth(1.25)}`, 'sharp=1'];
+          return {
+            quality: 90,
+            width: Math.max(MIN_HD_STREAM_WIDTH, autoFitWidth(1.5)),
+            sharp: 1
+          };
         }
-        return ['q=75', `w=${autoFitWidth(1)}`, 'sharp=1'];
+        return { quality: 75, width: autoFitWidth(1), sharp: 1 };
+      }
+
+      function qualityQuery() {
+        const profile = qualityProfile();
+        return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];
       }
 
       function withParams(base, parts) {
@@ -3233,7 +3246,10 @@
         localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
         updateSpeedButton();
         applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
-        setStatus('Baglanti hizi guncellendi', `Yeni mod: ${POLL_LABELS[pollMode]}`, connected);
+        const profile = qualityProfile();
+        const profileText = `${POLL_LABELS[pollMode]} - ${profile.width}px, q${profile.quality}`;
+        setStatus('Goruntu kalitesi guncellendi', `Yeni mod: ${profileText}`, connected);
+        showToast(`Kalite: ${profileText}`);
         if (streamMode === 'stream') {
           restartPushStream();   // reconnect so the new quality/resolution applies
         } else if (streamMode === 'frame') {
