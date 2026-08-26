@@ -1011,6 +1011,8 @@
       let publicUrl = '{{PUBLIC_URL}}';
       let wanUrl = '{{WAN_URL}}';
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
+      const MIN_STREAM_WIDTH = 1920;
+      const MAX_STREAM_WIDTH = 4096;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
       const POLL_LABELS = {
         live: 'HD',
@@ -2697,7 +2699,8 @@
       function autoFitWidth(multiplier = 1) {
         const base = containedScreenSize();
         const dpr = Math.max(1, window.devicePixelRatio || 1);
-        return Math.round(clamp(base.width * dpr * multiplier, 640, 3072));
+        const targetPhysicalWidth = base.width * dpr * multiplier;
+        return Math.round(clamp(targetPhysicalWidth, MIN_STREAM_WIDTH, MAX_STREAM_WIDTH));
       }
 
       function clampScreenTransform(transform = screenTransform) {
