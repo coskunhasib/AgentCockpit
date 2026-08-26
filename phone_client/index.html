@@ -71,7 +71,6 @@
       display: block;
       touch-action: none;
       transform-origin: center center;
-      will-change: transform;
     }
 
     /* Capture beklemedeyken donmus son kare canli goruntu sanilmasin. */
@@ -920,6 +919,7 @@
       <button class="tool-btn" id="btn-refresh">Sync</button>
       <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
       <button class="tool-btn" id="btn-speed">Normal</button>
+      <button class="tool-btn" id="btn-pixel-zoom">Net 1:1</button>
       <button class="tool-btn" id="btn-scroll">Scroll</button>
       <button class="tool-btn" id="btn-keyboard">Keyboard</button>
     </div>
@@ -1076,6 +1076,7 @@
       const btnKeyboardClose = document.getElementById('btn-keyboard-close');
       const btnRefresh = document.getElementById('btn-refresh');
       const btnSpeed = document.getElementById('btn-speed');
+      const btnPixelZoom = document.getElementById('btn-pixel-zoom');
       const btnScroll = document.getElementById('btn-scroll');
       const btnTelegram = document.getElementById('btn-telegram');
       const btnInstall = document.getElementById('btn-install');
@@ -1649,6 +1650,9 @@
         }
         if (frameWidth) {
           parts.push(`Kare: ${frameWidth}px`);
+        }
+        if (screenTransform.scale > 1.02) {
+          parts.push(`Zoom: ${screenTransform.scale.toFixed(1)}x`);
         }
         parts.push(`Mod: ${POLL_LABELS[pollMode]}`);
         parts.push(isWanOrigin() ? 'Uzak' : 'Yerel');
@@ -2671,13 +2675,39 @@
         return Math.max(min, Math.min(max, value));
       }
 
+      function containedScreenSize() {
+        const viewerRect = viewer.getBoundingClientRect();
+        const viewerWidth = Math.max(1, viewerRect.width);
+        const viewerHeight = Math.max(1, viewerRect.height);
+        const sourceWidth = screenEl.naturalWidth || screenInfo.width || viewerWidth;
+        const sourceHeight = screenEl.naturalHeight || screenInfo.height || viewerHeight;
+        const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
+        const viewerRatio = viewerWidth / viewerHeight;
+        if (sourceRatio >= viewerRatio) {
+          return {
+            width: viewerWidth,
+            height: viewerWidth / sourceRatio
+          };
+        }
+        return {
+          width: viewerHeight * sourceRatio,
+          height: viewerHeight
+        };
+      }
+
+      function nativePixelScale() {
+        const base = containedScreenSize();
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const sourceWidth = screenEl.naturalWidth || screenInfo.width || base.width;
+        return clamp(sourceWidth / Math.max(1, base.width * dpr), 1, 4);
+      }
+
       function clampScreenTransform(transform = screenTransform) {
         const scale = clamp(transform.scale || 1, 1, 4);
         const viewerRect = viewer.getBoundingClientRect();
-        const baseWidth = screenEl.offsetWidth || viewerRect.width || 1;
-        const baseHeight = screenEl.offsetHeight || viewerRect.height || 1;
-        const maxPanX = Math.max(0, (baseWidth * scale - viewerRect.width) / 2);
-        const maxPanY = Math.max(0, (baseHeight * scale - viewerRect.height) / 2);
+        const base = containedScreenSize();
+        const maxPanX = Math.max(0, (base.width * scale - viewerRect.width) / 2);
+        const maxPanY = Math.max(0, (base.height * scale - viewerRect.height) / 2);
         return {
           scale,
           panX: scale <= 1 ? 0 : clamp(transform.panX || 0, -maxPanX, maxPanX),
@@ -2687,7 +2717,17 @@
 
       function applyScreenTransform(nextTransform = screenTransform) {
         screenTransform = clampScreenTransform(nextTransform);
-        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0) scale(${screenTransform.scale})`;
+        const base = containedScreenSize();
+        screenEl.style.maxWidth = 'none';
+        screenEl.style.maxHeight = 'none';
+        screenEl.style.width = `${base.width * screenTransform.scale}px`;
+        screenEl.style.height = `${base.height * screenTransform.scale}px`;
+        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;
+        const nativeScale = nativePixelScale();
+        btnPixelZoom.classList.toggle(
+          'active',
+          nativeScale > 1.02 && Math.abs(screenTransform.scale - nativeScale) < 0.08
+        );
       }
 
       function isScreenZoomed() {
@@ -2940,6 +2980,20 @@
           scheduleNextPoll(180);
         }
       });
+      btnPixelZoom.addEventListener('click', () => {
+        const targetScale = nativePixelScale();
+        const alreadyNative = targetScale > 1.02 && Math.abs(screenTransform.scale - targetScale) < 0.08;
+        applyScreenTransform({
+          scale: alreadyNative ? 1 : targetScale,
+          panX: 0,
+          panY: 0
+        });
+        setStatus(
+          'Bagli',
+          alreadyNative ? 'Tum ekran gorunumu' : 'Gercek piksel gorunumu; surukleyerek gezinebilirsin.',
+          connected
+        );
+      });
       btnScroll.addEventListener('click', () => {
         scrollMode = !scrollMode;
         btnScroll.classList.toggle('active', scrollMode);
@@ -3033,6 +3087,7 @@
         if (screenEl.naturalWidth) {
           frameWidth = screenEl.naturalWidth;
         }
+        applyScreenTransform();
       });
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });

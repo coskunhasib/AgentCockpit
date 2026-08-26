@@ -8,6 +8,18 @@ class PhoneClientLayoutTests(unittest.TestCase):
 
         self.assertIn("return ['q=85', 'w=4096'];", html)
 
+    def test_native_pixel_zoom_rerenders_instead_of_scaling_a_gpu_layer(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+
+        self.assertIn('id="btn-pixel-zoom"', html)
+        self.assertIn("function nativePixelScale()", html)
+        self.assertIn("window.devicePixelRatio", html)
+        self.assertIn("screenEl.style.width = `${base.width * screenTransform.scale}px`;", html)
+        self.assertIn("screenEl.style.height = `${base.height * screenTransform.scale}px`;", html)
+        self.assertIn("screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;", html)
+        self.assertNotIn("will-change: transform;", html)
+        self.assertNotIn("scale(${screenTransform.scale})", html)
+
     def test_viewer_uses_dynamic_offsets_and_status_dropdown(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
