@@ -6,10 +6,9 @@ class PhoneClientLayoutTests(unittest.TestCase):
     def test_hd_mode_requests_native_retina_detail(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
-        self.assertIn("const MIN_HD_STREAM_WIDTH = 2560;", html)
         self.assertIn("quality: 90,", html)
-        self.assertIn("width: Math.max(MIN_HD_STREAM_WIDTH, autoFitWidth(1.5))", html)
-        self.assertIn("return { quality: 75, width: autoFitWidth(1), sharp: 1 };", html)
+        self.assertIn("width: MAX_STREAM_WIDTH,", html)
+        self.assertIn("return { quality: 85, width: autoFitWidth(1.25), sharp: 1 };", html)
         self.assertIn("return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };", html)
         self.assertIn("return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];", html)
         self.assertIn("showToast(`Kalite: ${profileText}`);", html)

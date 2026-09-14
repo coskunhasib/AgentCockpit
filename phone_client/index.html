@@ -1012,7 +1012,6 @@
       let wanUrl = '{{WAN_URL}}';
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
       const MIN_STREAM_WIDTH = 1920;
-      const MIN_HD_STREAM_WIDTH = 2560;
       const MAX_STREAM_WIDTH = 4096;
       const DRAG_TARGET_STEP_PX = 24;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
@@ -2048,11 +2047,13 @@
         if (pollMode === 'live') {
           return {
             quality: 90,
-            width: Math.max(MIN_HD_STREAM_WIDTH, autoFitWidth(1.5)),
+            // Preserve source detail up to the server's safety cap, even on
+            // low-DPI viewers. The server never upscales a smaller capture.
+            width: MAX_STREAM_WIDTH,
             sharp: 1
           };
         }
-        return { quality: 75, width: autoFitWidth(1), sharp: 1 };
+        return { quality: 85, width: autoFitWidth(1.25), sharp: 1 };
       }
 
       function qualityQuery() {
