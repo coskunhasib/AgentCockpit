@@ -124,6 +124,8 @@ Tarayici istemcisinde `Hizli` ve `Normal` hedef ekrana gore en az 1920 piksel ge
 
 ## Ekran ve Isaretci Notu
 
+Yazilar bulaniksa durum panelindeki `Gelen kareyi incele` ile ayni JPEG'i yeniden sikistirmadan dondurup inceleyin. `1:1`, goruntu piksellerini ekran piksellerine esler; `Sigdir`, ayni kareyi pencereye kucultur. 1:1 net, sigdir bulaniksa olcekleme/ekran yogunlugu etkisini arastirin. Ikisi de bulaniksa kaynak yakalama ve JPEG sikistirmasini inceleyin. Panel, alinan JPEG boyutunu, canli gorunumun ekran piksel boyutunu ve tarayici DPR degerini gosterir. Bu karsilastirma tek basina Windows JPEG cozumleyicisini dogrulamaz.
+
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
 - Surukleme hedefleri tarayicida her 24 uzak ekran pikselinde uretilir. Bridge iki hedef arasini `PHONE_DRAG_STEP_PIXELS` araligiyla doldurur ve bekleyen son hareketi mouse birakilmadan once uygular.

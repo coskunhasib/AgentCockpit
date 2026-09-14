@@ -79,6 +79,21 @@
       transition: filter 0.4s ease;
     }
 
+    #frame-inspector {
+      width: min(96vw, 1400px);
+      max-width: 96vw;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    #frame-inspector::backdrop { background: rgba(0, 0, 0, 0.7); }
+    .frame-inspector-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
+    #frame-inspector-viewport { overflow: auto; max-height: 70dvh; background: #05070c; }
+    #frame-inspector-image { display: block; max-width: none; height: auto; }
+
     #overlay {
       position: fixed;
       inset: 0;
@@ -903,6 +918,7 @@
         </div>
         <div class="status-details" id="status-details">
           <div class="status-sub" id="status-sub">Ilk ekran bekleniyor</div>
+          <button class="repo-prompt-btn" id="btn-frame-inspect" type="button" disabled>Gelen kareyi incele</button>
           <div class="repo-prompt" id="repo-prompt">
             <div class="repo-prompt-title" id="repo-prompt-title">Repo guncellemesi hazir</div>
             <div class="repo-prompt-sub" id="repo-prompt-sub">Yeni commit bulundu.</div>
@@ -1001,6 +1017,18 @@
   <div id="tap-layer" aria-hidden="true"></div>
   <div id="action-toast" role="status" aria-live="polite"></div>
 
+  <dialog id="frame-inspector" aria-labelledby="frame-inspector-title">
+    <strong id="frame-inspector-title">Gelen kare</strong>
+    <p id="frame-inspector-info"></p>
+    <p>Ayni JPEG'in donmus goruntusu. 1:1 gorunumde bir goruntu pikseli bir ekran pikseline karsilik gelir; buyuk kareyi kaydirarak inceleyebilirsin.</p>
+    <div class="frame-inspector-actions">
+      <button class="repo-prompt-btn" id="frame-inspector-native" type="button" aria-pressed="true">1:1</button>
+      <button class="repo-prompt-btn" id="frame-inspector-fit" type="button" aria-pressed="false">Sigdir</button>
+      <button class="repo-prompt-btn" id="frame-inspector-close" type="button">Kapat</button>
+    </div>
+    <div id="frame-inspector-viewport"><img id="frame-inspector-image" alt="Alinan JPEG karesi"></div>
+  </dialog>
+
   <script>
     (() => {
       'use strict';
@@ -1068,6 +1096,11 @@
       const statusDot = document.getElementById('status-dot');
       const statusTitle = document.getElementById('status-title');
       const statusSub = document.getElementById('status-sub');
+      const frameInspectButton = document.getElementById('btn-frame-inspect');
+      const frameInspector = document.getElementById('frame-inspector');
+      const frameInspectorImage = document.getElementById('frame-inspector-image');
+      let inspectedFrameUrl = null;
+      let frameInspectionBusy = false;
       const repoPrompt = document.getElementById('repo-prompt');
       const repoPromptTitle = document.getElementById('repo-prompt-title');
       const repoPromptSub = document.getElementById('repo-prompt-sub');
@@ -2097,6 +2130,48 @@
 
       function currentFps() {
         return frameTimes.length > 1 ? Math.round((frameTimes.length - 1) / 1.5) : 0;
+      }
+
+      function setInspectedFrameFit(fit) {
+        const dpr = Math.max(0.1, window.devicePixelRatio || 1);
+        frameInspectorImage.style.width = `${frameInspectorImage.naturalWidth / dpr}px`;
+        frameInspectorImage.style.maxWidth = fit ? '100%' : 'none';
+        document.getElementById('frame-inspector-native').setAttribute('aria-pressed', String(!fit));
+        document.getElementById('frame-inspector-fit').setAttribute('aria-pressed', String(fit));
+      }
+
+      async function inspectReceivedFrame() {
+        if (!screenEl.naturalWidth || !screenEl.src || inspectedFrameUrl || frameInspectionBusy) return;
+        frameInspectionBusy = true;
+        frameInspectButton.disabled = true;
+        try {
+          const rect = screenEl.getBoundingClientRect();
+          const dpr = window.devicePixelRatio || 1;
+          // Copy the received JPEG bytes, without recapture or re-encoding.
+          // The live renderer can then revoke its own URL independently.
+          const response = await fetch(screenEl.currentSrc || screenEl.src);
+          if (!response.ok) throw new Error('Kare okunamadi');
+          inspectedFrameUrl = URL.createObjectURL(await response.blob());
+          frameInspectorImage.src = inspectedFrameUrl;
+          await frameInspectorImage.decode();
+          document.getElementById('frame-inspector-info').textContent =
+            `JPEG: ${frameInspectorImage.naturalWidth}x${frameInspectorImage.naturalHeight}. ` +
+            `Canli gorunum: ${Math.round(rect.width * dpr)}x${Math.round(rect.height * dpr)} ekran pikseli. DPR: ${dpr.toFixed(2)}.`;
+          setInspectedFrameFit(false);
+          frameInspector.showModal();
+        } catch (_) {
+          releaseInspectedFrame();
+          showToast('Kare acilamadi. Goruntu geldikten sonra tekrar dene.', 'err');
+        } finally {
+          frameInspectionBusy = false;
+          frameInspectButton.disabled = false;
+        }
+      }
+
+      function releaseInspectedFrame() {
+        frameInspectorImage.removeAttribute('src');
+        if (inspectedFrameUrl) URL.revokeObjectURL(inspectedFrameUrl);
+        inspectedFrameUrl = null;
       }
 
       function renderStreamFrame(bytes) {
@@ -3370,9 +3445,15 @@
       screenEl.addEventListener('load', () => {
         if (screenEl.naturalWidth) {
           frameWidth = screenEl.naturalWidth;
+          frameInspectButton.disabled = false;
         }
         applyScreenTransform();
       });
+      frameInspectButton.addEventListener('click', inspectReceivedFrame);
+      document.getElementById('frame-inspector-native').addEventListener('click', () => setInspectedFrameFit(false));
+      document.getElementById('frame-inspector-fit').addEventListener('click', () => setInspectedFrameFit(true));
+      document.getElementById('frame-inspector-close').addEventListener('click', () => frameInspector.close());
+      frameInspector.addEventListener('close', releaseInspectedFrame);
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });
