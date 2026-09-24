@@ -120,7 +120,7 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
-Tarayici istemcisinde `Hizli` ve `Normal` hedef ekrana gore en az 1920 piksel genislik kullanir. `Normal`, JPEG `q85` ve 4:4:4 renk orneklemesiyle yazi detayini korur. `HD`, tarayici DPI degerinden bagimsiz olarak 4096 piksel sinirina kadar kaynak cozunurlugunu JPEG `q90` ile korur; daha kucuk kaynak buyutulmez. Tum modlar ekrani kirpmadan sigdirir. HD daha fazla bant genisligi kullanabilir.
+Tarayici istemcisinde `Normal`, sigdirilan goruntunun fiziksel ekran pikseli genisligini kullanir; boylece tarayici buyuk bir JPEG'i ikinci kez kucultup yazilari bulaniklastirmaz. `Normal`, JPEG `q85` ve 4:4:4 renk orneklemesi kullanir. `HD`, sigdirilmis gorunumde ayni piksel eslemesini JPEG `q90` ile korur ve kullanici yakinlastirdikca kaynak cozunurlugunu 4096 piksel sinirina kadar otomatik yukselterek detay saglar. `Hizli`, bant genisligini azaltmak icin hedef genisligin yuzde 75'ini kullanir. Tum modlar ekrani kirpmadan sigdirir.
 
 ## Ekran ve Isaretci Notu
 

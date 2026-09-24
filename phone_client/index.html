@@ -1039,7 +1039,7 @@
       let publicUrl = '{{PUBLIC_URL}}';
       let wanUrl = '{{WAN_URL}}';
       const DEFAULT_POLL_MS = Number('{{POLL_MS}}') || 1400;
-      const MIN_STREAM_WIDTH = 1920;
+      const MIN_STREAM_WIDTH = 640;
       const MAX_STREAM_WIDTH = 4096;
       const DRAG_TARGET_STEP_PX = 24;
       const POLL_ORDER = ['live', 'balanced', 'eco'];
@@ -2080,13 +2080,13 @@
         if (pollMode === 'live') {
           return {
             quality: 90,
-            // Preserve source detail up to the server's safety cap, even on
-            // low-DPI viewers. The server never upscales a smaller capture.
-            width: MAX_STREAM_WIDTH,
+            // Match the fitted view pixel-for-pixel, then request more source
+            // detail only when the user zooms in.
+            width: autoFitWidth(screenTransform.scale),
             sharp: 1
           };
         }
-        return { quality: 85, width: autoFitWidth(1.25), sharp: 1 };
+        return { quality: 85, width: autoFitWidth(1), sharp: 1 };
       }
 
       function qualityQuery() {
@@ -2873,19 +2873,23 @@
         const viewerRect = viewer.getBoundingClientRect();
         const viewerWidth = Math.max(1, viewerRect.width);
         const viewerHeight = Math.max(1, viewerRect.height);
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
         const sourceWidth = screenEl.naturalWidth || screenInfo.width || viewerWidth;
         const sourceHeight = screenEl.naturalHeight || screenInfo.height || viewerHeight;
         const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
         const viewerRatio = viewerWidth / viewerHeight;
+        let physicalWidth;
+        let physicalHeight;
         if (sourceRatio >= viewerRatio) {
-          return {
-            width: viewerWidth,
-            height: viewerWidth / sourceRatio
-          };
+          physicalWidth = Math.floor(viewerWidth * dpr);
+          physicalHeight = Math.round(physicalWidth / sourceRatio);
+        } else {
+          physicalHeight = Math.floor(viewerHeight * dpr);
+          physicalWidth = Math.round(physicalHeight * sourceRatio);
         }
         return {
-          width: viewerHeight * sourceRatio,
-          height: viewerHeight
+          width: physicalWidth / dpr,
+          height: physicalHeight / dpr
         };
       }
 
@@ -2894,6 +2898,19 @@
         const dpr = Math.max(1, window.devicePixelRatio || 1);
         const targetPhysicalWidth = base.width * dpr * multiplier;
         return Math.round(clamp(targetPhysicalWidth, MIN_STREAM_WIDTH, MAX_STREAM_WIDTH));
+      }
+
+      function refreshStreamResolutionForZoom() {
+        if (pollMode !== 'live') return;
+        const targetWidth = qualityProfile().width;
+        if (Math.abs(targetWidth - frameWidth) < 64) return;
+        if (streamMode === 'stream') {
+          restartPushStream();
+        } else if (streamMode === 'frame') {
+          forceFreshFramePoll();
+        } else {
+          scheduleNextPoll(0);
+        }
       }
 
       function clampScreenTransform(transform = screenTransform) {
@@ -3105,6 +3122,7 @@
             };
             return;
           }
+          refreshStreamResolutionForZoom();
           gesture = null;
           return;
         }

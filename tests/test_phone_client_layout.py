@@ -3,12 +3,12 @@ from pathlib import Path
 
 
 class PhoneClientLayoutTests(unittest.TestCase):
-    def test_hd_mode_requests_native_retina_detail(self):
+    def test_quality_modes_match_the_browser_physical_pixels(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
         self.assertIn("quality: 90,", html)
-        self.assertIn("width: MAX_STREAM_WIDTH,", html)
-        self.assertIn("return { quality: 85, width: autoFitWidth(1.25), sharp: 1 };", html)
+        self.assertIn("width: autoFitWidth(screenTransform.scale),", html)
+        self.assertIn("return { quality: 85, width: autoFitWidth(1), sharp: 1 };", html)
         self.assertIn("return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };", html)
         self.assertIn("return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];", html)
         self.assertIn("showToast(`Kalite: ${profileText}`);", html)
@@ -19,10 +19,13 @@ class PhoneClientLayoutTests(unittest.TestCase):
         self.assertNotIn('id="btn-fit-sharp"', html)
         self.assertIn("function autoFitWidth(multiplier = 1)", html)
         self.assertIn("window.devicePixelRatio", html)
-        self.assertIn("const MIN_STREAM_WIDTH = 1920;", html)
+        self.assertIn("const MIN_STREAM_WIDTH = 640;", html)
         self.assertIn("const MAX_STREAM_WIDTH = 4096;", html)
         self.assertIn("const targetPhysicalWidth = base.width * dpr * multiplier;", html)
         self.assertIn("clamp(targetPhysicalWidth, MIN_STREAM_WIDTH, MAX_STREAM_WIDTH)", html)
+        self.assertIn("physicalWidth = Math.round(physicalHeight * sourceRatio);", html)
+        self.assertIn("width: physicalWidth / dpr,", html)
+        self.assertIn("function refreshStreamResolutionForZoom()", html)
         self.assertIn("applyScreenTransform({ scale: 1, panX: 0, panY: 0 });", html)
         self.assertIn("autoFitResizeTimer = setTimeout", html)
         self.assertIn("screenEl.style.width = `${base.width * screenTransform.scale}px`;", html)
