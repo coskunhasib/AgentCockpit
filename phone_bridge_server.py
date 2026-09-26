@@ -737,13 +737,20 @@ def _scale_to_width(image, max_width, *, sharpen=False):
     if image.width > max_width:
         ratio = max_width / image.width
         resampling = getattr(Image, "Resampling", Image)
+        sharpen_level = int(sharpen or 0)
+        resize_filter = resampling.BOX if sharpen_level >= 2 else resampling.LANCZOS
         resized = image.resize(
             (max_width, int(image.height * ratio)),
-            resampling.LANCZOS,
+            resize_filter,
         )
-        if sharpen:
+        if sharpen_level:
+            unsharp_options = (
+                {"radius": 0.7, "percent": 190, "threshold": 1}
+                if sharpen_level >= 2
+                else {"radius": 1.0, "percent": 140, "threshold": 2}
+            )
             image = resized.filter(
-                ImageFilter.UnsharpMask(radius=1.0, percent=140, threshold=2)
+                ImageFilter.UnsharpMask(**unsharp_options)
             )
             _close_image(resized)
         else:
@@ -858,7 +865,13 @@ def _parse_stream_params(query, default_quality, default_width):
 
 
 def _parse_sharpen_param(query):
-    return str(query.get("sharp", [""])[0]).strip().lower() in {"1", "true", "yes", "on"}
+    raw = str(query.get("sharp", [""])[0]).strip().lower()
+    if raw in {"true", "yes", "on"}:
+        return 1
+    try:
+        return max(0, min(2, int(raw)))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _is_nearly_black_frame(image, *, max_channel=4):

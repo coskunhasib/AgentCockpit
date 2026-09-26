@@ -8,9 +8,13 @@ class PhoneClientLayoutTests(unittest.TestCase):
 
         self.assertIn("quality: 90,", html)
         self.assertIn("width: autoFitWidth(screenTransform.scale),", html)
-        self.assertIn("return { quality: 85, width: autoFitWidth(1), sharp: 1 };", html)
-        self.assertIn("return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };", html)
-        self.assertIn("return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];", html)
+        self.assertIn("return { quality: 85, width: autoFitWidth(1), sharp: 2 };", html)
+        self.assertIn("return { quality: 50, width: autoFitWidth(0.75), sharp: 2 };", html)
+        self.assertIn("`q=${profile.quality}`", html)
+        self.assertIn("`w=${profile.width}`", html)
+        self.assertIn("`sharp=${profile.sharp}`", html)
+        self.assertIn("`vw=${Math.round(viewerRect.width)}`", html)
+        self.assertIn("`dpr=${dpr.toFixed(2)}`", html)
         self.assertIn("showToast(`Kalite: ${profileText}`);", html)
 
     def test_sharp_fit_keeps_the_whole_screen_and_uses_device_pixels(self):

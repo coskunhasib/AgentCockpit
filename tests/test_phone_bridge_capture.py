@@ -79,8 +79,26 @@ class PhoneBridgeCaptureTests(unittest.TestCase):
             sharpened.close()
 
     def test_sharpen_query_is_explicit(self):
-        self.assertTrue(bridge._parse_sharpen_param({"sharp": ["1"]}))
-        self.assertFalse(bridge._parse_sharpen_param({}))
+        self.assertEqual(bridge._parse_sharpen_param({"sharp": ["1"]}), 1)
+        self.assertEqual(bridge._parse_sharpen_param({"sharp": ["2"]}), 2)
+        self.assertEqual(bridge._parse_sharpen_param({"sharp": ["9"]}), 2)
+        self.assertEqual(bridge._parse_sharpen_param({}), 0)
+
+    def test_text_sharpen_uses_a_distinct_downscale_profile(self):
+        source = Image.new("RGB", (200, 100), "white")
+        for x in range(81, 119):
+            for y in range(31, 69):
+                source.putpixel((x, y), (20, 40, 80))
+
+        regular = bridge._scale_to_width(source, 97, sharpen=1)
+        text_optimized = bridge._scale_to_width(source, 97, sharpen=2)
+
+        try:
+            self.assertEqual(text_optimized.size, (97, 48))
+            self.assertNotEqual(regular.tobytes(), text_optimized.tobytes())
+        finally:
+            regular.close()
+            text_optimized.close()
 
     def setUp(self):
         bridge._PYAUTOGUI = _CursorOnlyPyAutoGui()

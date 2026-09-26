@@ -2075,7 +2075,7 @@
 
       function qualityProfile() {
         if (pollMode === 'eco') {
-          return { quality: 50, width: autoFitWidth(0.75), sharp: 1 };
+          return { quality: 50, width: autoFitWidth(0.75), sharp: 2 };
         }
         if (pollMode === 'live') {
           return {
@@ -2083,15 +2083,24 @@
             // Match the fitted view pixel-for-pixel, then request more source
             // detail only when the user zooms in.
             width: autoFitWidth(screenTransform.scale),
-            sharp: 1
+            sharp: 2
           };
         }
-        return { quality: 85, width: autoFitWidth(1), sharp: 1 };
+        return { quality: 85, width: autoFitWidth(1), sharp: 2 };
       }
 
       function qualityQuery() {
         const profile = qualityProfile();
-        return [`q=${profile.quality}`, `w=${profile.width}`, `sharp=${profile.sharp}`];
+        const viewerRect = viewer.getBoundingClientRect();
+        const dpr = Math.max(0.1, window.devicePixelRatio || 1);
+        return [
+          `q=${profile.quality}`,
+          `w=${profile.width}`,
+          `sharp=${profile.sharp}`,
+          `vw=${Math.round(viewerRect.width)}`,
+          `vh=${Math.round(viewerRect.height)}`,
+          `dpr=${dpr.toFixed(2)}`
+        ];
       }
 
       function withParams(base, parts) {
