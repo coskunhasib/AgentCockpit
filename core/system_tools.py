@@ -1,6 +1,7 @@
 # core/system_tools.py
 import datetime
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -18,6 +19,7 @@ logger = get_logger("system_tools")
 _PYAUTOGUI = None
 _PYPERCLIP = None
 _QUARTZ = None
+_APPKIT = None
 
 
 def _get_pyautogui():
@@ -59,6 +61,54 @@ def _get_quartz():
     except Exception as exc:
         logger.error(f"Quartz unicode klavye kullanilamiyor: {exc}")
         return None
+
+
+def _get_appkit():
+    global _APPKIT
+    if _APPKIT is not None:
+        return _APPKIT
+
+    try:
+        _APPKIT = importlib.import_module("AppKit")
+        return _APPKIT
+    except Exception:
+        return None
+
+
+def _frontmost_bundle_id():
+    if sys.platform != "darwin":
+        return ""
+    appkit = _get_appkit()
+    if not appkit:
+        return ""
+    try:
+        app = appkit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        return str(app.bundleIdentifier() or "") if app else ""
+    except Exception:
+        return ""
+
+
+def _parsec_key_swap_enabled():
+    override = os.environ.get("AGENTCOCKPIT_PARSEC_KEY_SWAP", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+
+    for path in (Path.home() / ".parsec" / "config.json", Path("/Users/Shared/.parsec/config.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            config = payload[1] if isinstance(payload, list) and len(payload) > 1 else payload
+            entry = config.get("client_macos_key_swap") if isinstance(config, dict) else None
+            if isinstance(entry, dict):
+                entry = entry.get("value")
+            if isinstance(entry, bool):
+                return entry
+        except (OSError, ValueError, TypeError):
+            continue
+
+    # Parsec's current macOS default maps Command to Ctrl and Control to Windows.
+    return True
 
 
 def _paste_with_system_events(timeout=2):
@@ -149,6 +199,36 @@ class SystemOps:
         "win": "winleft",
         "windows": "winleft",
     }
+    PARSEC_KEY_ALIASES_SWAPPED = {
+        "cmd": "command",
+        "command": "command",
+        "ctrl": "command",
+        "control": "command",
+        "ctrlleft": "command",
+        "ctrlright": "command",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
+        "win": "ctrl",
+        "winleft": "ctrl",
+        "windows": "ctrl",
+        "alt": "option",
+        "option": "option",
+    }
+    PARSEC_KEY_ALIASES_NATIVE = {
+        "cmd": "command",
+        "command": "command",
+        "ctrl": "ctrl",
+        "control": "ctrl",
+        "ctrlleft": "ctrl",
+        "ctrlright": "ctrl",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
+        "win": "command",
+        "winleft": "command",
+        "windows": "command",
+        "alt": "option",
+        "option": "option",
+    }
     SPECIAL_COMMANDS = {
         "taskmgr-close",
         "close-taskmgr",
@@ -238,9 +318,20 @@ class SystemOps:
             return False
 
     @staticmethod
-    def normalize_hotkey(keys_list):
+    def is_parsec_frontmost():
+        return _frontmost_bundle_id().lower() == "tv.parsec.www"
+
+    @staticmethod
+    def normalize_hotkey(keys_list, *, parsec_passthrough=False):
         normalized = [SystemOps._normalize_key_name(key) for key in keys_list or []]
         if sys.platform == "darwin":
+            if parsec_passthrough:
+                aliases = (
+                    SystemOps.PARSEC_KEY_ALIASES_SWAPPED
+                    if _parsec_key_swap_enabled()
+                    else SystemOps.PARSEC_KEY_ALIASES_NATIVE
+                )
+                return [aliases.get(key, key) for key in normalized]
             combo = tuple(normalized)
             if combo in SystemOps.MAC_HOTKEY_COMBOS:
                 return list(SystemOps.MAC_HOTKEY_COMBOS[combo])
@@ -395,7 +486,7 @@ class SystemOps:
             return False
 
     @staticmethod
-    def execute_hotkey(keys_list):
+    def execute_hotkey(keys_list, *, parsec_passthrough=None):
         try:
             normalized_keys = [
                 SystemOps._normalize_key_name(key) for key in keys_list or []
@@ -417,9 +508,16 @@ class SystemOps:
             if not pyautogui:
                 return False
 
-            corrected_keys = SystemOps.normalize_hotkey(normalized_keys)
+            if parsec_passthrough is None:
+                parsec_passthrough = sys.platform == "darwin" and SystemOps.is_parsec_frontmost()
+            corrected_keys = SystemOps.normalize_hotkey(
+                normalized_keys,
+                parsec_passthrough=bool(parsec_passthrough),
+            )
             pyautogui.hotkey(*corrected_keys, interval=0.1)
-            logger.debug(f"Hotkey: {corrected_keys}")
+            logger.debug(
+                f"Hotkey: {corrected_keys} target={'parsec' if parsec_passthrough else 'local'}"
+            )
             return True
         except Exception as exc:
             logger.error(f"Hotkey hatasi: {exc}")

@@ -1126,10 +1126,12 @@ def _action_audit_payload(action_type, payload, *, request_id=""):
     }
     if action_type == "key":
         body["keys"] = str(payload.get("keys", ""))[:120]
+        body["input_target"] = _input_target(payload)
     elif action_type == "type":
         body["text_chars"] = len(str(payload.get("text", "")))
         body["sensitive"] = bool(payload.get("sensitive", False))
         body["has_focus"] = isinstance(payload.get("focus"), dict)
+        body["input_target"] = _input_target(payload)
     elif action_type == "click":
         body["button"] = str(payload.get("button", "left"))[:24]
         body["x"] = round(_clamp_ratio(payload.get("x", 0.0)), 4)
@@ -1153,14 +1155,23 @@ def _action_audit_payload(action_type, payload, *, request_id=""):
     return body
 
 
-def _perform_keypress(keys):
+def _input_target(payload):
+    requested = str((payload or {}).get("input_target", "")).strip().lower()
+    if requested in {"local", "parsec"}:
+        return requested
+    return "parsec" if SystemOps.is_parsec_frontmost() else "local"
+
+
+def _perform_keypress(keys, *, input_target="local"):
     if not keys:
         return True
+    if input_target == "parsec" and keys.strip().lower() in SystemOps.SPECIAL_COMMANDS:
+        return SystemOps.execute_hotkey(["alt", "f4"], parsec_passthrough=True)
     if "+" in keys:
         parts = [part.strip() for part in keys.split("+") if part.strip()]
         if SystemOps._is_blocked_hotkey(parts):
             raise RuntimeError("Riskli sistem kisayolu engellendi.")
-        return SystemOps.execute_hotkey(parts)
+        return SystemOps.execute_hotkey(parts, parsec_passthrough=input_target == "parsec")
 
     key = keys.strip()
     if SystemOps._is_blocked_hotkey([key]):
@@ -2832,7 +2843,10 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("delta", 0),
                 )
             elif action_type == "key":
-                if not _perform_keypress(payload.get("keys", "")):
+                if not _perform_keypress(
+                    payload.get("keys", ""),
+                    input_target=_input_target(payload),
+                ):
                     raise RuntimeError("Klavye kisayolu uygulanamadi. Accessibility iznini kontrol edin.")
             elif action_type == "type":
                 if not _perform_type(

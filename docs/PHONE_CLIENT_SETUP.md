@@ -179,7 +179,7 @@ Ana kullanim pairing sayfasindaki tek PWA akisi olmali; Telegram snapshot modu s
 
 ## Sonraki Mantikli Adim
 
-- Tarayici goruntu netligi tamamlandiktan sonra Parsec uzerinden kontrol edilen ikinci bilgisayara klavye komutlarinin iletilmemesini inceleme. Bu madde cozulmus sayilmaz ve goruntu calismasindan sonra ele alinacaktir.
+- Parsec macOS istemcisi on plandaysa klavye kisayollari yerel Mac karsiliklarina cevrilmez; Parsec'in `Swap Command and Ctrl for MacOS` ayarina gore Windows hedefine iletilir. `HID Mode` ve klavye `Immersive Mode` Parsec ayarlarinda acik olmalidir.
 - Uzak adres degisimlerini kullaniciya daha proaktif bildirme
 - eslesmis cihazlari arayuzden listeleyip sifirlama
 - akisi websocket veya delta-update mantigina yaklastirma

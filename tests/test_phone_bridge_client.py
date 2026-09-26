@@ -353,6 +353,39 @@ class PhoneBridgeClientTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "Riskli sistem tusu"):
                 phone_bridge_server._perform_keypress("sleep")
 
+    def test_phone_hotkey_can_force_parsec_passthrough(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "execute_hotkey",
+            return_value=True,
+        ) as execute_hotkey:
+            self.assertTrue(
+                phone_bridge_server._perform_keypress(
+                    "ctrl+shift+esc",
+                    input_target="parsec",
+                )
+            )
+
+        execute_hotkey.assert_called_once_with(
+            ["ctrl", "shift", "esc"],
+            parsec_passthrough=True,
+        )
+
+    def test_parsec_task_manager_close_uses_remote_alt_f4(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "execute_hotkey",
+            return_value=True,
+        ) as execute_hotkey:
+            self.assertTrue(
+                phone_bridge_server._perform_keypress(
+                    "taskmgr-close",
+                    input_target="parsec",
+                )
+            )
+
+        execute_hotkey.assert_called_once_with(["alt", "f4"], parsec_passthrough=True)
+
     def test_action_audit_payload_does_not_log_text_content(self):
         payload = {
             "type": "type",

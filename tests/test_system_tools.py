@@ -62,6 +62,42 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["option", "tab"]), ["alt", "tab"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
 
+    def test_parsec_frontmost_preserves_windows_hotkey_intent(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.hotkeys = []
+
+            def hotkey(self, *keys, **kwargs):
+                self.hotkeys.append((keys, kwargs))
+
+        fake_pyautogui = FakePyAutoGui()
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            SystemOps, "is_parsec_frontmost", return_value=True
+        ), patch.object(
+            system_tools, "_parsec_key_swap_enabled", return_value=True
+        ), patch.object(
+            system_tools, "_get_pyautogui", return_value=fake_pyautogui
+        ):
+            self.assertTrue(SystemOps.execute_hotkey(["ctrl", "shift", "esc"]))
+            self.assertTrue(SystemOps.execute_hotkey(["alt", "tab"]))
+            self.assertTrue(SystemOps.execute_hotkey(["winleft", "d"]))
+
+        self.assertEqual(
+            [keys for keys, _ in fake_pyautogui.hotkeys],
+            [("command", "shift", "esc"), ("option", "tab"), ("ctrl", "d")],
+        )
+
+    def test_parsec_native_mapping_honors_disabled_command_ctrl_swap(self):
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools, "_parsec_key_swap_enabled", return_value=False
+        ):
+            self.assertEqual(
+                SystemOps.normalize_hotkey(
+                    ["ctrl", "alt", "winleft"], parsec_passthrough=True
+                ),
+                ["ctrl", "option", "command"],
+            )
+
     def test_system_lock_hotkeys_are_blocked_before_pyautogui(self):
         class FakePyAutoGui:
             def hotkey(self, *keys, **kwargs):

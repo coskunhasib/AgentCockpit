@@ -948,6 +948,7 @@
   <div id="keyboard-panel">
     <div class="keyboard-header">
       <div class="keyboard-title">Klavye</div>
+      <button class="key-btn" id="btn-input-target" type="button" aria-pressed="false">Hedef: Mac</button>
       <button class="keyboard-close" id="btn-keyboard-close" type="button">Kapat</button>
     </div>
     <div class="input-row">
@@ -1054,7 +1055,8 @@
         rotateHintDismissed: 'ac_phone_rotate_hint_dismissed_v1',
         usageHintDismissed: 'ac_phone_usage_hint_dismissed_v1',
         repoOfferDismissed: 'ac_phone_repo_offer_dismissed_v1',
-        deviceToken: 'ac_phone_device_token_v1'
+        deviceToken: 'ac_phone_device_token_v1',
+        inputTarget: 'ac_phone_input_target_v1'
       };
       const templateValue = (value) => (
         value && !String(value).startsWith('{{') ? String(value) : ''
@@ -1109,6 +1111,7 @@
       const keyboardPanel = document.getElementById('keyboard-panel');
       const btnKeyboard = document.getElementById('btn-keyboard');
       const btnKeyboardClose = document.getElementById('btn-keyboard-close');
+      const btnInputTarget = document.getElementById('btn-input-target');
       const btnRefresh = document.getElementById('btn-refresh');
       const btnSpeed = document.getElementById('btn-speed');
       const btnScroll = document.getElementById('btn-scroll');
@@ -1145,6 +1148,7 @@
       let sessionInfo = { expiresAt: 0, expiresIn: 0, expiresInText: '', expiresUnlimited: false, label: '', trustedDevice: false, deviceLabel: '', authKind: '' };
       let serverPollMs = DEFAULT_POLL_MS;
       let pollMode = localStorage.getItem(STORAGE_KEYS.pollMode) || 'balanced';
+      let inputTarget = localStorage.getItem(STORAGE_KEYS.inputTarget) === 'parsec' ? 'parsec' : 'local';
       let pollTimer = null;
       let autoFitResizeTimer = null;
       let usageHintTimer = null;
@@ -2535,8 +2539,11 @@
       // Queue UI-initiated commands so nothing is silently dropped while another
       // request is in flight, and so overlapping desktop input never races.
       function enqueueAction(payload, feedback = {}) {
+        const inputPayload = (payload.type === 'key' || payload.type === 'type')
+          ? { ...payload, input_target: inputTarget }
+          : payload;
         const job = {
-          payload: { ...payload, request_id: nextRequestId(), no_screenshot: streamMode !== 'poll' },
+          payload: { ...inputPayload, request_id: nextRequestId(), no_screenshot: streamMode !== 'poll' },
           feedback
         };
         setActionFeedback(feedback, 'pending');
@@ -3391,6 +3398,14 @@
       btnKeyboardClose.addEventListener('click', () => {
         setKeyboardVisible(false);
       });
+      btnInputTarget.addEventListener('click', () => {
+        inputTarget = inputTarget === 'parsec' ? 'local' : 'parsec';
+        localStorage.setItem(STORAGE_KEYS.inputTarget, inputTarget);
+        btnInputTarget.textContent = inputTarget === 'parsec' ? 'Hedef: Parsec' : 'Hedef: Mac';
+        btnInputTarget.classList.toggle('active', inputTarget === 'parsec');
+        btnInputTarget.setAttribute('aria-pressed', String(inputTarget === 'parsec'));
+        showToast(inputTarget === 'parsec' ? 'Klavye hedefi: Parsec' : 'Klavye hedefi: Mac');
+      });
       btnInstall.addEventListener('click', () => handleInstallRequest(true));
       installNow.addEventListener('click', async () => {
         await handleInstallRequest(true);
@@ -3589,6 +3604,9 @@
         setStatusExpanded(false);
       });
       updateSpeedButton();
+      btnInputTarget.textContent = inputTarget === 'parsec' ? 'Hedef: Parsec' : 'Hedef: Mac';
+      btnInputTarget.classList.toggle('active', inputTarget === 'parsec');
+      btnInputTarget.setAttribute('aria-pressed', String(inputTarget === 'parsec'));
       refreshInstallUI();
       setRepoPromptMode('info');
       setUsageHintVisible(localStorage.getItem(STORAGE_KEYS.usageHintDismissed) !== '1');

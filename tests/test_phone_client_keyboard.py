@@ -12,6 +12,9 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn('data-key="winleft+d"', html)
         self.assertIn('data-key="mac_control+left"', html)
         self.assertIn('data-key="mac_control+right"', html)
+        self.assertIn('id="btn-input-target"', html)
+        self.assertIn("input_target: inputTarget", html)
+        self.assertIn("inputTarget === 'parsec' ? 'Hedef: Parsec' : 'Hedef: Mac'", html)
 
     def test_keyboard_defaults_to_visible_text_with_password_toggle(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
