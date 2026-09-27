@@ -279,6 +279,54 @@ class SystemToolsHotkeyTests(unittest.TestCase):
         self.assertEqual(fake_pyperclip.copied, ["metin"])
         self.assertEqual(fake_pyautogui.hotkeys, [(("command", "v"), {"interval": 0.08})])
 
+    def test_parsec_ascii_text_uses_physical_key_events(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.writes = []
+                self.presses = []
+
+            def write(self, text, interval=0.0):
+                self.writes.append((text, interval))
+
+            def press(self, key):
+                self.presses.append(key)
+
+        fake_pyautogui = FakePyAutoGui()
+        with patch.object(system_tools, "_get_pyautogui", return_value=fake_pyautogui):
+            self.assertTrue(SystemOps.type_text_for_parsec("test\n123", interval=0.04))
+
+        self.assertEqual(fake_pyautogui.writes, [("test", 0.04), ("123", 0.04)])
+        self.assertEqual(fake_pyautogui.presses, ["enter"])
+
+    def test_parsec_unicode_text_uses_passthrough_paste_hotkey(self):
+        class FakePyAutoGui:
+            pass
+
+        class FakePyperclip:
+            def __init__(self):
+                self.value = "onceki"
+                self.copied = []
+
+            def paste(self):
+                return self.value
+
+            def copy(self, text):
+                self.value = text
+                self.copied.append(text)
+
+        fake_pyperclip = FakePyperclip()
+        with patch.object(system_tools, "_get_pyautogui", return_value=FakePyAutoGui()), patch.object(
+            system_tools, "_get_pyperclip", return_value=fake_pyperclip
+        ), patch.object(SystemOps, "execute_hotkey", return_value=True) as hotkey, patch.object(
+            system_tools.time, "sleep", return_value=None
+        ):
+            self.assertTrue(
+                SystemOps.type_text_for_parsec("Türkçe", restore_clipboard=True)
+            )
+
+        hotkey.assert_called_once_with(["ctrl", "v"], parsec_passthrough=True)
+        self.assertEqual(fake_pyperclip.copied, ["Türkçe", "onceki"])
+
     def test_system_events_paste_runs_osascript_with_timeout(self):
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
         with patch.object(system_tools.sys, "platform", "darwin"), patch.object(

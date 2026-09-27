@@ -593,6 +593,70 @@ class SystemOps:
             return False
 
     @staticmethod
+    def type_text_for_parsec(text, *, restore_clipboard=False, interval=0.03):
+        """Send text through key events that Parsec can forward to its host."""
+        try:
+            if not text:
+                return True
+
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
+
+            value = str(text)
+            if all(char in "\n\r\t" or 32 <= ord(char) <= 126 for char in value):
+                buffer = []
+
+                def flush_buffer():
+                    if not buffer:
+                        return
+                    pyautogui.write("".join(buffer), interval=interval)
+                    buffer.clear()
+
+                for char in value:
+                    if char in ("\n", "\r"):
+                        flush_buffer()
+                        pyautogui.press("enter")
+                    elif char == "\t":
+                        flush_buffer()
+                        pyautogui.press("tab")
+                    else:
+                        buffer.append(char)
+                flush_buffer()
+                logger.debug("Parsec metni fiziksel ASCII tus eventleriyle yazildi.")
+                return True
+
+            pyperclip = _get_pyperclip()
+            if not pyperclip:
+                return False
+
+            previous_clipboard = None
+            if restore_clipboard:
+                try:
+                    previous_clipboard = pyperclip.paste()
+                except Exception:
+                    previous_clipboard = None
+
+            pyperclip.copy(value)
+            time.sleep(0.15)
+            pasted = SystemOps.execute_hotkey(
+                ["ctrl", "v"],
+                parsec_passthrough=True,
+            )
+            if restore_clipboard and previous_clipboard is not None:
+                time.sleep(0.4)
+                pyperclip.copy(previous_clipboard)
+
+            logger.debug(
+                f"Parsec metni fiziksel paste hotkey ile gonderildi: success={pasted}"
+            )
+            return pasted
+        except Exception as exc:
+            logger.error(f"Parsec yazma hatasi: {exc}")
+            log_crash("system_tools.type_text_for_parsec", str(exc))
+            return False
+
+    @staticmethod
     def desktop_input_permissions():
         status = {
             "quartz_available": False,

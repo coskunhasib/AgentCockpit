@@ -179,7 +179,7 @@ Ana kullanim pairing sayfasindaki tek PWA akisi olmali; Telegram snapshot modu s
 
 ## Sonraki Mantikli Adim
 
-- Parsec macOS istemcisi on plandaysa klavye kisayollari yerel Mac karsiliklarina cevrilmez; Parsec'in `Swap Command and Ctrl for MacOS` ayarina gore Windows hedefine iletilir. `HID Mode` ve klavye `Immersive Mode` Parsec ayarlarinda acik olmalidir.
+- Klavye panelindeki `Hedef: Parsec` secenegi kisayollari yerel Mac karsiliklarina cevirmeden Parsec'in `Swap Command and Ctrl for MacOS` ayarina gore Windows hedefine iletir. ASCII metinler Parsec'in yakalayabilecegi fiziksel tus eventleriyle yazilir; Turkce/Unicode metinler ise yerel `System Events` yerine Parsec'e yonlendirilmis paste hotkey ile gonderilir. `HID Mode` ve klavye `Immersive Mode` Parsec ayarlarinda acik olmalidir.
 - Uzak adres degisimlerini kullaniciya daha proaktif bildirme
 - eslesmis cihazlari arayuzden listeleyip sifirlama
 - akisi websocket veya delta-update mantigina yaklastirma

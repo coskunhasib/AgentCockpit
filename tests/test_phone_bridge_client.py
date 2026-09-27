@@ -345,6 +345,29 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         paste_text.assert_called_once_with("şifre", restore_clipboard=True)
 
+    def test_parsec_phone_typing_uses_parsec_key_events(self):
+        with patch.object(
+            phone_bridge_server.SystemOps,
+            "type_text_for_parsec",
+            return_value=True,
+        ) as parsec_type, patch.object(
+            phone_bridge_server.SystemOps,
+            "paste_text",
+            side_effect=AssertionError("local paste must not be used"),
+        ):
+            self.assertTrue(
+                phone_bridge_server._perform_type(
+                    "remote text",
+                    sensitive=True,
+                    input_target="parsec",
+                )
+            )
+
+        parsec_type.assert_called_once_with(
+            "remote text",
+            restore_clipboard=True,
+        )
+
     def test_blocked_phone_hotkey_reports_system_shortcut_reason(self):
         with patch.object(phone_bridge_server.sys, "platform", "darwin"):
             with self.assertRaisesRegex(RuntimeError, "Riskli sistem kisayolu"):

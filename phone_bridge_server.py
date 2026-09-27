@@ -1191,17 +1191,25 @@ def _perform_focus_click(focus):
     return True
 
 
-def _perform_type(text, *, sensitive=False, focus=None):
+def _perform_type(text, *, sensitive=False, focus=None, input_target="local"):
     if not text:
         return True
 
     focused = _perform_focus_click(focus)
-    pasted = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
+    if input_target == "parsec":
+        sent = SystemOps.type_text_for_parsec(
+            text,
+            restore_clipboard=bool(sensitive),
+        )
+        method = "parsec_key_events"
+    else:
+        sent = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
+        method = "local_clipboard"
     logger.info(
-        f"Telefon metni clipboard paste ile gonderildi: chars={len(text)} "
-        f"sensitive={bool(sensitive)} focus={focused} success={pasted}"
+        f"Telefon metni gonderildi: chars={len(text)} sensitive={bool(sensitive)} "
+        f"focus={focused} target={input_target} method={method} success={sent}"
     )
-    return pasted
+    return sent
 
 
 def _parse_cookie_header(raw_cookie):
@@ -2853,6 +2861,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     payload.get("text", ""),
                     sensitive=bool(payload.get("sensitive", False)),
                     focus=payload.get("focus"),
+                    input_target=_input_target(payload),
                 ):
                     raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
