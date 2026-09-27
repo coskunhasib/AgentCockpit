@@ -114,4 +114,8 @@ if [[ "${1:-}" == "stop" ]]; then
   exit 0
 fi
 
-AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart
+if [[ "$(uname -s 2>/dev/null || true)" == "Darwin" && "${AGENTCOCKPIT_MAC_AUTOSTART_GUARD:-1}" != "0" ]]; then
+  AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/macos_autostart_guard.py" "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart
+else
+  AGENTCOCKPIT_AUTOSTART=true "$PYTHON_BIN" "$PROJECT_ROOT/main.py" --autostart
+fi

@@ -18,6 +18,7 @@ Telefon/PWA modulleri proje kokundedir. Ana calistirma kokteki `main.py` uzerind
 - admin token ile yeni link uretebilme
 - uyarlanabilir polling (`Live / Normal / Eco`)
 - dokunma, scroll ve klavye odakli mobil kontrol
+- masaustu tarayicilarinda sol/cift/sag tik, gercek zamanli tut-surukle ve fare tekerlegiyle kontrol
 - Telegram hattindan `Telefon` dugmesiyle yeni link mint etme
 - service worker destekli app shell
 - ana ekrana eklenebilir PWA akisi
@@ -60,4 +61,5 @@ Hesapsiz uzak tunnel adresi degisirse bot yeni `Uzak Ac` linkini Telegram'a otom
 Ek not:
 
 - macOS Retina ekranlarda screenshot ustundeki kirmizi fare isareti logical/display scale farkina gore normalize edilir.
+- Uzak surukleme hedefleri piksel esigine gore akar; bridge hedefler arasini kucuk ara hareketlerle doldurup son hedef uygulandiktan sonra mouse'u birakir.
 - Ortam tanisi icin `python main.py --doctor` komutu kullanilabilir.

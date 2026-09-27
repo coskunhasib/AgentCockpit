@@ -6,6 +6,40 @@ from core.system_tools import SystemOps
 
 
 class SystemToolsHotkeyTests(unittest.TestCase):
+    def test_mac_space_shortcut_uses_dock_gesture_instead_of_pyautogui(self):
+        class FakeQuartz:
+            kCGSessionEventTap = 1
+
+            def __init__(self):
+                self.integer_fields = []
+                self.double_fields = []
+                self.posts = []
+
+            def CGEventCreate(self, _):
+                return object()
+
+            def CGEventSetIntegerValueField(self, event, field, value):
+                self.integer_fields.append((event, field, value))
+
+            def CGEventSetDoubleValueField(self, event, field, value):
+                self.double_fields.append((event, field, value))
+
+            def CGEventPost(self, tap, event):
+                self.posts.append((tap, event))
+
+        fake_quartz = FakeQuartz()
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools, "_get_quartz", return_value=fake_quartz
+        ), patch.object(
+            system_tools, "_get_pyautogui", side_effect=AssertionError("pyautogui must not be used")
+        ):
+            self.assertTrue(SystemOps.execute_hotkey(["mac_control", "left"]))
+
+        self.assertIn((fake_quartz.integer_fields[0][0], 132, 1), fake_quartz.integer_fields)
+        self.assertIn((fake_quartz.integer_fields[0][0], 132, 4), fake_quartz.integer_fields)
+        self.assertIn((fake_quartz.double_fields[0][0], 124, -1.0), fake_quartz.double_fields)
+        self.assertEqual(len(fake_quartz.posts), 2)
+
     def test_mac_maps_windows_style_shortcuts_to_macos_intent(self):
         with patch.object(system_tools.sys, "platform", "darwin"):
             self.assertEqual(SystemOps.normalize_hotkey(["ctrl", "c"]), ["command", "c"])
@@ -14,6 +48,8 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["winleft", "d"]), ["command", "f3"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "right"]), ["ctrl", "right"])
+            self.assertEqual(SystemOps.normalize_hotkey(["ctrlleft", "left"]), ["ctrl", "left"])
+            self.assertEqual(SystemOps.normalize_hotkey(["ctrlright", "right"]), ["ctrl", "right"])
             self.assertEqual(
                 SystemOps.normalize_hotkey(["ctrl", "shift", "esc"]),
                 ["command", "option", "esc"],
@@ -25,6 +61,42 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             self.assertEqual(SystemOps.normalize_hotkey(["command", "v"]), ["ctrl", "v"])
             self.assertEqual(SystemOps.normalize_hotkey(["option", "tab"]), ["alt", "tab"])
             self.assertEqual(SystemOps.normalize_hotkey(["mac_control", "left"]), ["ctrl", "left"])
+
+    def test_parsec_frontmost_preserves_windows_hotkey_intent(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.hotkeys = []
+
+            def hotkey(self, *keys, **kwargs):
+                self.hotkeys.append((keys, kwargs))
+
+        fake_pyautogui = FakePyAutoGui()
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            SystemOps, "is_parsec_frontmost", return_value=True
+        ), patch.object(
+            system_tools, "_parsec_key_swap_enabled", return_value=True
+        ), patch.object(
+            system_tools, "_get_pyautogui", return_value=fake_pyautogui
+        ):
+            self.assertTrue(SystemOps.execute_hotkey(["ctrl", "shift", "esc"]))
+            self.assertTrue(SystemOps.execute_hotkey(["alt", "tab"]))
+            self.assertTrue(SystemOps.execute_hotkey(["winleft", "d"]))
+
+        self.assertEqual(
+            [keys for keys, _ in fake_pyautogui.hotkeys],
+            [("command", "shift", "esc"), ("option", "tab"), ("ctrl", "d")],
+        )
+
+    def test_parsec_native_mapping_honors_disabled_command_ctrl_swap(self):
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools, "_parsec_key_swap_enabled", return_value=False
+        ):
+            self.assertEqual(
+                SystemOps.normalize_hotkey(
+                    ["ctrl", "alt", "winleft"], parsec_passthrough=True
+                ),
+                ["ctrl", "option", "command"],
+            )
 
     def test_system_lock_hotkeys_are_blocked_before_pyautogui(self):
         class FakePyAutoGui:
@@ -206,6 +278,54 @@ class SystemToolsHotkeyTests(unittest.TestCase):
 
         self.assertEqual(fake_pyperclip.copied, ["metin"])
         self.assertEqual(fake_pyautogui.hotkeys, [(("command", "v"), {"interval": 0.08})])
+
+    def test_parsec_ascii_text_uses_physical_key_events(self):
+        class FakePyAutoGui:
+            def __init__(self):
+                self.writes = []
+                self.presses = []
+
+            def write(self, text, interval=0.0):
+                self.writes.append((text, interval))
+
+            def press(self, key):
+                self.presses.append(key)
+
+        fake_pyautogui = FakePyAutoGui()
+        with patch.object(system_tools, "_get_pyautogui", return_value=fake_pyautogui):
+            self.assertTrue(SystemOps.type_text_for_parsec("test\n123", interval=0.04))
+
+        self.assertEqual(fake_pyautogui.writes, [("test", 0.04), ("123", 0.04)])
+        self.assertEqual(fake_pyautogui.presses, ["enter"])
+
+    def test_parsec_unicode_text_uses_passthrough_paste_hotkey(self):
+        class FakePyAutoGui:
+            pass
+
+        class FakePyperclip:
+            def __init__(self):
+                self.value = "onceki"
+                self.copied = []
+
+            def paste(self):
+                return self.value
+
+            def copy(self, text):
+                self.value = text
+                self.copied.append(text)
+
+        fake_pyperclip = FakePyperclip()
+        with patch.object(system_tools, "_get_pyautogui", return_value=FakePyAutoGui()), patch.object(
+            system_tools, "_get_pyperclip", return_value=fake_pyperclip
+        ), patch.object(SystemOps, "execute_hotkey", return_value=True) as hotkey, patch.object(
+            system_tools.time, "sleep", return_value=None
+        ):
+            self.assertTrue(
+                SystemOps.type_text_for_parsec("Türkçe", restore_clipboard=True)
+            )
+
+        hotkey.assert_called_once_with(["ctrl", "v"], parsec_passthrough=True)
+        self.assertEqual(fake_pyperclip.copied, ["Türkçe", "onceki"])
 
     def test_system_events_paste_runs_osascript_with_timeout(self):
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()

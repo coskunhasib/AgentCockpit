@@ -111,6 +111,8 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_KEEP_AWAKE=1`
 - `PHONE_KEEP_AWAKE_FLAGS=-dims`
 - `PHONE_CAPTURE_LOCK_TIMEOUT_SEC=3.0`
+- `PHONE_DRAG_STEP_PIXELS=16`
+- `PHONE_DRAG_STEP_DELAY_MS=4`
 - `PHONE_STREAM_MAX_CONNECTIONS=2`
 - `PHONE_STREAM_MAX_SECONDS=600`
 - `PHONE_STREAM_GC_EVERY_FRAMES=120`
@@ -118,10 +120,15 @@ Istersen root `.env` dosyana bunlari ekleyebilirsin. Ornek ayarlar root `.env.ex
 - `PHONE_NOTIFY_TUNNEL_CHANGES=1`
 - `PHONE_NOTIFY_TUNNEL_INTERVAL_SEC=20`
 
+Tarayici istemcisinde `Normal`, sigdirilan goruntunun fiziksel ekran pikseli genisligini kullanir; boylece tarayici buyuk bir JPEG'i ikinci kez kucultup yazilari bulaniklastirmaz. Retina kaynak hedef boyuta indirilirken arayuz yazilari icin kenar koruyan metin filtresi kullanilir. `Normal`, JPEG `q85` ve 4:4:4 renk orneklemesi kullanir. `HD`, sigdirilmis gorunumde ayni piksel eslemesini JPEG `q90` ile korur ve kullanici yakinlastirdikca kaynak cozunurlugunu 4096 piksel sinirina kadar otomatik yukselterek detay saglar. `Hizli`, bant genisligini azaltmak icin hedef genisligin yuzde 75'ini kullanir. Tum modlar ekrani kirpmadan sigdirir.
+
 ## Ekran ve Isaretci Notu
+
+Yazilar bulaniksa alt arac cubugundaki `Goruntu Testi` ile ayni JPEG'i yeniden sikistirmadan dondurup inceleyin. Dugme ilk goruntu geldiginde etkinlesir; acilan pencerede `1:1` ve `Sigdir` bulunur. `1:1`, goruntu piksellerini ekran piksellerine esler; `Sigdir`, ayni kareyi pencereye kucultur. 1:1 net, sigdir bulaniksa olcekleme/ekran yogunlugu etkisini arastirin. Ikisi de bulaniksa kaynak yakalama ve JPEG sikistirmasini inceleyin. Panel, alinan JPEG boyutunu, canli gorunumun ekran piksel boyutunu ve tarayici DPR degerini gosterir. Bu karsilastirma tek basina Windows JPEG cozumleyicisini dogrulamaz.
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
+- Surukleme hedefleri tarayicida her 24 uzak ekran pikselinde uretilir. Bridge iki hedef arasini `PHONE_DRAG_STEP_PIXELS` araligiyla doldurur ve bekleyen son hareketi mouse birakilmadan once uygular.
 - `/health` icindeki `capture_available`, `capture_error`, `capture_last_error_at`, `active_streams`, `max_streams` ve `keep_awake_active` alanlari goruntu aktarimi sorununu teshis etmek icindir.
 - `screen=unavailable` veya `capture_error=screen metrics unavailable` gorulurse bridge calisiyor olsa bile macOS ekran oturumu yakalanabilir durumda degildir. Ekrani uyandirip kilidi acmak, Screen Recording iznini kontrol etmek ve uygulamayi LaunchAgent/GUI oturumundan baslatmak gerekir.
 - `PHONE_KEEP_AWAKE=1` macOS'ta bridge baslarken `caffeinate` calistirir. Bu basarisiz olursa hata `/health` icindeki `keep_awake_error` alaninda gorunur.
@@ -172,6 +179,7 @@ Ana kullanim pairing sayfasindaki tek PWA akisi olmali; Telegram snapshot modu s
 
 ## Sonraki Mantikli Adim
 
+- Klavye panelindeki `Hedef: Parsec` secenegi kisayollari yerel Mac karsiliklarina cevirmeden Parsec'in `Swap Command and Ctrl for MacOS` ayarina gore Windows hedefine iletir. ASCII metinler Parsec'in yakalayabilecegi fiziksel tus eventleriyle yazilir; Turkce/Unicode metinler ise yerel `System Events` yerine Parsec'e yonlendirilmis paste hotkey ile gonderilir. `HID Mode` ve klavye `Immersive Mode` Parsec ayarlarinda acik olmalidir.
 - Uzak adres degisimlerini kullaniciya daha proaktif bildirme
 - eslesmis cihazlari arayuzden listeleyip sifirlama
 - akisi websocket veya delta-update mantigina yaklastirma

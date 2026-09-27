@@ -1,6 +1,7 @@
 # core/system_tools.py
 import datetime
 import importlib
+import json
 import os
 import subprocess
 import sys
@@ -18,6 +19,7 @@ logger = get_logger("system_tools")
 _PYAUTOGUI = None
 _PYPERCLIP = None
 _QUARTZ = None
+_APPKIT = None
 
 
 def _get_pyautogui():
@@ -59,6 +61,54 @@ def _get_quartz():
     except Exception as exc:
         logger.error(f"Quartz unicode klavye kullanilamiyor: {exc}")
         return None
+
+
+def _get_appkit():
+    global _APPKIT
+    if _APPKIT is not None:
+        return _APPKIT
+
+    try:
+        _APPKIT = importlib.import_module("AppKit")
+        return _APPKIT
+    except Exception:
+        return None
+
+
+def _frontmost_bundle_id():
+    if sys.platform != "darwin":
+        return ""
+    appkit = _get_appkit()
+    if not appkit:
+        return ""
+    try:
+        app = appkit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        return str(app.bundleIdentifier() or "") if app else ""
+    except Exception:
+        return ""
+
+
+def _parsec_key_swap_enabled():
+    override = os.environ.get("AGENTCOCKPIT_PARSEC_KEY_SWAP", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+
+    for path in (Path.home() / ".parsec" / "config.json", Path("/Users/Shared/.parsec/config.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            config = payload[1] if isinstance(payload, list) and len(payload) > 1 else payload
+            entry = config.get("client_macos_key_swap") if isinstance(config, dict) else None
+            if isinstance(entry, dict):
+                entry = entry.get("value")
+            if isinstance(entry, bool):
+                return entry
+        except (OSError, ValueError, TypeError):
+            continue
+
+    # Parsec's current macOS default maps Command to Ctrl and Control to Windows.
+    return True
 
 
 def _paste_with_system_events(timeout=2):
@@ -130,6 +180,8 @@ class SystemOps:
         "command": "command",
         "ctrl": "command",
         "control": "command",
+        "ctrlleft": "ctrl",
+        "ctrlright": "ctrl",
         "mac_ctrl": "ctrl",
         "mac_control": "ctrl",
         "win": "command",
@@ -147,10 +199,50 @@ class SystemOps:
         "win": "winleft",
         "windows": "winleft",
     }
+    PARSEC_KEY_ALIASES_SWAPPED = {
+        "cmd": "command",
+        "command": "command",
+        "ctrl": "command",
+        "control": "command",
+        "ctrlleft": "command",
+        "ctrlright": "command",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
+        "win": "ctrl",
+        "winleft": "ctrl",
+        "windows": "ctrl",
+        "alt": "option",
+        "option": "option",
+    }
+    PARSEC_KEY_ALIASES_NATIVE = {
+        "cmd": "command",
+        "command": "command",
+        "ctrl": "ctrl",
+        "control": "ctrl",
+        "ctrlleft": "ctrl",
+        "ctrlright": "ctrl",
+        "mac_ctrl": "ctrl",
+        "mac_control": "ctrl",
+        "win": "command",
+        "winleft": "command",
+        "windows": "command",
+        "alt": "option",
+        "option": "option",
+    }
     SPECIAL_COMMANDS = {
         "taskmgr-close",
         "close-taskmgr",
         "task-manager-close",
+    }
+    MAC_SPACE_COMBOS = {
+        ("mac_control", "left"): -1.0,
+        ("mac_ctrl", "left"): -1.0,
+        ("ctrlleft", "left"): -1.0,
+        ("ctrlright", "left"): -1.0,
+        ("mac_control", "right"): 1.0,
+        ("mac_ctrl", "right"): 1.0,
+        ("ctrlleft", "right"): 1.0,
+        ("ctrlright", "right"): 1.0,
     }
 
     @staticmethod
@@ -169,6 +261,8 @@ class SystemOps:
             "windows": "command",
             "ctrl": "ctrl",
             "control": "ctrl",
+            "ctrlleft": "ctrl",
+            "ctrlright": "ctrl",
             "mac_ctrl": "ctrl",
             "mac_control": "ctrl",
             "alt": "option",
@@ -224,15 +318,54 @@ class SystemOps:
             return False
 
     @staticmethod
-    def normalize_hotkey(keys_list):
+    def is_parsec_frontmost():
+        return _frontmost_bundle_id().lower() == "tv.parsec.www"
+
+    @staticmethod
+    def normalize_hotkey(keys_list, *, parsec_passthrough=False):
         normalized = [SystemOps._normalize_key_name(key) for key in keys_list or []]
         if sys.platform == "darwin":
+            if parsec_passthrough:
+                aliases = (
+                    SystemOps.PARSEC_KEY_ALIASES_SWAPPED
+                    if _parsec_key_swap_enabled()
+                    else SystemOps.PARSEC_KEY_ALIASES_NATIVE
+                )
+                return [aliases.get(key, key) for key in normalized]
             combo = tuple(normalized)
             if combo in SystemOps.MAC_HOTKEY_COMBOS:
                 return list(SystemOps.MAC_HOTKEY_COMBOS[combo])
             return [SystemOps.MAC_KEY_ALIASES.get(key, key) for key in normalized]
 
         return [SystemOps.DESKTOP_KEY_ALIASES.get(key, key) for key in normalized]
+
+    @staticmethod
+    def _switch_macos_space(direction):
+        quartz = _get_quartz()
+        if not quartz:
+            return False
+
+        sign = -1.0 if direction < 0 else 1.0
+        try:
+            # A Dock swipe bypasses full-screen apps such as Parsec that grab Control+Arrow.
+            event = quartz.CGEventCreate(None)
+            if event is None:
+                return False
+            quartz.CGEventSetIntegerValueField(event, 55, 30)
+            quartz.CGEventSetIntegerValueField(event, 110, 23)
+            quartz.CGEventSetIntegerValueField(event, 123, 1)
+            quartz.CGEventSetDoubleValueField(event, 124, sign)
+            quartz.CGEventSetDoubleValueField(event, 129, sign * 9999.0)
+            quartz.CGEventSetIntegerValueField(event, 132, 1)
+            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
+            quartz.CGEventSetIntegerValueField(event, 132, 4)
+            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
+            logger.debug(f"macOS Space gesture: {'left' if sign < 0 else 'right'}")
+            return True
+        except Exception as exc:
+            logger.error(f"macOS Space gecis hatasi: {exc}")
+            log_crash("system_tools.switch_macos_space", str(exc))
+            return False
 
     @staticmethod
     def mouse_move(direction):
@@ -353,7 +486,7 @@ class SystemOps:
             return False
 
     @staticmethod
-    def execute_hotkey(keys_list):
+    def execute_hotkey(keys_list, *, parsec_passthrough=None):
         try:
             normalized_keys = [
                 SystemOps._normalize_key_name(key) for key in keys_list or []
@@ -366,13 +499,25 @@ class SystemOps:
             ):
                 return SystemOps.close_task_manager()
 
+            if sys.platform == "darwin":
+                space_direction = SystemOps.MAC_SPACE_COMBOS.get(tuple(normalized_keys))
+                if space_direction is not None:
+                    return SystemOps._switch_macos_space(space_direction)
+
             pyautogui = _get_pyautogui()
             if not pyautogui:
                 return False
 
-            corrected_keys = SystemOps.normalize_hotkey(normalized_keys)
+            if parsec_passthrough is None:
+                parsec_passthrough = sys.platform == "darwin" and SystemOps.is_parsec_frontmost()
+            corrected_keys = SystemOps.normalize_hotkey(
+                normalized_keys,
+                parsec_passthrough=bool(parsec_passthrough),
+            )
             pyautogui.hotkey(*corrected_keys, interval=0.1)
-            logger.debug(f"Hotkey: {corrected_keys}")
+            logger.debug(
+                f"Hotkey: {corrected_keys} target={'parsec' if parsec_passthrough else 'local'}"
+            )
             return True
         except Exception as exc:
             logger.error(f"Hotkey hatasi: {exc}")
@@ -445,6 +590,70 @@ class SystemOps:
         except Exception as exc:
             logger.error(f"Yapistirma hatasi: {exc}")
             log_crash("system_tools.paste_text", str(exc))
+            return False
+
+    @staticmethod
+    def type_text_for_parsec(text, *, restore_clipboard=False, interval=0.03):
+        """Send text through key events that Parsec can forward to its host."""
+        try:
+            if not text:
+                return True
+
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
+
+            value = str(text)
+            if all(char in "\n\r\t" or 32 <= ord(char) <= 126 for char in value):
+                buffer = []
+
+                def flush_buffer():
+                    if not buffer:
+                        return
+                    pyautogui.write("".join(buffer), interval=interval)
+                    buffer.clear()
+
+                for char in value:
+                    if char in ("\n", "\r"):
+                        flush_buffer()
+                        pyautogui.press("enter")
+                    elif char == "\t":
+                        flush_buffer()
+                        pyautogui.press("tab")
+                    else:
+                        buffer.append(char)
+                flush_buffer()
+                logger.debug("Parsec metni fiziksel ASCII tus eventleriyle yazildi.")
+                return True
+
+            pyperclip = _get_pyperclip()
+            if not pyperclip:
+                return False
+
+            previous_clipboard = None
+            if restore_clipboard:
+                try:
+                    previous_clipboard = pyperclip.paste()
+                except Exception:
+                    previous_clipboard = None
+
+            pyperclip.copy(value)
+            time.sleep(0.15)
+            pasted = SystemOps.execute_hotkey(
+                ["ctrl", "v"],
+                parsec_passthrough=True,
+            )
+            if restore_clipboard and previous_clipboard is not None:
+                time.sleep(0.4)
+                pyperclip.copy(previous_clipboard)
+
+            logger.debug(
+                f"Parsec metni fiziksel paste hotkey ile gonderildi: success={pasted}"
+            )
+            return pasted
+        except Exception as exc:
+            logger.error(f"Parsec yazma hatasi: {exc}")
+            log_crash("system_tools.type_text_for_parsec", str(exc))
             return False
 
     @staticmethod
