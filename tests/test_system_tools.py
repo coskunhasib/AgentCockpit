@@ -6,39 +6,76 @@ from core.system_tools import SystemOps
 
 
 class SystemToolsHotkeyTests(unittest.TestCase):
-    def test_mac_space_shortcut_uses_dock_gesture_instead_of_pyautogui(self):
+    def test_mac_space_shortcut_posts_control_arrow_hid_events(self):
         class FakeQuartz:
-            kCGSessionEventTap = 1
+            kCGEventSourceStateHIDSystemState = 1
+            kCGEventFlagMaskControl = 0x40000
+            kCGHIDEventTap = 0
 
             def __init__(self):
-                self.integer_fields = []
-                self.double_fields = []
+                self.flags = []
                 self.posts = []
 
-            def CGEventCreate(self, _):
-                return object()
+            def CGEventSourceCreate(self, state):
+                return {"state": state}
 
-            def CGEventSetIntegerValueField(self, event, field, value):
-                self.integer_fields.append((event, field, value))
+            def CGEventCreateKeyboardEvent(self, source, keycode, key_down):
+                return {
+                    "source": source,
+                    "keycode": keycode,
+                    "key_down": key_down,
+                }
 
-            def CGEventSetDoubleValueField(self, event, field, value):
-                self.double_fields.append((event, field, value))
+            def CGEventSetFlags(self, event, flags):
+                event["flags"] = flags
+                self.flags.append(flags)
 
             def CGEventPost(self, tap, event):
-                self.posts.append((tap, event))
+                self.posts.append((tap, dict(event)))
 
         fake_quartz = FakeQuartz()
         with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
             system_tools, "_get_quartz", return_value=fake_quartz
         ), patch.object(
+            system_tools, "_macos_has_adjacent_space", return_value=True
+        ), patch.object(
+            system_tools.subprocess,
+            "run",
+            return_value=type(
+                "Completed", (), {"returncode": 0, "stdout": "", "stderr": ""}
+            )(),
+        ), patch.object(
             system_tools, "_get_pyautogui", side_effect=AssertionError("pyautogui must not be used")
+        ), patch.object(
+            system_tools.time, "sleep", return_value=None
         ):
             self.assertTrue(SystemOps.execute_hotkey(["mac_control", "left"]))
 
-        self.assertIn((fake_quartz.integer_fields[0][0], 132, 1), fake_quartz.integer_fields)
-        self.assertIn((fake_quartz.integer_fields[0][0], 132, 4), fake_quartz.integer_fields)
-        self.assertIn((fake_quartz.double_fields[0][0], 124, -1.0), fake_quartz.double_fields)
-        self.assertEqual(len(fake_quartz.posts), 2)
+        self.assertEqual(
+            [event["keycode"] for _, event in fake_quartz.posts],
+            [59, 123, 123, 59],
+        )
+        self.assertEqual(
+            [event["key_down"] for _, event in fake_quartz.posts],
+            [True, True, False, False],
+        )
+        self.assertEqual(
+            fake_quartz.flags,
+            [0x40000, 0x40000, 0x40000, 0],
+        )
+        self.assertTrue(all(tap == 0 for tap, _ in fake_quartz.posts))
+
+    def test_mac_space_boundary_does_not_open_mission_control(self):
+        with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
+            system_tools, "_get_quartz", return_value=object()
+        ), patch.object(
+            system_tools, "_macos_has_adjacent_space", return_value=False
+        ), patch.object(
+            system_tools.subprocess,
+            "run",
+            side_effect=AssertionError("Mission Control must stay closed at boundary"),
+        ):
+            self.assertTrue(SystemOps._switch_macos_space(-1))
 
     def test_mac_maps_windows_style_shortcuts_to_macos_intent(self):
         with patch.object(system_tools.sys, "platform", "darwin"):

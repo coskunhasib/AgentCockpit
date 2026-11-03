@@ -3,6 +3,7 @@ import datetime
 import importlib
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import time
@@ -136,6 +137,49 @@ def _paste_with_system_events(timeout=2):
     detail = (completed.stderr or completed.stdout or "").strip()
     logger.warning(f"System Events yapistirma basarisiz: {detail}")
     return False
+
+
+def _macos_has_adjacent_space(direction):
+    if sys.platform != "darwin":
+        return None
+
+    try:
+        completed = subprocess.run(
+            ["defaults", "export", "com.apple.spaces", "-"],
+            capture_output=True,
+            timeout=2,
+        )
+        if completed.returncode != 0 or not completed.stdout:
+            return None
+
+        payload = plistlib.loads(completed.stdout)
+        management = payload.get("SpacesDisplayConfiguration", {}).get(
+            "Management Data", {}
+        )
+        monitors = management.get("Monitors", [])
+        if not isinstance(monitors, list) or not monitors:
+            return None
+
+        monitor = next(
+            (
+                item
+                for item in monitors
+                if item.get("Display Identifier") == "Main"
+            ),
+            monitors[0],
+        )
+        current_id = monitor.get("Current Space", {}).get("ManagedSpaceID")
+        spaces = monitor.get("Spaces", [])
+        space_ids = [item.get("ManagedSpaceID") for item in spaces]
+        if current_id not in space_ids:
+            return None
+
+        current_index = space_ids.index(current_id)
+        target_index = current_index + (-1 if direction < 0 else 1)
+        return 0 <= target_index < len(space_ids)
+    except Exception as exc:
+        logger.debug(f"macOS Space sirasi okunamadi: {exc}")
+        return None
 
 
 def _mouse_overlay_point(image_size):
@@ -345,22 +389,59 @@ class SystemOps:
         if not quartz:
             return False
 
-        sign = -1.0 if direction < 0 else 1.0
         try:
-            # A Dock swipe bypasses full-screen apps such as Parsec that grab Control+Arrow.
-            event = quartz.CGEventCreate(None)
-            if event is None:
+            has_adjacent_space = _macos_has_adjacent_space(direction)
+            if has_adjacent_space is False:
+                logger.info(
+                    f"macOS Space sinirina ulasildi: "
+                    f"{'left' if direction < 0 else 'right'}"
+                )
+                return True
+
+            mission_control = subprocess.run(
+                ["open", "-a", "Mission Control"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+            )
+            if mission_control.returncode != 0:
+                detail = (mission_control.stderr or mission_control.stdout or "").strip()
+                logger.error(f"Mission Control acilamadi: {detail}")
                 return False
-            quartz.CGEventSetIntegerValueField(event, 55, 30)
-            quartz.CGEventSetIntegerValueField(event, 110, 23)
-            quartz.CGEventSetIntegerValueField(event, 123, 1)
-            quartz.CGEventSetDoubleValueField(event, 124, sign)
-            quartz.CGEventSetDoubleValueField(event, 129, sign * 9999.0)
-            quartz.CGEventSetIntegerValueField(event, 132, 1)
-            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
-            quartz.CGEventSetIntegerValueField(event, 132, 4)
-            quartz.CGEventPost(quartz.kCGSessionEventTap, event)
-            logger.debug(f"macOS Space gesture: {'left' if sign < 0 else 'right'}")
+
+            # Mission Control takes keyboard ownership away from immersive apps such as Parsec.
+            time.sleep(0.7)
+            source = quartz.CGEventSourceCreate(
+                quartz.kCGEventSourceStateHIDSystemState
+            )
+            if source is None:
+                return False
+
+            control_keycode = 59
+            arrow_keycode = 123 if direction < 0 else 124
+            control_flag = quartz.kCGEventFlagMaskControl
+            events = (
+                (control_keycode, True, control_flag),
+                (arrow_keycode, True, control_flag),
+                (arrow_keycode, False, control_flag),
+                (control_keycode, False, 0),
+            )
+            for keycode, key_down, flags in events:
+                event = quartz.CGEventCreateKeyboardEvent(
+                    source,
+                    keycode,
+                    key_down,
+                )
+                if event is None:
+                    return False
+                quartz.CGEventSetFlags(event, flags)
+                quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+                time.sleep(0.02)
+
+            logger.info(
+                f"macOS Space hotkey gonderildi: "
+                f"{'left' if direction < 0 else 'right'}"
+            )
             return True
         except Exception as exc:
             logger.error(f"macOS Space gecis hatasi: {exc}")
