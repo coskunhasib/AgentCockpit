@@ -180,7 +180,7 @@ Ana kullanim pairing sayfasindaki tek PWA akisi olmali; Telegram snapshot modu s
 ## Sonraki Mantikli Adim
 
 - Klavye panelindeki `Hedef: Parsec` secenegi kisayollari yerel Mac karsiliklarina cevirmeden Parsec'in `Swap Command and Ctrl for MacOS` ayarina gore Windows hedefine iletir. ASCII metinler Parsec'in yakalayabilecegi fiziksel tus eventleriyle yazilir; Turkce/Unicode metinler ise yerel `System Events` yerine Parsec'e yonlendirilmis paste hotkey ile gonderilir. `HID Mode` ve klavye `Immersive Mode` Parsec ayarlarinda acik olmalidir.
-- `Ekran Sol` ve `Ekran Sag`, macOS 27 ve sonrasinda belgelenmemis Dock swipe eventlerine bagli degildir. AgentCockpit once aktif Space sirasinda komsu ekran olup olmadigini kontrol eder, ardindan Mission Control uzerinden yerel `Control+Sol/Sag` HID kisayolunu gonderir. Bu yol Parsec immersive klavye yakalamasini asar ve Space sinirinda Mission Control katmanini acik birakmaz.
+- `Ekran Sol` ve `Ekran Sag` canli WindowServer Space sirasini okur; hedef Space'i gosterir, oncekini gizler ve aktif Space'i degistirir. Gecis sonrasi hedef kimlik dogrulanamazsa onceki Space'e geri doner ve hata raporlar. Mission Control veya Parsec'in yakalayabilecegi klavye kisayollari kullanilmaz. Bu yol macOS'un ozel SkyLight API'lerine baglidir; isletim sistemi guncellemelerinde tekrar dogrulanmalidir. Space sinirinda islem yapilmaz; farkli ekranlarin Space'leri gizlenmez.
 - Uzak adres degisimlerini kullaniciya daha proaktif bildirme
 - eslesmis cihazlari arayuzden listeleyip sifirlama
 - akisi websocket veya delta-update mantigina yaklastirma
