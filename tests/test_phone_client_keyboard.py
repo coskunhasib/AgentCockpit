@@ -27,6 +27,14 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn("sensitive: sensitiveTyping, focus, delay", html)
         self.assertIn("typeInput.type = sensitiveTyping ? 'password' : 'text'", html)
 
+    def test_hid_text_is_chunked_without_refocusing_or_automatic_retries(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+        self.assertIn("Array.from(payload.text || '')", html)
+        self.assertIn('offset += 64', html)
+        self.assertIn('focus: offset === 0 ? payload.focus : null', html)
+        self.assertIn('request_id: `${payload.request_id}:hid:${offset}`', html)
+        self.assertIn('{ timeoutMs: 75000, retries: 0 }', html)
+
 
 if __name__ == "__main__":
     unittest.main()

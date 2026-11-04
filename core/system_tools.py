@@ -82,7 +82,11 @@ def _frontmost_bundle_id():
     if not appkit:
         return ""
     try:
-        app = appkit.NSWorkspace.sharedWorkspace().frontmostApplication()
+        from core.macos_focus import focused_pid
+        pid = focused_pid()
+        if not pid:
+            return ""
+        app = appkit.NSRunningApplication.runningApplicationWithProcessIdentifier_(pid)
         return str(app.bundleIdentifier() or "") if app else ""
     except Exception:
         return ""
@@ -453,7 +457,7 @@ class SystemOps:
         return True
 
     @staticmethod
-    def press_key(key_name):
+    def press_key(key_name, *, parsec_passthrough=None):
         try:
             normalized = SystemOps._normalize_key_name(key_name)
             if normalized in SystemOps.SPECIAL_COMMANDS:
@@ -461,6 +465,12 @@ class SystemOps:
             if SystemOps._is_blocked_hotkey([normalized]):
                 logger.warning(f"Riskli sistem tusu engellendi: {normalized}")
                 return False
+
+            if parsec_passthrough is None:
+                parsec_passthrough = sys.platform == 'darwin' and SystemOps.is_parsec_frontmost()
+            if sys.platform == 'darwin' and parsec_passthrough:
+                from core.parsec_hid import press_keys
+                return press_keys(SystemOps.normalize_hotkey([normalized], parsec_passthrough=True))
 
             pyautogui = _get_pyautogui()
             if not pyautogui:
@@ -489,16 +499,21 @@ class SystemOps:
                 if space_direction is not None:
                     return SystemOps._switch_macos_space(space_direction)
 
-            pyautogui = _get_pyautogui()
-            if not pyautogui:
-                return False
-
             if parsec_passthrough is None:
                 parsec_passthrough = sys.platform == "darwin" and SystemOps.is_parsec_frontmost()
             corrected_keys = SystemOps.normalize_hotkey(
                 normalized_keys,
                 parsec_passthrough=bool(parsec_passthrough),
             )
+            if sys.platform == 'darwin' and parsec_passthrough:
+                if SystemOps._is_blocked_hotkey(corrected_keys):
+                    logger.warning('HID eslemesi riskli yerel sistem kisayoluna donusuyor; engellendi.')
+                    return False
+                from core.parsec_hid import press_keys
+                return press_keys(corrected_keys)
+            pyautogui = _get_pyautogui()
+            if not pyautogui:
+                return False
             pyautogui.hotkey(*corrected_keys, interval=0.1)
             logger.debug(
                 f"Hotkey: {corrected_keys} target={'parsec' if parsec_passthrough else 'local'}"
@@ -579,23 +594,16 @@ class SystemOps:
 
     @staticmethod
     def type_text_for_parsec(text, *, restore_clipboard=False, interval=0.03):
-        """Paste via the remote menu on macOS, where Parsec can ignore CGEvents."""
+        """Use a real virtual HID keyboard on macOS; never retry via clipboard."""
         try:
             if not text:
                 return True
             if sys.platform != 'darwin':
                 return SystemOps.paste_text(text, restore_clipboard=restore_clipboard)
-            pyautogui = _get_pyautogui()
-            pyperclip = _get_pyperclip()
-            if not pyautogui or not pyperclip:
-                return False
-            from core.parsec_paste import paste_via_menu
-            pasted = paste_via_menu(
-                str(text), pyautogui, pyperclip,
-                restore_clipboard=restore_clipboard,
-            )
-            logger.info(f'Parsec metni uzak menu ile gonderildi: success={pasted}')
-            return pasted
+            from core.parsec_hid import type_text
+            sent = type_text(str(text))
+            logger.info(f'Parsec metni sanal HID ile gonderildi: success={sent}')
+            return sent
         except Exception as exc:
             logger.error(f"Parsec yazma hatasi: {exc}")
             log_crash("system_tools.type_text_for_parsec", str(exc))

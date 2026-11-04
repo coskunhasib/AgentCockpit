@@ -2712,9 +2712,24 @@
         boostLiveWindow();
         setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
         try {
-          const result = await sendActionRequest(payload, {
-            timeoutMs: payload.type === 'type' ? (inputTarget === 'parsec' ? 30000 : 13000) : 9000
-          });
+          let result;
+          if (payload.type === 'type' && payload.input_target === 'parsec') {
+            // Real HID typing takes time. Bound each WAN request and never
+            // re-focus between chunks, which would move the insertion point.
+            const characters = Array.from(payload.text || '');
+            for (let offset = 0; offset < characters.length; offset += 64) {
+              result = await sendActionRequest({
+                ...payload,
+                text: characters.slice(offset, offset + 64).join(''),
+                focus: offset === 0 ? payload.focus : null,
+                request_id: `${payload.request_id}:hid:${offset}`
+              }, { timeoutMs: 75000, retries: 0 });
+            }
+          } else {
+            result = await sendActionRequest(payload, {
+              timeoutMs: payload.type === 'type' ? 13000 : 9000
+            });
+          }
           consecutiveErrors = 0;
           lastLatencyMs = result.__elapsed || lastLatencyMs;
           syncWanLinks(result);
@@ -2732,7 +2747,10 @@
             feedback.onSuccess(result);
           }
         } catch (error) {
-          const message = (error && error.message) ? error.message : 'Bilinmeyen hata';
+          const detail = (error && error.message) ? error.message : 'Bilinmeyen hata';
+          const message = payload.type === 'type' && payload.input_target === 'parsec'
+            ? `${detail} Metnin bir kismi yazilmis olabilir; kontrol etmeden yeniden gondermeyin.`
+            : detail;
           if (error && error.http) {
             // Server replied with an error: it is reachable, the command was
             // received but could not be applied. Do not flag a lost connection.

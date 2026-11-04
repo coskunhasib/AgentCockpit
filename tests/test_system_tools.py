@@ -1,11 +1,21 @@
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from core import system_tools
 from core.system_tools import SystemOps
 
 
 class SystemToolsHotkeyTests(unittest.TestCase):
+    def test_parsec_focus_is_read_live_not_from_nsworkspace_cache(self):
+        appkit = MagicMock()
+        appkit.NSRunningApplication.runningApplicationWithProcessIdentifier_.return_value.bundleIdentifier.return_value = 'tv.parsec.www'
+        with patch.object(system_tools.sys, 'platform', 'darwin'), patch.object(
+            system_tools, '_get_appkit', return_value=appkit
+        ), patch('core.macos_focus.focused_pid', side_effect=[123, 0]):
+            self.assertTrue(SystemOps.is_parsec_frontmost())
+            self.assertFalse(SystemOps.is_parsec_frontmost())
+        appkit.NSWorkspace.sharedWorkspace.assert_not_called()
+
     def test_mac_space_shortcut_uses_verified_local_controller(self):
         with patch.object(system_tools.sys, 'platform', 'darwin'), patch(
             'core.macos_spaces.SpaceController'
@@ -56,15 +66,14 @@ class SystemToolsHotkeyTests(unittest.TestCase):
             system_tools, "_parsec_key_swap_enabled", return_value=True
         ), patch.object(
             system_tools, "_get_pyautogui", return_value=fake_pyautogui
-        ):
+        ), patch('core.parsec_hid.press_keys', return_value=True) as hid:
             self.assertTrue(SystemOps.execute_hotkey(["ctrl", "shift", "esc"]))
             self.assertTrue(SystemOps.execute_hotkey(["alt", "tab"]))
             self.assertTrue(SystemOps.execute_hotkey(["winleft", "d"]))
 
-        self.assertEqual(
-            [keys for keys, _ in fake_pyautogui.hotkeys],
-            [("command", "shift", "esc"), ("option", "tab"), ("ctrl", "d")],
-        )
+        self.assertEqual([call.args[0] for call in hid.call_args_list],
+                         [["command", "shift", "esc"], ["option", "tab"], ["ctrl", "d"]])
+        self.assertEqual(fake_pyautogui.hotkeys, [])
 
     def test_parsec_native_mapping_honors_disabled_command_ctrl_swap(self):
         with patch.object(system_tools.sys, "platform", "darwin"), patch.object(
@@ -76,6 +85,13 @@ class SystemToolsHotkeyTests(unittest.TestCase):
                 ),
                 ["ctrl", "option", "command"],
             )
+
+    def test_hid_mapping_cannot_turn_remote_shortcut_into_macos_logout(self):
+        with patch.object(system_tools.sys, 'platform', 'darwin'), patch.object(
+            system_tools, '_parsec_key_swap_enabled', return_value=True
+        ), patch('core.parsec_hid.press_keys') as hid:
+            self.assertFalse(SystemOps.execute_hotkey(['ctrl', 'shift', 'q'], parsec_passthrough=True))
+        hid.assert_not_called()
 
     def test_system_lock_hotkeys_are_blocked_before_pyautogui(self):
         class FakePyAutoGui:
@@ -258,16 +274,29 @@ class SystemToolsHotkeyTests(unittest.TestCase):
         self.assertEqual(fake_pyperclip.copied, ["metin"])
         self.assertEqual(fake_pyautogui.hotkeys, [(("command", "v"), {"interval": 0.08})])
 
-    def test_parsec_text_uses_menu_for_ascii_and_unicode(self):
+    def test_parsec_text_uses_hid_for_ascii_and_unicode(self):
         with patch.object(system_tools.sys, 'platform', 'darwin'), patch.object(
             system_tools, '_get_pyautogui', return_value=object()
         ), patch.object(system_tools, '_get_pyperclip', return_value=object()), patch(
-            'core.parsec_paste.paste_via_menu', return_value=True
-        ) as menu:
+            'core.parsec_hid.type_text', return_value=True
+        ) as hid:
             for text in ['test123', 'Türkçe']:
                 self.assertTrue(SystemOps.type_text_for_parsec(text, restore_clipboard=True))
-                self.assertEqual(menu.call_args.args[0], text)
-                self.assertTrue(menu.call_args.kwargs['restore_clipboard'])
+                hid.assert_called_with(text)
+
+    def test_parsec_hid_failure_never_retries_clipboard(self):
+        with patch.object(system_tools.sys, 'platform', 'darwin'), patch(
+            'core.parsec_hid.type_text', side_effect=RuntimeError('interrupted')
+        ), patch.object(SystemOps, 'paste_text') as paste:
+            self.assertFalse(SystemOps.type_text_for_parsec('test'))
+        paste.assert_not_called()
+
+    def test_parsec_single_key_uses_hid(self):
+        with patch.object(system_tools.sys, 'platform', 'darwin'), patch(
+            'core.parsec_hid.press_keys', return_value=True
+        ) as hid:
+            self.assertTrue(SystemOps.press_key('enter', parsec_passthrough=True))
+        hid.assert_called_once_with(['enter'])
 
     def test_system_events_paste_runs_osascript_with_timeout(self):
         completed = type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()

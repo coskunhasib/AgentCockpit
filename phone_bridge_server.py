@@ -1176,7 +1176,7 @@ def _perform_keypress(keys, *, input_target="local"):
     key = keys.strip()
     if SystemOps._is_blocked_hotkey([key]):
         raise RuntimeError("Riskli sistem tusu engellendi.")
-    return SystemOps.press_key(key)
+    return SystemOps.press_key(key, parsec_passthrough=input_target == "parsec")
 
 
 def _perform_focus_click(focus):
@@ -1201,7 +1201,7 @@ def _perform_type(text, *, sensitive=False, focus=None, input_target="local"):
             text,
             restore_clipboard=bool(sensitive),
         )
-        method = "parsec_remote_menu"
+        method = "parsec_hid" if sys.platform == "darwin" else "parsec_clipboard"
     else:
         sent = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
         method = "local_clipboard"
@@ -2865,8 +2865,9 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 ):
                     if _input_target(payload) == 'parsec':
                         raise RuntimeError(
-                            'Parsec metni yapistirilamadi. Hedef metin alanini secin; '
-                            'sag tik menusunde Yapistir/Paste etkin olmali.'
+                            'Parsec metni yazilamadi. Parsec onde, hedef alan secili ve '
+                            'vhid doctor sonucu ready olmali. Mac ve Windows klavye '
+                            'duzenleri eslesmeli. Bir kismi yazildiysa tekrar gondermeyin.'
                         )
                     raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
