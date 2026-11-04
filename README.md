@@ -67,8 +67,14 @@ python autostart.py register
 
 Bu komut macOS'ta LaunchAgent, Windows'ta Task Scheduler, Linux'ta systemd user
 service kaydi olusturur. macOS LaunchAgent dogrudan venv Python'u calistirir;
-`screen` veya aktif terminal oturumu gerekmez. Uygulama zaten aciksa ve sadece
-sonraki oturum icin kaydetmek istiyorsan:
+`screen` veya aktif terminal oturumu gerekmez.
+
+macOS'ta auto-start, console hala `root`/login ekranindaysa ana botu baslatmaz;
+`logs/launchd.log` icinde bekler ve masaustu oturumu gercek kullaniciya gecince
+devam eder. Ekran yakalama, keep-awake ve Cloudflare DNS gibi ayrintilar
+baslayan botun `/health` ciktisinda raporlanir.
+
+Uygulama zaten aciksa ve sadece sonraki oturum icin kaydetmek istiyorsan:
 
 ```bash
 python autostart.py register --no-start
@@ -120,7 +126,7 @@ Telefon/PWA kurulum notlari:
 
 Kisa notlar:
 
-- Pairing dashboard: `http://127.0.0.1:8765/pair`
+- Pairing dashboard: `http://127.0.0.1:18765/pair`
 - QR, uzak Cloudflare tunnel saglikliysa WAN linkini; degilse otomatik LAN linkini kullanir.
 - WAN icin varsayilan ve hedef yol Cloudflare Quick Tunnel'dir. `PHONE_PUBLIC_TUNNEL_WAIT_SEC=8`
   Cloudflare'in gercek URL uretmesi icin bekler; IP tabanli Bore fallback varsayilan kapali tutulur.

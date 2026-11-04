@@ -33,6 +33,13 @@ class PhoneBridgeSecurityTests(unittest.TestCase):
         source = inspect.getsource(PhoneBridgeHandler._build_link_payload)
         self.assertIn("get_public_url(validate=True)", source)
 
+    def test_cloudflare_forwarded_request_is_not_treated_as_local(self):
+        handler = object.__new__(PhoneBridgeHandler)
+        handler.headers = {"CF-Connecting-IP": "203.0.113.4"}
+        handler.client_address = ("127.0.0.1", 12345)
+
+        self.assertFalse(handler._is_local_request())
+
     def test_qr_alias_redirects_to_pair(self):
         source = inspect.getsource(PhoneBridgeHandler.do_GET)
         self.assertIn('if route == "/qr":', source)

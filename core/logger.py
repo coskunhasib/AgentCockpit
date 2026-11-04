@@ -7,10 +7,12 @@ import platform
 import re
 import shutil
 import signal
+import subprocess
 import sys
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,10 +36,16 @@ _STARTED_AT = time.time()
 _PROCESS_NAME = "agentcockpit"
 _HOOKS_INSTALLED = False
 _HEARTBEAT_STARTED = False
+_MAINTENANCE_THREAD_STARTED = False
 _FAULT_FILE_HANDLE = None
 _PREVIOUS_THREADING_HOOK = getattr(threading, "excepthook", None)
 _PREVIOUS_UNRAISABLE_HOOK = getattr(sys, "unraisablehook", None)
 _PREVIOUS_SYS_HOOK = sys.excepthook
+_RSS_CACHE_LOCK = threading.Lock()
+_RSS_CACHE_AT = 0.0
+_RSS_CACHE_BYTES = None
+_MAINTENANCE_LOCK = threading.Lock()
+_LAST_MAINTENANCE_AT = 0.0
 
 _SECRET_PATTERNS = (
     (re.compile(r"(?i)(telegram[_-]?token\s*[=:]\s*)[^\s]+"), r"\1<redacted>"),
@@ -183,6 +191,91 @@ def _safe_int_env(name, default):
         return default
 
 
+def _read_current_rss_bytes():
+    """Return the current resident set instead of ru_maxrss's lifetime peak."""
+    if os.name == "nt":
+        return _read_windows_rss_bytes()
+
+    if sys.platform == "darwin":
+        try:
+            result = subprocess.run(
+                ["/bin/ps", "-o", "rss=", "-p", str(os.getpid())],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                check=False,
+            )
+            value = (result.stdout or "").strip()
+            return int(value) * 1024 if result.returncode == 0 and value else None
+        except Exception:
+            return None
+
+    if os.name != "nt":
+        try:
+            fields = Path("/proc/self/statm").read_text(encoding="ascii").split()
+            if len(fields) >= 2:
+                return int(fields[1]) * int(os.sysconf("SC_PAGE_SIZE"))
+        except Exception:
+            return None
+
+    return None
+
+
+def _read_windows_rss_bytes():
+    """Read the current Windows working set without optional dependencies."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        size_t = ctypes.c_size_t
+
+        class ProcessMemoryCounters(ctypes.Structure):
+            _fields_ = (
+                ("cb", wintypes.DWORD),
+                ("page_fault_count", wintypes.DWORD),
+                ("peak_working_set_size", size_t),
+                ("working_set_size", size_t),
+                ("quota_peak_paged_pool_usage", size_t),
+                ("quota_paged_pool_usage", size_t),
+                ("quota_peak_non_paged_pool_usage", size_t),
+                ("quota_non_paged_pool_usage", size_t),
+                ("pagefile_usage", size_t),
+                ("peak_pagefile_usage", size_t),
+            )
+
+        counters = ProcessMemoryCounters()
+        counters.cb = ctypes.sizeof(counters)
+        process = ctypes.windll.kernel32.GetCurrentProcess()
+        success = ctypes.windll.psapi.GetProcessMemoryInfo(
+            process,
+            ctypes.byref(counters),
+            counters.cb,
+        )
+        return int(counters.working_set_size) if success else None
+    except Exception:
+        return None
+
+
+def current_rss_bytes(*, cache_seconds=0.0):
+    """Read current RSS, with an optional short cache for hot capture loops."""
+    global _RSS_CACHE_AT, _RSS_CACHE_BYTES
+    now = time.monotonic()
+    with _RSS_CACHE_LOCK:
+        if (
+            cache_seconds > 0
+            and _RSS_CACHE_BYTES is not None
+            and now - _RSS_CACHE_AT < cache_seconds
+        ):
+            return _RSS_CACHE_BYTES
+
+    value = _read_current_rss_bytes()
+    if value is not None:
+        with _RSS_CACHE_LOCK:
+            _RSS_CACHE_AT = now
+            _RSS_CACHE_BYTES = value
+    return value
+
+
 def _count_open_fds():
     if os.name == "nt":
         return None
@@ -195,14 +288,21 @@ def _count_open_fds():
 
 
 def _resource_snapshot():
+    current_rss = current_rss_bytes()
     if resource is None:
-        return {"available": False}
+        return {
+            "available": current_rss is not None,
+            "current_rss": current_rss,
+            "current_rss_units": "bytes",
+        }
     try:
         usage = resource.getrusage(resource.RUSAGE_SELF)
         rss_units = "bytes" if sys.platform == "darwin" else "kb"
         return {
             "max_rss": int(usage.ru_maxrss),
             "max_rss_units": rss_units,
+            "current_rss": current_rss,
+            "current_rss_units": "bytes",
             "user_cpu_seconds": round(float(usage.ru_utime), 3),
             "system_cpu_seconds": round(float(usage.ru_stime), 3),
         }
@@ -307,6 +407,195 @@ def _append_jsonl(path, payload):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(json.dumps(_sanitize_json(payload), ensure_ascii=False, sort_keys=True))
         handle.write("\n")
+
+
+def _trim_log_in_place(path, max_bytes):
+    """Bound launchd/supervisor logs without replacing their still-open inode."""
+    path = Path(path)
+    try:
+        size = path.stat().st_size
+        if size <= max_bytes:
+            return False
+        keep_bytes = max(4096, max_bytes // 2)
+        with path.open("r+b") as handle:
+            handle.seek(max(0, size - keep_bytes))
+            tail = handle.read(keep_bytes)
+            newline = tail.find(b"\n")
+            if newline >= 0:
+                tail = tail[newline + 1 :]
+            marker = b"[AgentCockpit] Older log content trimmed by retention.\n"
+            handle.seek(0)
+            handle.write(marker)
+            handle.write(tail)
+            handle.truncate()
+        return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _artifact_process_is_alive(path):
+    name = Path(path).name
+    match = (
+        re.match(r"^(?:app|events|fault)_(\d+)(?:\.|$)", name)
+        or re.match(r"^state_.+_(\d+)\.json$", name)
+    )
+    if not match:
+        return False
+    try:
+        pid = int(match.group(1))
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _prune_oldest(paths, max_files, protected):
+    candidates = []
+    for path in paths:
+        try:
+            resolved = path.resolve()
+            if resolved in protected or _artifact_process_is_alive(path) or not path.is_file():
+                continue
+            candidates.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    candidates.sort(reverse=True)
+    removed = 0
+    for _, path in candidates[max_files:]:
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+@contextmanager
+def _interprocess_maintenance_lock():
+    """Serialize shared log trimming across the main and bridge processes."""
+    _ensure_dirs()
+    lock_path = Path(LOG_DIR) / ".runtime_maintenance.lock"
+    try:
+        handle = lock_path.open("a+b")
+    except OSError:
+        yield False
+        return
+
+    acquired = False
+    try:
+        try:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows
+                import msvcrt
+
+                handle.seek(0, os.SEEK_END)
+                if handle.tell() == 0:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquired = True
+        except (ImportError, OSError):
+            yield False
+            return
+        yield True
+    finally:
+        if acquired:
+            try:
+                if os.name == "nt":  # pragma: no cover - exercised on Windows
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            except (ImportError, OSError):
+                pass
+        handle.close()
+
+
+def maintain_runtime_artifacts(*, force=False, now=None):
+    """Apply age/count retention and cap externally-written stdio logs."""
+    global _LAST_MAINTENANCE_AT
+    current = float(time.time() if now is None else now)
+    interval = max(60, _safe_int_env("AGENTCOCKPIT_LOG_MAINTENANCE_INTERVAL_SEC", 3600))
+    with _MAINTENANCE_LOCK:
+        if not force and current - _LAST_MAINTENANCE_AT < interval:
+            return {"removed": 0, "trimmed": 0, "skipped": True}
+        with _interprocess_maintenance_lock() as acquired:
+            if not acquired:
+                return {"removed": 0, "trimmed": 0, "skipped": True}
+            _LAST_MAINTENANCE_AT = current
+
+            retention_days = max(1, _safe_int_env("AGENTCOCKPIT_LOG_RETENTION_DAYS", 7))
+            cutoff = current - retention_days * 86400
+            log_dir = Path(LOG_DIR)
+            diagnostic_dir = Path(DIAGNOSTIC_DIR)
+            crash_dir = Path(CRASH_DIR)
+            protected = {
+                Path(APP_LOG_FILE).resolve(),
+                Path(EVENT_LOG_FILE).resolve(),
+                (diagnostic_dir / f"fault_{os.getpid()}.log").resolve(),
+            }
+
+            groups = {
+                "apps": list(log_dir.glob("app_*.log*")),
+                "states": list(diagnostic_dir.glob("state_*.json")),
+                "events": list(diagnostic_dir.glob("events_*.jsonl")),
+                "faults": list(diagnostic_dir.glob("fault_*.log")),
+                "crashes": list(crash_dir.glob("crash_*.log")),
+            }
+            removed = 0
+            for paths in groups.values():
+                for path in paths:
+                    try:
+                        if (
+                            path.resolve() not in protected
+                            and not _artifact_process_is_alive(path)
+                            and path.stat().st_mtime < cutoff
+                        ):
+                            path.unlink()
+                            removed += 1
+                    except OSError:
+                        pass
+
+            max_files = max(16, _safe_int_env("AGENTCOCKPIT_LOG_MAX_FILES_PER_GROUP", 128))
+            for paths in groups.values():
+                removed += _prune_oldest(paths, max_files, protected)
+
+            max_stdio_bytes = max(
+                1024 * 1024,
+                _safe_int_env("AGENTCOCKPIT_STDIO_LOG_MAX_MB", 10) * 1024 * 1024,
+            )
+            stdio_patterns = (
+                "launchd*.log",
+                "manual_supervisor*.log",
+                "detached_runner*.log",
+                "guarded_manual_start*.log",
+            )
+            trimmed = 0
+            seen = set()
+            for pattern in stdio_patterns:
+                for path in log_dir.glob(pattern):
+                    try:
+                        resolved = path.resolve()
+                    except OSError:
+                        continue
+                    if resolved in seen:
+                        continue
+                    seen.add(resolved)
+                    trimmed += int(_trim_log_in_place(path, max_stdio_bytes))
+
+            return {"removed": removed, "trimmed": trimmed, "skipped": False}
 
 
 def record_runtime_event(event, **payload):
@@ -424,6 +713,13 @@ def install_diagnostics_hooks(process_name, *, main_excepthook=True):
     _PROCESS_NAME = process_name or _PROCESS_NAME
     _HOOKS_INSTALLED = True
     _ensure_dirs()
+    maintenance = maintain_runtime_artifacts(force=True)
+    if maintenance["removed"] or maintenance["trimmed"]:
+        logger.info(
+            "Runtime log bakimi tamamlandi: "
+            f"removed={maintenance['removed']} trimmed={maintenance['trimmed']}"
+        )
+    start_runtime_maintenance()
 
     try:
         fault_path = os.path.join(DIAGNOSTIC_DIR, f"fault_{os.getpid()}.log")
@@ -443,6 +739,35 @@ def install_diagnostics_hooks(process_name, *, main_excepthook=True):
 
     record_runtime_event("diagnostics_hooks_installed", app_log_file=APP_LOG_FILE)
     logger.info(f"Diagnostics hooks aktif: process={_PROCESS_NAME} pid={os.getpid()}")
+
+
+def start_runtime_maintenance(*, interval=None):
+    """Run retention independently from the optional diagnostics heartbeat."""
+    global _MAINTENANCE_THREAD_STARTED
+    if _MAINTENANCE_THREAD_STARTED:
+        return
+    interval = interval if interval is not None else _safe_int_env(
+        "AGENTCOCKPIT_LOG_MAINTENANCE_INTERVAL_SEC",
+        3600,
+    )
+    interval = max(60, int(interval))
+    _MAINTENANCE_THREAD_STARTED = True
+
+    def _loop():
+        while True:
+            time.sleep(interval)
+            try:
+                maintain_runtime_artifacts()
+            except Exception as exc:
+                logger.debug(f"Runtime log bakimi hatasi: {exc}")
+
+    thread = threading.Thread(
+        target=_loop,
+        name="agentcockpit-runtime-maintenance",
+        daemon=True,
+    )
+    thread.start()
+    logger.info(f"Runtime log bakimi aktif: interval={interval}s")
 
 
 def start_diagnostics_heartbeat(process_name=None, *, interval=None, extra_snapshot=None):

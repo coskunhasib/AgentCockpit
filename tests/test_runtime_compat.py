@@ -74,6 +74,7 @@ class RuntimeCompatTests(unittest.TestCase):
     def test_app_config_defaults_are_centralized(self):
         self.assertEqual(get_str("AGENTCOCKPIT_LOCAL_HOST"), "127.0.0.1")
         self.assertEqual(get_int("PHONE_PORT"), 8765)
+        self.assertEqual(get_int("PHONE_CONTROL_PORT"), 18765)
 
 
 if __name__ == "__main__":

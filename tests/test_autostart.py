@@ -49,6 +49,8 @@ class AutostartTests(unittest.TestCase):
                 payload["ProgramArguments"],
                 [
                     str(python_exe),
+                    str(bot_dir / "macos_autostart_guard.py"),
+                    str(python_exe),
                     str(main_py),
                     "--autostart",
                 ],

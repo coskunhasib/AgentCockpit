@@ -6,7 +6,7 @@ import urllib.request
 from core.app_config import get_int, get_str
 from phone_runtime_config import get_shared_admin_token
 
-DEFAULT_PORT = get_int("PHONE_PORT")
+DEFAULT_PORT = get_int("PHONE_CONTROL_PORT")
 DEFAULT_BASE_URL = get_str(
     "PHONE_BRIDGE_URL",
     f"http://{get_str('AGENTCOCKPIT_LOCAL_HOST')}:{DEFAULT_PORT}",
@@ -63,7 +63,12 @@ def _request_json(path, *, method="GET", body=None, headers=None, base_url=None,
 
 
 def get_bridge_health(*, base_url=None):
-    return _request_json("/health", base_url=base_url)
+    health = _request_json("/health", base_url=base_url)
+    if health.get("status") != "ok" or health.get("client") != "phone-bridge":
+        raise PhoneBridgeClientError(
+            "Bu portta AgentCockpit yerine baska bir servis calisiyor."
+        )
+    return health
 
 
 def create_phone_link(minutes=0, *, label="telegram", admin_token=None, base_url=None):

@@ -6,8 +6,8 @@ set -u
 # We change the working directory to the folder containing this file.
 cd "$(dirname "$0")" || exit 1
 
-PHONE_PORT="${PHONE_PORT:-8765}"
-HEALTH_URL="${AGENTCOCKPIT_HEALTH_URL:-http://127.0.0.1:${PHONE_PORT}/health}"
+PHONE_CONTROL_PORT="${PHONE_CONTROL_PORT:-18765}"
+HEALTH_URL="${AGENTCOCKPIT_HEALTH_URL:-http://127.0.0.1:${PHONE_CONTROL_PORT}/health}"
 FORCE_RESTART="${AGENTCOCKPIT_FORCE_RESTART:-0}"
 
 show_header() {
@@ -47,7 +47,18 @@ PY
 
 show_header
 
-if curl -fsS --max-time 2 "$HEALTH_URL" >/dev/null 2>&1; then
+if python3 - "$HEALTH_URL" <<'PY' >/dev/null 2>&1
+import json
+import sys
+import urllib.request
+
+with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+    data = json.load(response)
+
+if data.get("status") != "ok" or data.get("client") != "phone-bridge":
+    raise SystemExit(1)
+PY
+then
   echo "AgentCockpit is already running."
   echo ""
   print_health_summary
