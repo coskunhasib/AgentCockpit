@@ -2709,7 +2709,7 @@
         setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
         try {
           const result = await sendActionRequest(payload, {
-            timeoutMs: payload.type === 'type' ? 13000 : 9000
+            timeoutMs: payload.type === 'type' ? (inputTarget === 'parsec' ? 30000 : 13000) : 9000
           });
           consecutiveErrors = 0;
           lastLatencyMs = result.__elapsed || lastLatencyMs;

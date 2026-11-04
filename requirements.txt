@@ -7,4 +7,5 @@ pyperclip
 loguru
 qrcode>=7.4.2,<9
 pyobjc-framework-Quartz; sys_platform == "darwin"
+pyobjc-framework-Vision; sys_platform == "darwin"
 pywinauto; sys_platform == "win32"

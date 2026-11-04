@@ -1201,7 +1201,7 @@ def _perform_type(text, *, sensitive=False, focus=None, input_target="local"):
             text,
             restore_clipboard=bool(sensitive),
         )
-        method = "parsec_key_events"
+        method = "parsec_remote_menu"
     else:
         sent = SystemOps.paste_text(text, restore_clipboard=bool(sensitive))
         method = "local_clipboard"
@@ -2863,6 +2863,11 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                     focus=payload.get("focus"),
                     input_target=_input_target(payload),
                 ):
+                    if _input_target(payload) == 'parsec':
+                        raise RuntimeError(
+                            'Parsec metni yapistirilamadi. Hedef metin alanini secin; '
+                            'sag tik menusunde Yapistir/Paste etkin olmali.'
+                        )
                     raise RuntimeError("Metin yazilamadi. Accessibility iznini kontrol edin.")
             elif action_type == "refresh":
                 pass
