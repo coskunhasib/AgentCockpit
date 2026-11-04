@@ -65,6 +65,8 @@
     }
 
     #screen {
+      position: absolute;
+      flex: none;
       max-width: 100%;
       max-height: 100%;
       object-fit: contain;
@@ -1151,6 +1153,7 @@
       let inputTarget = localStorage.getItem(STORAGE_KEYS.inputTarget) === 'parsec' ? 'parsec' : 'local';
       let pollTimer = null;
       let autoFitResizeTimer = null;
+      let requestedStreamWidth = 0;
       let usageHintTimer = null;
       let topbarHideTimer = null;
       let scrollRequestInFlight = false;
@@ -2095,6 +2098,7 @@
 
       function qualityQuery() {
         const profile = qualityProfile();
+        requestedStreamWidth = profile.width;
         const viewerRect = viewer.getBoundingClientRect();
         const dpr = Math.max(0.1, window.devicePixelRatio || 1);
         return [
@@ -2890,18 +2894,18 @@
         const viewerWidth = Math.max(1, viewerRect.width);
         const viewerHeight = Math.max(1, viewerRect.height);
         const dpr = Math.max(1, window.devicePixelRatio || 1);
-        const sourceWidth = screenEl.naturalWidth || screenInfo.width || viewerWidth;
-        const sourceHeight = screenEl.naturalHeight || screenInfo.height || viewerHeight;
+        const sourceWidth = screenInfo.width || screenEl.naturalWidth || viewerWidth;
+        const sourceHeight = screenInfo.height || screenEl.naturalHeight || viewerHeight;
         const sourceRatio = sourceWidth / Math.max(1, sourceHeight);
         const viewerRatio = viewerWidth / viewerHeight;
         let physicalWidth;
         let physicalHeight;
         if (sourceRatio >= viewerRatio) {
           physicalWidth = Math.floor(viewerWidth * dpr);
-          physicalHeight = Math.round(physicalWidth / sourceRatio);
+          physicalHeight = Math.floor(physicalWidth / sourceRatio);
         } else {
-          physicalHeight = Math.floor(viewerHeight * dpr);
-          physicalWidth = Math.round(physicalHeight * sourceRatio);
+          physicalWidth = Math.floor(viewerHeight * dpr * sourceRatio);
+          physicalHeight = Math.floor(physicalWidth / sourceRatio);
         }
         return {
           width: physicalWidth / dpr,
@@ -2917,9 +2921,8 @@
       }
 
       function refreshStreamResolutionForZoom() {
-        if (pollMode !== 'live') return;
         const targetWidth = qualityProfile().width;
-        if (Math.abs(targetWidth - frameWidth) < 64) return;
+        if (!screenEl.naturalWidth || targetWidth === requestedStreamWidth) return;
         if (streamMode === 'stream') {
           restartPushStream();
         } else if (streamMode === 'frame') {
@@ -2945,11 +2948,19 @@
       function applyScreenTransform(nextTransform = screenTransform) {
         screenTransform = clampScreenTransform(nextTransform);
         const base = containedScreenSize();
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const viewerRect = viewer.getBoundingClientRect();
+        const physicalWidth = Math.round(base.width * screenTransform.scale * dpr);
+        const physicalHeight = Math.round(base.height * screenTransform.scale * dpr);
+        const left = Math.round((viewerRect.width * dpr - physicalWidth) / 2 + screenTransform.panX * dpr);
+        const top = Math.round((viewerRect.height * dpr - physicalHeight) / 2 + screenTransform.panY * dpr);
         screenEl.style.maxWidth = 'none';
         screenEl.style.maxHeight = 'none';
-        screenEl.style.width = `${base.width * screenTransform.scale}px`;
-        screenEl.style.height = `${base.height * screenTransform.scale}px`;
-        screenEl.style.transform = `translate3d(${screenTransform.panX}px, ${screenTransform.panY}px, 0)`;
+        screenEl.style.width = `${physicalWidth / dpr}px`;
+        screenEl.style.height = `${physicalHeight / dpr}px`;
+        screenEl.style.left = `${left / dpr}px`;
+        screenEl.style.top = `${top / dpr}px`;
+        screenEl.style.transform = 'none';
       }
 
       function isScreenZoomed() {
@@ -3539,6 +3550,15 @@
           }
         }, 250);
       });
+      // Panels change the viewer size without a window resize. Keep the server's
+      // downscale matched to the final display pixels in every quality mode.
+      if (typeof ResizeObserver === 'function') {
+        new ResizeObserver(() => {
+          applyScreenTransform();
+          clearTimeout(autoFitResizeTimer);
+          autoFitResizeTimer = setTimeout(refreshStreamResolutionForZoom, 250);
+        }).observe(viewer);
+      }
       window.addEventListener('online', () => {
         setOfflineBanner(false);
         setWanSheetVisible(false);
