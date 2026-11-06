@@ -12,7 +12,13 @@ class PhoneClientKeyboardTests(unittest.TestCase):
         self.assertIn('data-key="winleft+d"', html)
         self.assertIn('data-key="mac_control+left"', html)
         self.assertIn('data-key="mac_control+right"', html)
-        self.assertIn('id="btn-input-target"', html)
+        self.assertNotIn('id="btn-input-target"', html)
+        settings = html.split('<details class="keyboard-troubleshooting">', 1)[1].split('</details>', 1)[0]
+        self.assertIn('<select id="input-target">', settings)
+        for target in ('auto', 'local', 'parsec'):
+            self.assertIn(f'<option value="{target}">', settings)
+        self.assertIn("inputTargetSelect.addEventListener('change'", html)
+        self.assertIn("closest('.keyboard-troubleshooting')", html)
         self.assertIn("input_target: inputTarget", html)
         self.assertIn("inputTarget: 'ac_phone_input_target_v2'", html)
         self.assertIn("includes(savedInputTarget) ? savedInputTarget : 'auto'", html)
