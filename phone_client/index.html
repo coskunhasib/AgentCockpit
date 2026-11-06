@@ -230,6 +230,10 @@
       font-size: 13px;
     }
 
+    #btn-speed {
+      margin-top: 8px;
+    }
+
     .keyboard-troubleshooting summary {
       cursor: pointer;
     }
@@ -583,7 +587,7 @@
 
     .hint {
       position: fixed;
-      inset: auto 10px calc(74px + var(--safe-bottom)) 10px;
+      inset: auto 10px var(--toolbar-clearance, calc(74px + var(--safe-bottom))) 10px;
       padding: 10px 14px;
       border-radius: 14px;
       background: rgba(9, 13, 20, 0.82);
@@ -956,6 +960,7 @@
         </div>
         <div class="status-details" id="status-details">
           <div class="status-sub" id="status-sub">Ilk ekran bekleniyor</div>
+          <button class="repo-prompt-btn" id="btn-speed" type="button">Kalite: Normal</button>
           <div class="repo-prompt" id="repo-prompt">
             <div class="repo-prompt-title" id="repo-prompt-title">Repo guncellemesi hazir</div>
             <div class="repo-prompt-sub" id="repo-prompt-sub">Yeni commit bulundu.</div>
@@ -981,7 +986,7 @@
     <div class="toolbar" id="toolbar">
       <button class="tool-btn" id="btn-refresh">Yenile</button>
       <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
-      <button class="tool-btn" id="btn-speed">Normal</button>
+      <button class="tool-btn" id="btn-screen-view" type="button" aria-pressed="false" aria-label="Sığdır görünümü. 1:1 moduna geç" disabled>Sığdır</button>
       <button class="tool-btn" id="btn-scroll">Kaydir</button>
       <button class="tool-btn" id="btn-keyboard">Klavye</button>
     </div>
@@ -1162,6 +1167,7 @@
       const statusDetails = document.getElementById('status-details');
       const btnRefresh = document.getElementById('btn-refresh');
       const btnSpeed = document.getElementById('btn-speed');
+      const btnScreenView = document.getElementById('btn-screen-view');
       const btnScroll = document.getElementById('btn-scroll');
       const btnTelegram = document.getElementById('btn-telegram');
       const btnInstall = document.getElementById('btn-install');
@@ -1214,6 +1220,7 @@
       let mouseGesture = null;
       let remoteDrag = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
+      let nativeView = false;
       let statusExpanded = true;
       let sensitiveTyping = false;
       let boostUntil = 0;
@@ -1349,12 +1356,10 @@
 
       function scheduleUsageHintAutoHide() {
         if (localStorage.getItem(STORAGE_KEYS.usageHintDismissed) === '1') {
-          setUsageHintVisible(false);
+          if (!usageHint.classList.contains('hidden')) setUsageHintVisible(false);
           return;
         }
-        if (usageHintTimer) {
-          clearTimeout(usageHintTimer);
-        }
+        if (usageHintTimer) return;
         usageHintTimer = setTimeout(() => {
           dismissUsageHint(true);
         }, 4500);
@@ -1617,6 +1622,8 @@
 
       function updateViewerInsets() {
         const viewportHeight = window.innerHeight || document.documentElement.clientHeight || 0;
+        const toolbarTop = toolbar.getBoundingClientRect().top;
+        document.documentElement.style.setProperty('--toolbar-clearance', `${Math.max(0, viewportHeight - toolbarTop) + 8}px`);
         let topOffset = 0;
         for (const element of [offlineBanner]) {
           if (!isElementOccupyingSpace(element)) {
@@ -1663,7 +1670,7 @@
       }
 
       function updateSpeedButton() {
-        btnSpeed.textContent = POLL_LABELS[pollMode];
+        btnSpeed.textContent = `Kalite: ${POLL_LABELS[pollMode]}`;
         const profile = qualityProfile();
         btnSpeed.title = `Aktif kalite: ${POLL_LABELS[pollMode]} (${profile.width}px, q${profile.quality})`;
         btnSpeed.setAttribute('aria-label', `${btnSpeed.title}. Degistirmek icin tikla.`);
@@ -2133,6 +2140,12 @@
       }
 
       function qualityProfile() {
+        const profile = fittedQualityProfile();
+        // Request source detail independently of the JPEG quality preset.
+        return nativeView ? { ...profile, width: MAX_STREAM_WIDTH } : profile;
+      }
+
+      function fittedQualityProfile() {
         if (pollMode === 'eco') {
           return { quality: 50, width: autoFitWidth(0.75), sharp: 2 };
         }
@@ -3055,20 +3068,36 @@
       function clampScreenTransform(transform = screenTransform) {
         const scale = clamp(transform.scale || 1, 1, 4);
         const viewerRect = viewer.getBoundingClientRect();
-        const base = containedScreenSize();
+        const base = viewBaseSize();
         const maxPanX = Math.max(0, (base.width * scale - viewerRect.width) / 2);
         const maxPanY = Math.max(0, (base.height * scale - viewerRect.height) / 2);
         return {
           scale,
-          panX: scale <= 1 ? 0 : clamp(transform.panX || 0, -maxPanX, maxPanX),
-          panY: scale <= 1 ? 0 : clamp(transform.panY || 0, -maxPanY, maxPanY)
+          panX: clamp(transform.panX || 0, -maxPanX, maxPanX),
+          panY: clamp(transform.panY || 0, -maxPanY, maxPanY)
         };
+      }
+
+      function viewBaseSize() {
+        if (!nativeView || !screenEl.naturalWidth) return containedScreenSize();
+        const dpr = Math.max(0.1, window.devicePixelRatio || 1);
+        return { width: screenEl.naturalWidth / dpr, height: screenEl.naturalHeight / dpr };
+      }
+
+      function setNativeView(enabled) {
+        nativeView = enabled;
+        btnScreenView.textContent = enabled ? '1:1' : 'Sığdır';
+        btnScreenView.setAttribute('aria-pressed', String(enabled));
+        btnScreenView.setAttribute('aria-label', enabled ? '1:1 görünüm. Sığdır moduna geç' : 'Sığdır görünümü. 1:1 moduna geç');
+        applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
+        updateSpeedButton();
+        refreshStreamResolutionForZoom();
       }
 
       function applyScreenTransform(nextTransform = screenTransform) {
         screenTransform = clampScreenTransform(nextTransform);
-        const base = containedScreenSize();
-        const dpr = Math.max(1, window.devicePixelRatio || 1);
+        const base = viewBaseSize();
+        const dpr = Math.max(nativeView ? 0.1 : 1, window.devicePixelRatio || 1);
         const viewerRect = viewer.getBoundingClientRect();
         const physicalWidth = Math.round(base.width * screenTransform.scale * dpr);
         const physicalHeight = Math.round(base.height * screenTransform.scale * dpr);
@@ -3084,6 +3113,10 @@
       }
 
       function isScreenZoomed() {
+        if (nativeView) {
+          const base = viewBaseSize();
+          return base.width > viewer.clientWidth || base.height > viewer.clientHeight;
+        }
         return screenTransform.scale > 1.02;
       }
 
@@ -3111,6 +3144,7 @@
         if (event.touches.length === 2) {
           event.preventDefault();
           clearLongPressTimer();
+          if (nativeView) setNativeView(false);
           const midpoint = getTouchMidpoint(event.touches);
           const viewerRect = viewer.getBoundingClientRect();
           gesture = {
@@ -3349,6 +3383,9 @@
           currentX: event.clientX,
           currentY: event.clientY,
           startCoords: coords,
+          localPan: event.shiftKey && isScreenZoomed(),
+          startPanX: screenTransform.panX,
+          startPanY: screenTransform.panY,
           startedAt: Date.now(),
           moved: false,
           remoteStarted: false
@@ -3367,6 +3404,14 @@
         event.preventDefault();
         mouseGesture.currentX = event.clientX;
         mouseGesture.currentY = event.clientY;
+        if (mouseGesture.localPan) {
+          applyScreenTransform({
+            ...screenTransform,
+            panX: mouseGesture.startPanX + event.clientX - mouseGesture.x,
+            panY: mouseGesture.startPanY + event.clientY - mouseGesture.y
+          });
+          return;
+        }
         if (
           Math.abs(event.clientX - mouseGesture.x) > 5
           || Math.abs(event.clientY - mouseGesture.y) > 5
@@ -3396,6 +3441,7 @@
           // The browser can release capture automatically before this handler.
         }
 
+        if (activeGesture.localPan) return;
         const coords = getRatios(event.clientX, event.clientY);
         if (activeGesture.moved) {
           const marker = spawnTapMarker(event.clientX, event.clientY, 'left');
@@ -3499,12 +3545,15 @@
           window.location.href = TELEGRAM_BOT_URL;
         }
       });
+      btnScreenView.addEventListener('click', () => {
+        setNativeView(!nativeView);
+        showToast(nativeView ? '1:1: Dokunup veya Shift ile surukleyerek gezin' : 'Ekran sigdirildi');
+      });
       btnSpeed.addEventListener('click', () => {
         const currentIndex = POLL_ORDER.indexOf(pollMode);
         pollMode = POLL_ORDER[(currentIndex + 1) % POLL_ORDER.length];
         localStorage.setItem(STORAGE_KEYS.pollMode, pollMode);
         updateSpeedButton();
-        applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
         const profile = qualityProfile();
         const profileText = `${POLL_LABELS[pollMode]} - ${profile.width}px, q${profile.quality}`;
         setStatus('Goruntu kalitesi guncellendi', `Yeni mod: ${profileText}`, connected);
@@ -3620,6 +3669,7 @@
 
       screenEl.addEventListener('load', () => {
         if (!screenEl.naturalWidth) return;
+        btnScreenView.disabled = false;
         frameInspectButton.disabled = false;
         if (frameWidth === screenEl.naturalWidth && frameHeight === screenEl.naturalHeight) return;
         frameWidth = screenEl.naturalWidth;

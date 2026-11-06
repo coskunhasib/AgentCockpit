@@ -3,6 +3,16 @@ from pathlib import Path
 
 
 class PhoneClientLayoutTests(unittest.TestCase):
+    def test_live_native_view_is_separate_from_quality(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+        toolbar = html.split('<div class="toolbar" id="toolbar">', 1)[1].split("</div>", 1)[0]
+        self.assertIn('id="btn-screen-view"', toolbar)
+        self.assertNotIn('id="btn-speed"', toolbar)
+        self.assertIn("let nativeView = false;", html)
+        self.assertIn("width: screenEl.naturalWidth / dpr", html)
+        self.assertIn("width: MAX_STREAM_WIDTH } : profile", html)
+        self.assertIn("localPan: event.shiftKey && isScreenZoomed()", html)
+
     def test_quality_modes_match_the_browser_physical_pixels(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 
