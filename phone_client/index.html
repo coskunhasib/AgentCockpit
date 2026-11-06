@@ -96,21 +96,6 @@
       text-align: center;
     }
 
-    #frame-inspector {
-      width: min(96vw, 1400px);
-      max-width: 96vw;
-      padding: 14px;
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      background: var(--bg);
-      color: var(--text);
-    }
-
-    #frame-inspector::backdrop { background: rgba(0, 0, 0, 0.7); }
-    .frame-inspector-actions { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
-    #frame-inspector-viewport { overflow: auto; max-height: 70dvh; background: #05070c; }
-    #frame-inspector-image { display: block; max-width: none; height: auto; }
-
     #overlay {
       position: fixed;
       inset: 0;
@@ -977,7 +962,6 @@
               <option value="local">Mac</option>
               <option value="parsec">Parsec</option>
             </select>
-            <button class="repo-prompt-btn" id="btn-frame-inspect" type="button" disabled>Kareyi Incele</button>
           </details>
         </div>
       </div>
@@ -986,7 +970,6 @@
     <div class="toolbar" id="toolbar">
       <button class="tool-btn" id="btn-refresh">Yenile</button>
       <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
-      <button class="tool-btn" id="btn-screen-view" type="button" aria-pressed="false" aria-label="Sığdır görünümü. 1:1 moduna geç" disabled>Sığdır</button>
       <button class="tool-btn" id="btn-scroll">Kaydir</button>
       <button class="tool-btn" id="btn-keyboard">Klavye</button>
     </div>
@@ -1069,18 +1052,6 @@
   <div id="tap-layer" aria-hidden="true"></div>
   <div id="action-toast" role="status" aria-live="polite"></div>
 
-  <dialog id="frame-inspector" aria-labelledby="frame-inspector-title">
-    <strong id="frame-inspector-title">Gelen kare</strong>
-    <p id="frame-inspector-info"></p>
-    <p>Ayni JPEG'in donmus goruntusu. 1:1 gorunumde bir goruntu pikseli bir ekran pikseline karsilik gelir; buyuk kareyi kaydirarak inceleyebilirsin.</p>
-    <div class="frame-inspector-actions">
-      <button class="repo-prompt-btn" id="frame-inspector-native" type="button" aria-pressed="true">1:1</button>
-      <button class="repo-prompt-btn" id="frame-inspector-fit" type="button" aria-pressed="false">Sigdir</button>
-      <button class="repo-prompt-btn" id="frame-inspector-close" type="button">Kapat</button>
-    </div>
-    <div id="frame-inspector-viewport"><img id="frame-inspector-image" alt="Alinan JPEG karesi"></div>
-  </dialog>
-
   <script>
     (() => {
       'use strict';
@@ -1149,11 +1120,6 @@
       const statusDot = document.getElementById('status-dot');
       const statusTitle = document.getElementById('status-title');
       const statusSub = document.getElementById('status-sub');
-      const frameInspectButton = document.getElementById('btn-frame-inspect');
-      const frameInspector = document.getElementById('frame-inspector');
-      const frameInspectorImage = document.getElementById('frame-inspector-image');
-      let inspectedFrameUrl = null;
-      let frameInspectionBusy = false;
       const repoPrompt = document.getElementById('repo-prompt');
       const repoPromptTitle = document.getElementById('repo-prompt-title');
       const repoPromptSub = document.getElementById('repo-prompt-sub');
@@ -1167,7 +1133,6 @@
       const statusDetails = document.getElementById('status-details');
       const btnRefresh = document.getElementById('btn-refresh');
       const btnSpeed = document.getElementById('btn-speed');
-      const btnScreenView = document.getElementById('btn-screen-view');
       const btnScroll = document.getElementById('btn-scroll');
       const btnTelegram = document.getElementById('btn-telegram');
       const btnInstall = document.getElementById('btn-install');
@@ -1220,7 +1185,6 @@
       let mouseGesture = null;
       let remoteDrag = null;
       let screenTransform = { scale: 1, panX: 0, panY: 0 };
-      let nativeView = false;
       let statusExpanded = true;
       let sensitiveTyping = false;
       let boostUntil = 0;
@@ -2140,12 +2104,6 @@
       }
 
       function qualityProfile() {
-        const profile = fittedQualityProfile();
-        // Request source detail independently of the JPEG quality preset.
-        return nativeView ? { ...profile, width: MAX_STREAM_WIDTH } : profile;
-      }
-
-      function fittedQualityProfile() {
         if (pollMode === 'eco') {
           return { quality: 50, width: autoFitWidth(0.75), sharp: 2 };
         }
@@ -2212,48 +2170,6 @@
 
       function currentFps() {
         return frameTimes.length > 1 ? Math.round((frameTimes.length - 1) / 1.5) : 0;
-      }
-
-      function setInspectedFrameFit(fit) {
-        const dpr = Math.max(0.1, window.devicePixelRatio || 1);
-        frameInspectorImage.style.width = `${frameInspectorImage.naturalWidth / dpr}px`;
-        frameInspectorImage.style.maxWidth = fit ? '100%' : 'none';
-        document.getElementById('frame-inspector-native').setAttribute('aria-pressed', String(!fit));
-        document.getElementById('frame-inspector-fit').setAttribute('aria-pressed', String(fit));
-      }
-
-      async function inspectReceivedFrame() {
-        if (!screenEl.naturalWidth || !screenEl.src || inspectedFrameUrl || frameInspectionBusy) return;
-        frameInspectionBusy = true;
-        frameInspectButton.disabled = true;
-        try {
-          const rect = screenEl.getBoundingClientRect();
-          const dpr = window.devicePixelRatio || 1;
-          // Copy the received JPEG bytes, without recapture or re-encoding.
-          // The live renderer can then revoke its own URL independently.
-          const response = await fetch(screenEl.currentSrc || screenEl.src);
-          if (!response.ok) throw new Error('Kare okunamadi');
-          inspectedFrameUrl = URL.createObjectURL(await response.blob());
-          frameInspectorImage.src = inspectedFrameUrl;
-          await frameInspectorImage.decode();
-          document.getElementById('frame-inspector-info').textContent =
-            `JPEG: ${frameInspectorImage.naturalWidth}x${frameInspectorImage.naturalHeight}. ` +
-            `Canli gorunum: ${Math.round(rect.width * dpr)}x${Math.round(rect.height * dpr)} ekran pikseli. DPR: ${dpr.toFixed(2)}.`;
-          setInspectedFrameFit(false);
-          frameInspector.showModal();
-        } catch (_) {
-          releaseInspectedFrame();
-          showToast('Kare acilamadi. Goruntu geldikten sonra tekrar dene.', 'err');
-        } finally {
-          frameInspectionBusy = false;
-          frameInspectButton.disabled = false;
-        }
-      }
-
-      function releaseInspectedFrame() {
-        frameInspectorImage.removeAttribute('src');
-        if (inspectedFrameUrl) URL.revokeObjectURL(inspectedFrameUrl);
-        inspectedFrameUrl = null;
       }
 
       function renderStreamFrame(bytes) {
@@ -3068,7 +2984,7 @@
       function clampScreenTransform(transform = screenTransform) {
         const scale = clamp(transform.scale || 1, 1, 4);
         const viewerRect = viewer.getBoundingClientRect();
-        const base = viewBaseSize();
+        const base = containedScreenSize();
         const maxPanX = Math.max(0, (base.width * scale - viewerRect.width) / 2);
         const maxPanY = Math.max(0, (base.height * scale - viewerRect.height) / 2);
         return {
@@ -3078,26 +2994,10 @@
         };
       }
 
-      function viewBaseSize() {
-        if (!nativeView || !screenEl.naturalWidth) return containedScreenSize();
-        const dpr = Math.max(0.1, window.devicePixelRatio || 1);
-        return { width: screenEl.naturalWidth / dpr, height: screenEl.naturalHeight / dpr };
-      }
-
-      function setNativeView(enabled) {
-        nativeView = enabled;
-        btnScreenView.textContent = enabled ? '1:1' : 'Sığdır';
-        btnScreenView.setAttribute('aria-pressed', String(enabled));
-        btnScreenView.setAttribute('aria-label', enabled ? '1:1 görünüm. Sığdır moduna geç' : 'Sığdır görünümü. 1:1 moduna geç');
-        applyScreenTransform({ scale: 1, panX: 0, panY: 0 });
-        updateSpeedButton();
-        refreshStreamResolutionForZoom();
-      }
-
       function applyScreenTransform(nextTransform = screenTransform) {
         screenTransform = clampScreenTransform(nextTransform);
-        const base = viewBaseSize();
-        const dpr = Math.max(nativeView ? 0.1 : 1, window.devicePixelRatio || 1);
+        const base = containedScreenSize();
+        const dpr = Math.max(1, window.devicePixelRatio || 1);
         const viewerRect = viewer.getBoundingClientRect();
         const physicalWidth = Math.round(base.width * screenTransform.scale * dpr);
         const physicalHeight = Math.round(base.height * screenTransform.scale * dpr);
@@ -3113,10 +3013,6 @@
       }
 
       function isScreenZoomed() {
-        if (nativeView) {
-          const base = viewBaseSize();
-          return base.width > viewer.clientWidth || base.height > viewer.clientHeight;
-        }
         return screenTransform.scale > 1.02;
       }
 
@@ -3144,7 +3040,6 @@
         if (event.touches.length === 2) {
           event.preventDefault();
           clearLongPressTimer();
-          if (nativeView) setNativeView(false);
           const midpoint = getTouchMidpoint(event.touches);
           const viewerRect = viewer.getBoundingClientRect();
           gesture = {
@@ -3383,9 +3278,6 @@
           currentX: event.clientX,
           currentY: event.clientY,
           startCoords: coords,
-          localPan: event.shiftKey && isScreenZoomed(),
-          startPanX: screenTransform.panX,
-          startPanY: screenTransform.panY,
           startedAt: Date.now(),
           moved: false,
           remoteStarted: false
@@ -3404,14 +3296,6 @@
         event.preventDefault();
         mouseGesture.currentX = event.clientX;
         mouseGesture.currentY = event.clientY;
-        if (mouseGesture.localPan) {
-          applyScreenTransform({
-            ...screenTransform,
-            panX: mouseGesture.startPanX + event.clientX - mouseGesture.x,
-            panY: mouseGesture.startPanY + event.clientY - mouseGesture.y
-          });
-          return;
-        }
         if (
           Math.abs(event.clientX - mouseGesture.x) > 5
           || Math.abs(event.clientY - mouseGesture.y) > 5
@@ -3441,7 +3325,6 @@
           // The browser can release capture automatically before this handler.
         }
 
-        if (activeGesture.localPan) return;
         const coords = getRatios(event.clientX, event.clientY);
         if (activeGesture.moved) {
           const marker = spawnTapMarker(event.clientX, event.clientY, 'left');
@@ -3544,10 +3427,6 @@
           wanSheetDismissed = true;
           window.location.href = TELEGRAM_BOT_URL;
         }
-      });
-      btnScreenView.addEventListener('click', () => {
-        setNativeView(!nativeView);
-        showToast(nativeView ? '1:1: Dokunup veya Shift ile surukleyerek gezin' : 'Ekran sigdirildi');
       });
       btnSpeed.addEventListener('click', () => {
         const currentIndex = POLL_ORDER.indexOf(pollMode);
@@ -3669,18 +3548,11 @@
 
       screenEl.addEventListener('load', () => {
         if (!screenEl.naturalWidth) return;
-        btnScreenView.disabled = false;
-        frameInspectButton.disabled = false;
         if (frameWidth === screenEl.naturalWidth && frameHeight === screenEl.naturalHeight) return;
         frameWidth = screenEl.naturalWidth;
         frameHeight = screenEl.naturalHeight;
         applyScreenTransform();
       });
-      frameInspectButton.addEventListener('click', inspectReceivedFrame);
-      document.getElementById('frame-inspector-native').addEventListener('click', () => setInspectedFrameFit(false));
-      document.getElementById('frame-inspector-fit').addEventListener('click', () => setInspectedFrameFit(true));
-      document.getElementById('frame-inspector-close').addEventListener('click', () => frameInspector.close());
-      frameInspector.addEventListener('close', releaseInspectedFrame);
       screenEl.addEventListener('touchstart', onTouchStart, { passive: false });
       screenEl.addEventListener('touchmove', onTouchMove, { passive: false });
       screenEl.addEventListener('touchend', onTouchEnd, { passive: false });

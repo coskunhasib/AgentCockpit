@@ -3,15 +3,15 @@ from pathlib import Path
 
 
 class PhoneClientLayoutTests(unittest.TestCase):
-    def test_live_native_view_is_separate_from_quality(self):
+    def test_view_fits_automatically_without_diagnostic_controls(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
         toolbar = html.split('<div class="toolbar" id="toolbar">', 1)[1].split("</div>", 1)[0]
-        self.assertIn('id="btn-screen-view"', toolbar)
+        self.assertNotIn('id="btn-screen-view"', html)
+        self.assertNotIn('id="btn-frame-inspect"', html)
+        self.assertNotIn('id="frame-inspector"', html)
         self.assertNotIn('id="btn-speed"', toolbar)
-        self.assertIn("let nativeView = false;", html)
-        self.assertIn("width: screenEl.naturalWidth / dpr", html)
-        self.assertIn("width: MAX_STREAM_WIDTH } : profile", html)
-        self.assertIn("localPan: event.shiftKey && isScreenZoomed()", html)
+        self.assertIn("let screenTransform = { scale: 1, panX: 0, panY: 0 };", html)
+        self.assertIn("const base = containedScreenSize();", html)
 
     def test_quality_modes_match_the_browser_physical_pixels(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")

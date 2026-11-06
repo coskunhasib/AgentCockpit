@@ -124,9 +124,7 @@ Tarayici istemcisinde `Normal`, sigdirilan goruntunun fiziksel ekran pikseli gen
 
 ## Ekran ve Isaretci Notu
 
-Yazilar bulaniksa baglanti kartindaki `Sorun Giderme > Kareyi Incele` ile ayni JPEG'i yeniden sikistirmadan dondurup inceleyin. Dugme ilk goruntu geldiginde etkinlesir; acilan pencerede `1:1` ve `Sigdir` bulunur. `1:1`, goruntu piksellerini ekran piksellerine esler; `Sigdir`, ayni kareyi pencereye kucultur. 1:1 net, sigdir bulaniksa olcekleme/ekran yogunlugu etkisini arastirin. Ikisi de bulaniksa kaynak yakalama ve JPEG sikistirmasini inceleyin. Panel, alinan JPEG boyutunu, canli gorunumun ekran piksel boyutunu ve tarayici DPR degerini gosterir. Bu karsilastirma tek basina Windows JPEG cozumleyicisini dogrulamaz.
-
-Canli gorunum varsayilan olarak ekrana sigar. Alt cubuktaki **Sigdir / 1:1** dugmesi, gelen her JPEG pikselini bir fiziksel ekran pikseline esleyen canli gorunume gecer. 1:1 daha genis bir kaynak karesi ister; JPEG kalite ayari degismez. Kare pencereye sigmazsa telefonda surukleyerek, masaustunde Shift ile surukleyerek gezin. **Kalite** (HD, Normal, Hizli) baglanti kartinin ayrintilarindadir.
+Canli gorunum pencereye otomatik sigar. Telefonda iki parmakla yakinlastirma ve yakin gorunumde kaydirma desteklenir. Akis parametrelerini degistiren **Kalite** (HD, Normal, Hizli) ayari baglanti kartinin ayrintilarindadir.
 
 Akis, hareket sirasinda JPEG kalitesini dusurebilir ama kare genisligini degistirmez. Tarayici yeni kareyi cozumleyene kadar son gecerli goruntuyu korur. Akis kesilirse son karenin yasi goruntunun ustunde belirtilir; saglikli ama hareketsiz ekran bu uyariyi tetiklemez.
 
