@@ -1191,11 +1191,24 @@ def _perform_focus_click(focus):
     return True
 
 
+def _resolve_text_focus(payload):
+    before = _input_target(payload)
+    focused = _perform_focus_click(payload.get("focus")) if payload.get("text") else False
+    # Never fall back to local clipboard if a stale click moved focus away from Parsec.
+    return focused, "parsec" if before == "parsec" else _input_target(payload)
+
+
 def _perform_type(text, *, sensitive=False, focus=None, input_target="local"):
     if not text:
         return True
 
     focused = _perform_focus_click(focus)
+    return _send_focused_text(text, sensitive=sensitive, focused=focused, input_target=input_target)
+
+
+def _send_focused_text(text, *, sensitive, focused, input_target):
+    if not text:
+        return True
     if input_target == "parsec":
         sent = SystemOps.type_text_for_parsec(
             text,
@@ -2812,6 +2825,7 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
             except (TypeError, ValueError):
                 delay = 0.15
 
+            resolved_input_target = None
             if action_type == "click":
                 _perform_click(
                     payload.get("x", 0.0),
@@ -2857,13 +2871,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 ):
                     raise RuntimeError("Klavye kisayolu uygulanamadi. Accessibility iznini kontrol edin.")
             elif action_type == "type":
-                if not _perform_type(
+                focused, resolved_input_target = _resolve_text_focus(payload)
+                action_audit["input_target"] = resolved_input_target
+                if not _send_focused_text(
                     payload.get("text", ""),
                     sensitive=bool(payload.get("sensitive", False)),
-                    focus=payload.get("focus"),
-                    input_target=_input_target(payload),
+                    focused=focused,
+                    input_target=resolved_input_target,
                 ):
-                    if _input_target(payload) == 'parsec':
+                    if resolved_input_target == 'parsec':
                         raise RuntimeError(
                             'Parsec metni yazilamadi. Parsec onde, hedef alan secili ve '
                             'vhid doctor sonucu ready olmali. Mac ve Windows klavye '
@@ -2924,6 +2940,8 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                 "repo_state": repo_state,
                 "screenshot": screenshot_payload,
             }
+            if resolved_input_target is not None:
+                response_body["input_target"] = resolved_input_target
             if log_action:
                 record_runtime_event("phone_bridge_action_succeeded", **action_audit)
         except Exception as exc:

@@ -950,7 +950,7 @@
   <div id="keyboard-panel">
     <div class="keyboard-header">
       <div class="keyboard-title">Klavye</div>
-      <button class="key-btn" id="btn-input-target" type="button" aria-pressed="false">Hedef: Mac</button>
+      <button class="key-btn" id="btn-input-target" type="button">Hedef: Otomatik</button>
       <button class="keyboard-close" id="btn-keyboard-close" type="button">Kapat</button>
     </div>
     <div class="input-row">
@@ -1058,7 +1058,7 @@
         usageHintDismissed: 'ac_phone_usage_hint_dismissed_v1',
         repoOfferDismissed: 'ac_phone_repo_offer_dismissed_v1',
         deviceToken: 'ac_phone_device_token_v1',
-        inputTarget: 'ac_phone_input_target_v1'
+        inputTarget: 'ac_phone_input_target_v2'
       };
       const templateValue = (value) => (
         value && !String(value).startsWith('{{') ? String(value) : ''
@@ -1150,7 +1150,9 @@
       let sessionInfo = { expiresAt: 0, expiresIn: 0, expiresInText: '', expiresUnlimited: false, label: '', trustedDevice: false, deviceLabel: '', authKind: '' };
       let serverPollMs = DEFAULT_POLL_MS;
       let pollMode = localStorage.getItem(STORAGE_KEYS.pollMode) || 'balanced';
-      let inputTarget = localStorage.getItem(STORAGE_KEYS.inputTarget) === 'parsec' ? 'parsec' : 'local';
+      const INPUT_TARGET_LABELS = { auto: 'Otomatik', parsec: 'Parsec', local: 'Mac' };
+      const savedInputTarget = localStorage.getItem(STORAGE_KEYS.inputTarget);
+      let inputTarget = ['parsec', 'local'].includes(savedInputTarget) ? savedInputTarget : 'auto';
       let pollTimer = null;
       let autoFitResizeTimer = null;
       let requestedStreamWidth = 0;
@@ -2713,17 +2715,25 @@
         setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
         try {
           let result;
-          if (payload.type === 'type' && payload.input_target === 'parsec') {
+          if (payload.type === 'type' && payload.input_target !== 'local') {
             // Real HID typing takes time. Bound each WAN request and never
             // re-focus between chunks, which would move the insertion point.
             const characters = Array.from(payload.text || '');
+            let target = payload.input_target;
             for (let offset = 0; offset < characters.length; offset += 64) {
               result = await sendActionRequest({
                 ...payload,
+                input_target: target,
                 text: characters.slice(offset, offset + 64).join(''),
                 focus: offset === 0 ? payload.focus : null,
                 request_id: `${payload.request_id}:hid:${offset}`
               }, { timeoutMs: 75000, retries: 0 });
+              if (target === 'auto') {
+                target = result.input_target;
+                if (!['parsec', 'local'].includes(target) && offset + 64 < characters.length) {
+                  throw new Error('Klavye hedefi dogrulanamadi; kalan metin gonderilmedi.');
+                }
+              }
             }
           } else {
             result = await sendActionRequest(payload, {
@@ -2748,7 +2758,7 @@
           }
         } catch (error) {
           const detail = (error && error.message) ? error.message : 'Bilinmeyen hata';
-          const message = payload.type === 'type' && payload.input_target === 'parsec'
+          const message = payload.type === 'type' && payload.input_target !== 'local'
             ? `${detail} Metnin bir kismi yazilmis olabilir; kontrol etmeden yeniden gondermeyin.`
             : detail;
           if (error && error.http) {
@@ -3428,12 +3438,11 @@
         setKeyboardVisible(false);
       });
       btnInputTarget.addEventListener('click', () => {
-        inputTarget = inputTarget === 'parsec' ? 'local' : 'parsec';
+        inputTarget = inputTarget === 'auto' ? 'parsec' : inputTarget === 'parsec' ? 'local' : 'auto';
         localStorage.setItem(STORAGE_KEYS.inputTarget, inputTarget);
-        btnInputTarget.textContent = inputTarget === 'parsec' ? 'Hedef: Parsec' : 'Hedef: Mac';
+        btnInputTarget.textContent = 'Hedef: ' + INPUT_TARGET_LABELS[inputTarget];
         btnInputTarget.classList.toggle('active', inputTarget === 'parsec');
-        btnInputTarget.setAttribute('aria-pressed', String(inputTarget === 'parsec'));
-        showToast(inputTarget === 'parsec' ? 'Klavye hedefi: Parsec' : 'Klavye hedefi: Mac');
+        showToast('Klavye hedefi: ' + INPUT_TARGET_LABELS[inputTarget]);
       });
       btnInstall.addEventListener('click', () => handleInstallRequest(true));
       installNow.addEventListener('click', async () => {
@@ -3642,9 +3651,8 @@
         setStatusExpanded(false);
       });
       updateSpeedButton();
-      btnInputTarget.textContent = inputTarget === 'parsec' ? 'Hedef: Parsec' : 'Hedef: Mac';
+      btnInputTarget.textContent = 'Hedef: ' + INPUT_TARGET_LABELS[inputTarget];
       btnInputTarget.classList.toggle('active', inputTarget === 'parsec');
-      btnInputTarget.setAttribute('aria-pressed', String(inputTarget === 'parsec'));
       refreshInstallUI();
       setRepoPromptMode('info');
       setUsageHintVisible(localStorage.getItem(STORAGE_KEYS.usageHintDismissed) !== '1');

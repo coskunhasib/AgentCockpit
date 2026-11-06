@@ -345,6 +345,18 @@ class PhoneBridgeClientTests(unittest.TestCase):
 
         paste_text.assert_called_once_with("şifre", restore_clipboard=True)
 
+    def test_auto_typing_resolves_parsec_after_focus_click(self):
+        with patch.object(phone_bridge_server.SystemOps, "is_parsec_frontmost", side_effect=[False, True]), patch.object(
+            phone_bridge_server, "_perform_focus_click", return_value=True
+        ):
+            self.assertEqual(phone_bridge_server._resolve_text_focus({"text": "test", "input_target": "auto"}), (True, "parsec"))
+
+    def test_auto_typing_does_not_fall_back_from_parsec_to_clipboard(self):
+        with patch.object(phone_bridge_server.SystemOps, "is_parsec_frontmost", side_effect=[True, False]), patch.object(
+            phone_bridge_server, "_perform_focus_click", return_value=True
+        ):
+            self.assertEqual(phone_bridge_server._resolve_text_focus({"text": "test", "input_target": "auto"}), (True, "parsec"))
+
     def test_parsec_phone_typing_uses_parsec_key_events(self):
         with patch.object(
             phone_bridge_server.SystemOps,
