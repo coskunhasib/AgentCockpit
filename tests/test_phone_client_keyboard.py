@@ -3,6 +3,13 @@ from pathlib import Path
 
 
 class PhoneClientKeyboardTests(unittest.TestCase):
+    def test_text_is_kept_until_input_delivery_is_acknowledged(self):
+        html = Path("phone_client/index.html").read_text(encoding="utf-8")
+        self.assertIn("sendText.textContent = 'Yaziliyor...'", html)
+        self.assertIn("toast: 'Klavye girdisi gonderildi'", html)
+        self.assertIn("onError: finishSend", html)
+        self.assertIn("if (typeInput.value === value) typeInput.value = ''", html)
+
     def test_keyboard_panel_exposes_recovery_shortcuts(self):
         html = Path("phone_client/index.html").read_text(encoding="utf-8")
 

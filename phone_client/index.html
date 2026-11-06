@@ -81,6 +81,21 @@
       transition: filter 0.4s ease;
     }
 
+    #frame-age {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      max-width: calc(100% - 32px);
+      padding: 8px 12px;
+      border-radius: 8px;
+      background: var(--panel-strong);
+      color: var(--text);
+      font-size: 13px;
+      pointer-events: none;
+      text-align: center;
+    }
+
     #frame-inspector {
       width: min(96vw, 1400px);
       max-width: 96vw;
@@ -922,6 +937,7 @@
 <body>
   <div id="viewer">
     <img id="screen" alt="Remote screen">
+    <div id="frame-age" hidden></div>
   </div>
 
   <div id="overlay">
@@ -956,18 +972,18 @@
               <option value="local">Mac</option>
               <option value="parsec">Parsec</option>
             </select>
+            <button class="repo-prompt-btn" id="btn-frame-inspect" type="button" disabled>Kareyi Incele</button>
           </details>
         </div>
       </div>
     </div>
 
     <div class="toolbar" id="toolbar">
-      <button class="tool-btn" id="btn-refresh">Sync</button>
+      <button class="tool-btn" id="btn-refresh">Yenile</button>
       <button class="tool-btn hidden" id="btn-telegram">Uzak Ac</button>
       <button class="tool-btn" id="btn-speed">Normal</button>
-      <button class="tool-btn" id="btn-frame-inspect" type="button" disabled>Goruntu Testi</button>
-      <button class="tool-btn" id="btn-scroll">Scroll</button>
-      <button class="tool-btn" id="btn-keyboard">Keyboard</button>
+      <button class="tool-btn" id="btn-scroll">Kaydir</button>
+      <button class="tool-btn" id="btn-keyboard">Klavye</button>
     </div>
   </div>
 
@@ -984,7 +1000,7 @@
     <div class="input-row">
       <input id="type-input" type="text" placeholder="Yaz ve gonder" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false">
       <button class="key-btn sensitive-toggle" id="btn-sensitive" type="button" aria-pressed="false">Sifre</button>
-      <button class="send-btn" id="send-text">Send</button>
+      <button class="send-btn" id="send-text">Gonder</button>
     </div>
     <div class="key-row">
       <button class="key-btn" data-key="escape">Esc</button>
@@ -1204,6 +1220,8 @@
       let consecutiveErrors = 0;
       let captureRetryUntil = 0;
       let lastFrameAt = 0;
+      let lastCaptureSignalAt = 0;
+      const frameAge = document.getElementById('frame-age');
       let lastLatencyMs = 0;
       let deferredInstallPrompt = null;
       let swReady = false;
@@ -1242,7 +1260,10 @@
       let streamGeneration = 0;
       let streamSupported = true;
       let currentObjectUrl = null;
+      let pendingPresentation = null;
+      let decodingFrame = false;
       let frameWidth = 0;
+      let frameHeight = 0;
       let frameTimes = [];
       let requestSeq = 0;
       let toastTimer = null;
@@ -2017,7 +2038,6 @@
         syncRepoState(payload, { notify: true });
         syncSessionInfo(payload.session);
         lastLatencyMs = payload.__elapsed || lastLatencyMs;
-        lastFrameAt = Date.now();
         screenInfo.width = payload.screen_width || payload.width || 0;
         screenInfo.height = payload.screen_height || payload.height || 0;
         if (streamMode !== 'poll') {
@@ -2027,7 +2047,7 @@
             streamSig = payload.signature;
           }
         } else {
-          screenEl.src = `data:image/jpeg;base64,${payload.image}`;
+          queueFrame(`data:image/jpeg;base64,${payload.image}`);
         }
         screenEl.classList.remove('stale-frame');
         setStatus('Bagli', sessionInfo.label ? `Oturum: ${sessionInfo.label}` : 'Dokunmatik hazir', true);
@@ -2224,17 +2244,66 @@
       }
 
       function renderStreamFrame(bytes) {
-        const objectUrl = URL.createObjectURL(new Blob([bytes], { type: 'image/jpeg' }));
-        const previous = currentObjectUrl;
-        screenEl.src = objectUrl;
-        currentObjectUrl = objectUrl;
-        if (previous) {
-          setTimeout(() => URL.revokeObjectURL(previous), 1000);
+        queueFrame(new Blob([bytes], { type: 'image/jpeg' }), markFrameConnected);
+      }
+
+      function noteCaptureSignal() {
+        lastCaptureSignalAt = Date.now();
+        frameAge.hidden = true;
+      }
+
+      setInterval(() => {
+        const age = Math.floor((Date.now() - lastFrameAt) / 1000);
+        // A still desktop sends heartbeats or 204s without replacing the image.
+        const threshold = streamMode === 'frame' ? 22000 : 8000;
+        frameAge.hidden = !lastFrameAt || Date.now() - lastCaptureSignalAt < threshold;
+        if (!frameAge.hidden) {
+          frameAge.textContent = `Goruntu bekleniyor. Son kare ${age} sn once.`;
         }
-        lastFrameAt = Date.now();
-        noteFrameTiming();
-        consecutiveErrors = 0;
-        markFrameConnected();
+      }, 1000);
+
+      function queueFrame(source, onPresented) {
+        // Keep only the newest waiting frame while a single decode is active.
+        return new Promise((resolve) => {
+          pendingPresentation?.resolve(false);
+          pendingPresentation = { source, onPresented, resolve, generation: streamGeneration, mode: streamMode };
+          if (!decodingFrame) void presentFrames();
+        });
+      }
+
+      async function presentFrames() {
+        decodingFrame = true;
+        try {
+          while (pendingPresentation) {
+            const frame = pendingPresentation;
+            pendingPresentation = null;
+            const isBlob = typeof frame.source !== 'string';
+            const url = isBlob ? URL.createObjectURL(frame.source) : frame.source;
+            let committed = false;
+            try {
+              const decoded = new Image();
+              decoded.src = url;
+              await decoded.decode();
+              if (frame.generation !== streamGeneration || frame.mode !== streamMode || document.hidden) continue;
+              const previous = currentObjectUrl;
+              screenEl.src = url;
+              currentObjectUrl = isBlob ? url : null;
+              committed = true;
+              if (previous) setTimeout(() => URL.revokeObjectURL(previous), 1000);
+              lastFrameAt = Date.now();
+              noteCaptureSignal();
+              noteFrameTiming();
+              frame.onPresented?.();
+            } catch (_) {
+              // Keep the last good image if the replacement cannot be decoded.
+            } finally {
+              if (isBlob && !committed) URL.revokeObjectURL(url);
+              frame.resolve(committed);
+            }
+          }
+        } finally {
+          decodingFrame = false;
+        }
       }
 
       function startPushStream() {
@@ -2312,6 +2381,7 @@
               buffer = buffer.subarray(4 + length);
               if (length === 0) {
                 gotFrame = true;            // heartbeat: liveness only, nothing to draw
+                noteCaptureSignal();
                 consecutiveErrors = 0;
                 markFrameConnected();
               } else {
@@ -2386,28 +2456,16 @@
       }
 
       function renderBinaryFrame(blob, response, startedAt) {
-        const objectUrl = URL.createObjectURL(blob);
-        const previous = currentObjectUrl;
-        screenEl.src = objectUrl;
-        currentObjectUrl = objectUrl;
-        if (previous) {
-          // Revoke the prior frame's URL once the new one has had a tick to paint.
-          setTimeout(() => URL.revokeObjectURL(previous), 1000);
-        }
-        streamSig = response.headers.get('X-Frame-Sig') || streamSig;
-        const screenW = Number(response.headers.get('X-Screen-Width'));
-        const screenH = Number(response.headers.get('X-Screen-Height'));
-        if (screenW) {
-          screenInfo.width = screenW;
-        }
-        if (screenH) {
-          screenInfo.height = screenH;
-        }
-        lastFrameAt = Date.now();
-        lastLatencyMs = Math.round(performance.now() - startedAt);
-        noteFrameTiming();
-        streamFailures = 0;
-        markFrameConnected();
+        return queueFrame(blob, () => {
+          streamSig = response.headers.get('X-Frame-Sig') || streamSig;
+          const screenW = Number(response.headers.get('X-Screen-Width'));
+          const screenH = Number(response.headers.get('X-Screen-Height'));
+          if (screenW) screenInfo.width = screenW;
+          if (screenH) screenInfo.height = screenH;
+          lastLatencyMs = Math.round(performance.now() - startedAt);
+          streamFailures = 0;
+          markFrameConnected();
+        });
       }
 
       async function fetchBinaryFrame() {
@@ -2447,6 +2505,7 @@
             streamSig = response.headers.get('X-Frame-Sig') || streamSig;
             consecutiveErrors = 0;
             streamFailures = 0;
+            noteCaptureSignal();
             markFrameConnected();
             return;
           }
@@ -2467,7 +2526,10 @@
             throw networkError;
           }
           consecutiveErrors = 0;
-          renderBinaryFrame(blob, response, startedAt);
+          const presented = await renderBinaryFrame(blob, response, startedAt);
+          if (!presented && !controller.signal.aborted && !document.hidden && streamMode === 'frame') {
+            throw new Error('Gelen kare cozumlenemedi');
+          }
         } finally {
           clearTimeout(watchdog);
           streamAbort = null;
@@ -2567,7 +2629,7 @@
             showToast(`✓ ${feedback.toast}`, 'ok');
           } else {
             const tail = message ? ` · ${message}` : '';
-            showToast(`✗ ${feedback.toast}${tail}`, 'err');
+            showToast(`✗ ${feedback.errorToast || feedback.toast}${tail}`, 'err');
           }
         }
       }
@@ -2742,7 +2804,7 @@
       async function runAction(job) {
         const { payload, feedback } = job;
         boostLiveWindow();
-        setStatus('Komut gonderildi', 'Masaustunde uygulaniyor', connected);
+        setStatus(payload.type === 'type' ? 'Yaziliyor...' : 'Komut gonderildi', 'Masaustunde uygulaniyor', connected);
         try {
           let result;
           if (payload.type === 'type' && payload.input_target !== 'local') {
@@ -2801,7 +2863,7 @@
             consecutiveErrors += 1;
             setStatus('Komut ulasmadi', message, false);
             setOfflineBanner(true, 'Komut birkac kez denendi ama cevap alinamadi. Baglanti gelince tekrar dene.');
-            setActionFeedback(feedback, 'err', 'ulasmadi');
+            setActionFeedback(feedback, 'err', payload.type === 'type' ? message : 'ulasmadi');
             maybeShowWanSheet();
           }
           if (typeof feedback.onError === 'function') {
@@ -3512,20 +3574,26 @@
         if (!value.length) {
           return;
         }
-        const wasSensitive = sensitiveTyping;
         const focus = recentTextTarget();
-        typeInput.value = '';
+        sendText.disabled = true;
+        typeInput.readOnly = true;
+        sendText.textContent = 'Yaziliyor...';
+        const finishSend = () => {
+          sendText.disabled = false;
+          typeInput.readOnly = false;
+          sendText.textContent = 'Gonder';
+        };
         enqueueAction(
           { type: 'type', text: value, sensitive: sensitiveTyping, focus, delay: 0.12 },
           {
             el: sendText,
-            toast: wasSensitive ? 'Sifre gonderildi' : 'Metin gonderildi',
-            onError: () => {
-              // Restore the text so a failed send is never silently lost.
-              if (!typeInput.value) {
-                typeInput.value = value;
-              }
-            }
+            toast: 'Klavye girdisi gonderildi',
+            errorToast: 'Gonderim dogrulanamadi',
+            onSuccess: () => {
+              if (typeInput.value === value) typeInput.value = '';
+              finishSend();
+            },
+            onError: finishSend
           }
         );
       });
@@ -3551,10 +3619,11 @@
       });
 
       screenEl.addEventListener('load', () => {
-        if (screenEl.naturalWidth) {
-          frameWidth = screenEl.naturalWidth;
-          frameInspectButton.disabled = false;
-        }
+        if (!screenEl.naturalWidth) return;
+        frameInspectButton.disabled = false;
+        if (frameWidth === screenEl.naturalWidth && frameHeight === screenEl.naturalHeight) return;
+        frameWidth = screenEl.naturalWidth;
+        frameHeight = screenEl.naturalHeight;
         applyScreenTransform();
       });
       frameInspectButton.addEventListener('click', inspectReceivedFrame);

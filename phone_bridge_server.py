@@ -2575,19 +2575,15 @@ class PhoneBridgeHandler(BaseHTTPRequestHandler):
                         was_high_motion = high_motion
                         now = time.time()
                         if changed or just_settled:
-                            # While the screen is actively moving (scrolling, video), send
-                            # smaller, lower-quality frames so they don't saturate the
-                            # uplink/tunnel and stutter; restore full detail the instant it
-                            # settles. Pixels dominate bandwidth, so trim width too.
+                            # Reduce bandwidth during motion without changing the browser's
+                            # pixel mapping every time the motion detector changes state.
                             if high_motion and not sharpen:
                                 encode_quality = max(28, quality - 24)
-                                encode_width = max(720, (max_width * 7) // 10)
                             else:
                                 encode_quality = quality
-                                encode_width = max_width
                             image = _scale_to_width(
                                 _draw_cursor(raw),
-                                encode_width,
+                                max_width,
                                 sharpen=sharpen,
                             )
                             last_jpeg = _encode_jpeg(image, encode_quality)

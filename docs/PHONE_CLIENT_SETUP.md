@@ -124,7 +124,9 @@ Tarayici istemcisinde `Normal`, sigdirilan goruntunun fiziksel ekran pikseli gen
 
 ## Ekran ve Isaretci Notu
 
-Yazilar bulaniksa alt arac cubugundaki `Goruntu Testi` ile ayni JPEG'i yeniden sikistirmadan dondurup inceleyin. Dugme ilk goruntu geldiginde etkinlesir; acilan pencerede `1:1` ve `Sigdir` bulunur. `1:1`, goruntu piksellerini ekran piksellerine esler; `Sigdir`, ayni kareyi pencereye kucultur. 1:1 net, sigdir bulaniksa olcekleme/ekran yogunlugu etkisini arastirin. Ikisi de bulaniksa kaynak yakalama ve JPEG sikistirmasini inceleyin. Panel, alinan JPEG boyutunu, canli gorunumun ekran piksel boyutunu ve tarayici DPR degerini gosterir. Bu karsilastirma tek basina Windows JPEG cozumleyicisini dogrulamaz.
+Yazilar bulaniksa baglanti kartindaki `Sorun Giderme > Kareyi Incele` ile ayni JPEG'i yeniden sikistirmadan dondurup inceleyin. Dugme ilk goruntu geldiginde etkinlesir; acilan pencerede `1:1` ve `Sigdir` bulunur. `1:1`, goruntu piksellerini ekran piksellerine esler; `Sigdir`, ayni kareyi pencereye kucultur. 1:1 net, sigdir bulaniksa olcekleme/ekran yogunlugu etkisini arastirin. Ikisi de bulaniksa kaynak yakalama ve JPEG sikistirmasini inceleyin. Panel, alinan JPEG boyutunu, canli gorunumun ekran piksel boyutunu ve tarayici DPR degerini gosterir. Bu karsilastirma tek basina Windows JPEG cozumleyicisini dogrulamaz.
+
+Akis, hareket sirasinda JPEG kalitesini dusurebilir ama kare genisligini degistirmez. Tarayici yeni kareyi cozumleyene kadar son gecerli goruntuyu korur. Akis kesilirse son karenin yasi goruntunun ustunde belirtilir; saglikli ama hareketsiz ekran bu uyariyi tetiklemez.
 
 - macOS Retina ekranlarda screenshot boyutu ile masaustu logical koordinatlari farkli olabilir.
 - Kirmizi fare noktasi bu fark dikkate alinerek cizilir; isaretci screenshot ustunde gercek konuma olabildigince yakin gosterilir.
